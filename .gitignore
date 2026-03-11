@@ -1,0 +1,22 @@
+# macOS noise
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# Runtime-generated state and secrets
+tmp/
+control-plane/observability/runs/
+control-plane/approvals/*.json
+control-plane/approvals/resume-journal/
+control-plane/runtime/bootstrap-secret.txt
+control-plane/runtime/service-manifest.json
+control-plane/runtime/logs/
+control-plane/runtime/service-token.txt
+control-plane/memory-core/store.json
+
+# Installer/user-local artifacts
+.venv/
+dist/releases-test/
+dist/releases/
