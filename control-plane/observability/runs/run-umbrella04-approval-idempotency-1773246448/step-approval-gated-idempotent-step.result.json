@@ -1,0 +1,10 @@
+{
+  "runId": "run-umbrella04-approval-idempotency-1773246448",
+  "stepId": "approval-gated-idempotent-step",
+  "status": "SUCCESS",
+  "exitCode": 0,
+  "startedAt": "2026-03-11T16:27:29.396556+00:00",
+  "endedAt": "2026-03-11T16:27:29.418724+00:00",
+  "stdout": "counter 1\n",
+  "stderr": ""
+}

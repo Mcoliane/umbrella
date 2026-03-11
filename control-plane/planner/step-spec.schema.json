@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "umbrella.control-plane.step-spec.v1",
+  "title": "Umbrella StepSpec",
+  "type": "object",
+  "required": [
+    "stepId",
+    "objective",
+    "runtime",
+    "action",
+    "inputs",
+    "workdir",
+    "timeoutSec",
+    "timeoutClass",
+    "riskClass"
+  ],
+  "properties": {
+    "stepId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runtime": {
+      "type": "string",
+      "minLength": 1
+    },
+    "action": {
+      "type": "string",
+      "minLength": 1
+    },
+    "inputs": {
+      "type": "object",
+      "default": {}
+    },
+    "workdir": {
+      "type": "string",
+      "default": "."
+    },
+    "timeoutSec": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "timeoutClass": {
+      "type": "string",
+      "enum": ["short", "medium", "long", "custom"]
+    },
+    "riskClass": {
+      "type": "string",
+      "enum": ["low", "medium", "high"]
+    },
+    "retryPolicy": {
+      "type": "object",
+      "properties": {
+        "class": {
+          "type": "string",
+          "enum": ["none", "transient", "deterministic"]
+        },
+        "maxAttempts": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "runtimeHints": {
+      "type": "object",
+      "default": {}
+    },
+    "expectedArtifacts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "minLength": 1
+    },
+    "compensation": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "note": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "requiresApproval": {
+      "type": "boolean"
+    },
+    "escalation": {
+      "type": "object",
+      "properties": {
+        "enableReroute": {"type": "boolean"},
+        "requireApproval": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "metadata": {
+      "type": "object"
+    },
+    "memoryHints": {
+      "type": "object",
+      "properties": {
+        "namespace": {"type": "string"},
+        "consistency": {"type": "string", "enum": ["strong", "eventual"]},
+        "ttlSec": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

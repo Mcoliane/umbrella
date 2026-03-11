@@ -1,0 +1,10 @@
+{
+  "runId": "run-umbrella04-approval-authority-1773193707",
+  "stepId": "approval-gated-step",
+  "status": "SUCCESS",
+  "exitCode": 0,
+  "startedAt": "2026-03-11T01:48:28.261631+00:00",
+  "endedAt": "2026-03-11T01:48:28.278682+00:00",
+  "stdout": "approval-authority-ok\n",
+  "stderr": ""
+}

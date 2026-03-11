@@ -1,0 +1,10 @@
+{
+  "runId": "run-umbrella04-approval-authority-1773246447",
+  "state": "SUCCEEDED",
+  "terminalReason": "all_steps_succeeded",
+  "stepCount": 1,
+  "completedSteps": 1,
+  "runPath": "/Users/coolfriend/Desktop/umbrella0.4/control-plane/observability/runs/run-umbrella04-approval-authority-1773246447",
+  "createdAt": "2026-03-11T16:27:28.315916+00:00",
+  "finishedAt": "2026-03-11T16:27:28.428749+00:00"
+}

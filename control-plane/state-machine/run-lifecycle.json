@@ -1,0 +1,37 @@
+{
+  "id": "umbrella.state.run-lifecycle.v2",
+  "initialState": "PENDING",
+  "states": [
+    "PENDING",
+    "RUNNING",
+    "RETRYING",
+    "BLOCKED",
+    "SUCCEEDED",
+    "FAILED"
+  ],
+  "terminalStates": [
+    "SUCCEEDED",
+    "FAILED",
+    "BLOCKED"
+  ],
+  "transitions": [
+    {"from": "PENDING", "to": "RUNNING"},
+    {"from": "RUNNING", "to": "RETRYING"},
+    {"from": "RETRYING", "to": "RUNNING"},
+    {"from": "RUNNING", "to": "SUCCEEDED"},
+    {"from": "RUNNING", "to": "FAILED"},
+    {"from": "RUNNING", "to": "BLOCKED"},
+    {"from": "RETRYING", "to": "FAILED"},
+    {"from": "RETRYING", "to": "BLOCKED"}
+  ],
+  "terminalReasonTaxonomy": [
+    "all_steps_succeeded",
+    "policy_blocked",
+    "timeout",
+    "retry_exhausted",
+    "adapter_error",
+    "approval_required",
+    "approval_denied",
+    "parity_drift"
+  ]
+}

@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+
+def parse_iso_date(text: str):
+    if not DATE_RE.match(text or ''):
+        return None
+    try:
+        return datetime.strptime(text, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def load_json(path: Path):
+    return json.loads(path.read_text(encoding='utf-8'))
+
+
+def parse_simple_yaml(path: Path) -> dict:
+    data = {'exceptions': []}
+    lines = path.read_text(encoding='utf-8').splitlines()
+
+    current = None
+    in_exceptions = False
+    for raw in lines:
+        line = raw.rstrip()
+        if not line or line.strip().startswith('#'):
+            continue
+
+        if line.startswith('policy_rev:'):
+            data['policy_rev'] = line.split(':', 1)[1].strip()
+            continue
+
+        if line.startswith('exceptions:'):
+            in_exceptions = True
+            # inline empty list
+            tail = line.split(':', 1)[1].strip()
+            if tail == '[]':
+                data['exceptions'] = []
+                in_exceptions = False
+            continue
+
+        if not in_exceptions:
+            continue
+
+        s = line.strip()
+        if s.startswith('- '):
+            if current:
+                data['exceptions'].append(current)
+            current = {}
+            rem = s[2:].strip()
+            if rem and ':' in rem:
+                k, v = rem.split(':', 1)
+                current[k.strip()] = v.strip().strip('"')
+            continue
+
+        if current is not None and ':' in s:
+            k, v = s.split(':', 1)
+            current[k.strip()] = v.strip().strip('"')
+
+    if current:
+        data['exceptions'].append(current)
+
+    return data
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description='Drift lint for control-plane policies, revisions, and exception register.')
+    ap.add_argument('--umbrella-root', default=str(Path(__file__).resolve().parents[2]))
+    ap.add_argument('--policy-json', default='control-plane/policy/no-cutover-policy.json')
+    ap.add_argument('--exceptions', default='control-plane/policy/exceptions.yaml')
+    ap.add_argument('--umbrella-policy', default='umbrella/policies/default.policy.yaml')
+    ap.add_argument('--max-rev-age-days', type=int, default=365)
+    args = ap.parse_args()
+
+    root = Path(args.umbrella_root).resolve()
+    policy_path = root / args.policy_json
+    exceptions_path = root / args.exceptions
+    umbrella_policy_path = root / args.umbrella_policy
+
+    errors = []
+    warnings = []
+
+    if not policy_path.exists():
+        errors.append(f'missing policy file: {policy_path}')
+        policy = {}
+    else:
+        try:
+            policy = load_json(policy_path)
+        except Exception as ex:
+            errors.append(f'invalid policy json: {ex}')
+            policy = {}
+
+    if not exceptions_path.exists():
+        errors.append(f'missing exceptions register: {exceptions_path}')
+        exc = {'exceptions': []}
+    else:
+        try:
+            exc = parse_simple_yaml(exceptions_path)
+        except Exception as ex:
+            errors.append(f'invalid exceptions yaml: {ex}')
+            exc = {'exceptions': []}
+
+    umbrella_policy_text = ''
+    if umbrella_policy_path.exists():
+        umbrella_policy_text = umbrella_policy_path.read_text(encoding='utf-8')
+    else:
+        errors.append(f'missing umbrella policy file: {umbrella_policy_path}')
+
+    # Revision markers
+    policy_rev = str(policy.get('policyRev', '')).strip()
+    exc_rev = str(exc.get('policy_rev', '')).strip()
+
+    for name, rev in [('no-cutover-policy', policy_rev), ('exceptions-register', exc_rev)]:
+        d = parse_iso_date(rev)
+        if not d:
+            errors.append(f'{name} missing/invalid revision marker (YYYY-MM-DD): {rev!r}')
+            continue
+        age_days = (datetime.now(timezone.utc) - d).days
+        if age_days > args.max_rev_age_days:
+            warnings.append(f'{name} revision appears stale ({age_days}d): {rev}')
+
+    up_rev = ''
+    for line in umbrella_policy_text.splitlines():
+        if line.strip().startswith('policy_rev:'):
+            up_rev = line.split(':', 1)[1].strip()
+            break
+    if not parse_iso_date(up_rev):
+        errors.append(f'umbrella default policy missing/invalid policy_rev: {up_rev!r}')
+
+    # Core policy lint
+    forbidden = policy.get('forbiddenCommandPatterns') or []
+    if not isinstance(forbidden, list) or not forbidden:
+        errors.append('forbiddenCommandPatterns missing or empty')
+        forbidden = []
+    else:
+        norm = [' '.join(str(x).split()) for x in forbidden]
+        if len(norm) != len(set(norm)):
+            errors.append('forbiddenCommandPatterns contains duplicates')
+
+    if str(policy.get('defaultViolationStatus', '')).upper() != 'BLOCKED':
+        errors.append('defaultViolationStatus must be BLOCKED')
+
+    # Exception register lint
+    exceptions = exc.get('exceptions') or []
+    if not isinstance(exceptions, list):
+        errors.append('exceptions register must contain a list under exceptions')
+        exceptions = []
+
+    for i, item in enumerate(exceptions, start=1):
+        if not isinstance(item, dict):
+            errors.append(f'exception #{i} must be object')
+            continue
+        ex_id = str(item.get('id', '')).strip()
+        pattern = str(item.get('pattern', '')).strip()
+        reason = str(item.get('reason', '')).strip()
+        approved_by = str(item.get('approved_by', '')).strip()
+        if not ex_id:
+            errors.append(f'exception #{i} missing id')
+        if not pattern:
+            errors.append(f'exception {ex_id or i} missing pattern')
+        if not reason:
+            errors.append(f'exception {ex_id or i} missing reason')
+        if not approved_by:
+            errors.append(f'exception {ex_id or i} missing approved_by')
+        if pattern and pattern not in forbidden:
+            errors.append(f'exception {ex_id or i} pattern not found in forbiddenCommandPatterns: {pattern}')
+
+    status = 'PASS' if not errors else 'FAILED'
+    out = {
+        'status': status,
+        'policyPath': str(policy_path),
+        'exceptionsPath': str(exceptions_path),
+        'umbrellaPolicyPath': str(umbrella_policy_path),
+        'errorCount': len(errors),
+        'warningCount': len(warnings),
+        'errors': errors,
+        'warnings': warnings,
+        'policyRev': policy_rev,
+        'exceptionsRev': exc_rev,
+        'forbiddenPatternCount': len(forbidden),
+        'exceptionCount': len(exceptions),
+        'checkedAt': datetime.now(timezone.utc).isoformat(),
+    }
+    print(json.dumps(out, indent=2))
+    return 0 if status == 'PASS' else 2
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

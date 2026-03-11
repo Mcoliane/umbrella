@@ -1,0 +1,38 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import urllib.request
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description='Search memory nodes in Umbrella memory service')
+    ap.add_argument('--base-url', default=os.environ.get('UMBRELLA_MEMORY_BASE_URL', 'http://127.0.0.1:8787'))
+    ap.add_argument('--namespace', required=True)
+    ap.add_argument('--query', default='')
+    ap.add_argument('--k', type=int, default=20)
+    ap.add_argument('--token', default=os.environ.get('UMBRELLA_MEMORY_TOKEN', ''))
+    args = ap.parse_args()
+
+    payload = {
+        'namespace': args.namespace,
+        'query': args.query,
+        'k': args.k,
+    }
+    req = urllib.request.Request(
+        f"{args.base_url.rstrip('/')}/v1/nodes/search",
+        method='POST',
+        data=json.dumps(payload).encode('utf-8'),
+    )
+    req.add_header('Content-Type', 'application/json')
+    if args.token:
+        req.add_header('Authorization', f'Bearer {args.token}')
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        print(resp.read().decode('utf-8'))
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

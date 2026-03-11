@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "umbrella.memory.service.node.v1",
+  "type": "object",
+  "required": ["node_id", "namespace", "kind", "title", "content", "version", "etag", "created_at", "updated_at"],
+  "properties": {
+    "node_id": {"type": "string"},
+    "namespace": {"type": "string"},
+    "kind": {"type": "string", "enum": ["fact", "task", "note", "capability", "policy", "index", "artifact_ref"]},
+    "title": {"type": "string"},
+    "content": {},
+    "tags": {"type": "array", "items": {"type": "string"}},
+    "source": {"type": "string"},
+    "version": {"type": "integer"},
+    "etag": {"type": "string"},
+    "created_at": {"type": "string"},
+    "updated_at": {"type": "string"},
+    "deleted_at": {"type": ["string", "null"]}
+  },
+  "additionalProperties": true
+}

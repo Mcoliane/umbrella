@@ -1,0 +1,303 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+def now_id(prefix: str) -> str:
+    return f"{prefix}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+
+
+def load_json(path: Path, default):
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return default
+
+
+def parse_json_or_literal(s: str):
+    s = (s or '').strip()
+    if not s:
+        return ''
+    try:
+        return json.loads(s)
+    except Exception:
+        return s
+
+
+def print_json(obj: dict):
+    print(json.dumps(obj, indent=2))
+
+
+def http_request(method: str, url: str, payload: dict | None, token: str, timeout: int = 60) -> dict:
+    headers = {'Content-Type': 'application/json'}
+    if token.strip():
+        headers['Authorization'] = f'Bearer {token.strip()}'
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode('utf-8')
+    req = urllib.request.Request(url, method=method, data=data, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as ex:
+        body = ''
+        try:
+            body = ex.read().decode('utf-8')
+        except Exception:
+            body = ''
+        raise RuntimeError(f'HTTP {ex.code} {url}: {body}') from ex
+
+
+class Ctx:
+    def __init__(self, root: Path, manifest_path: Path, token_override: str):
+        self.root = root
+        self.manifest_path = manifest_path
+        self.manifest = load_json(manifest_path, {})
+        self.services = self.manifest.get('services') if isinstance(self.manifest.get('services'), dict) else {}
+
+        token = token_override.strip()
+        if not token:
+            auth = self.manifest.get('auth') if isinstance(self.manifest.get('auth'), dict) else {}
+            tp = str(auth.get('tokenPath', '')).strip()
+            if tp:
+                p = Path(tp)
+                if p.exists():
+                    token = p.read_text(encoding='utf-8').strip()
+        self.token = token
+
+    def service_url(self, name: str) -> str:
+        row = self.services.get(name) if isinstance(self.services.get(name), dict) else {}
+        return str(row.get('url', '')).rstrip('/')
+
+
+def cmd_run(ctx: Ctx, args: argparse.Namespace) -> int:
+    runner = ctx.root / 'scripts' / 'control-plane' / 'run-umbrella-control-plane'
+    run_id = args.run_id.strip() or now_id('run-umbrellactl')
+    cmd = [
+        str(runner),
+        '--umbrella-root', str(ctx.root),
+        '--plan', args.plan,
+        '--run-id', run_id,
+        '--policy-url', args.policy_url.strip() or ctx.service_url('policy'),
+        '--lifecycle-url', args.lifecycle_url.strip() or ctx.service_url('lifecycle'),
+        '--router-url', args.router_url.strip() or ctx.service_url('router'),
+        '--scheduler-url', args.scheduler_url.strip() or ctx.service_url('scheduler'),
+        '--execution-url', args.execution_url.strip() or ctx.service_url('execution'),
+        '--approval-url', args.approval_url.strip() or ctx.service_url('approval'),
+        '--orchestrator-url', args.orchestrator_url.strip() or ctx.service_url('orchestrator'),
+        '--mesh-token', args.mesh_token.strip() or ctx.token,
+    ]
+    if args.reconcile_cmd.strip():
+        cmd.extend(['--reconcile-cmd', args.reconcile_cmd.strip()])
+    if args.resume_blocked:
+        cmd.append('--resume-blocked')
+    if args.orchestrator_caller.strip():
+        cmd.extend(['--orchestrator-caller', args.orchestrator_caller.strip()])
+
+    proc = subprocess.run(cmd, cwd=str(ctx.root), capture_output=True, text=True)
+    out = (proc.stdout or '').strip()
+    if out:
+        print(out)
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
+    return int(proc.returncode)
+
+
+def cmd_approve(ctx: Ctx, args: argparse.Namespace) -> int:
+    approval_url = args.approval_url.strip() or ctx.service_url('approval')
+    out = http_request(
+        'POST',
+        f"{approval_url}/v1/approval/{args.approval_key}/approve",
+        {'by': args.by, 'note': args.note},
+        args.mesh_token.strip() or ctx.token,
+    )
+    print_json(out)
+    return 0
+
+
+def cmd_deny(ctx: Ctx, args: argparse.Namespace) -> int:
+    approval_url = args.approval_url.strip() or ctx.service_url('approval')
+    out = http_request(
+        'POST',
+        f"{approval_url}/v1/approval/{args.approval_key}/deny",
+        {'by': args.by, 'note': args.note},
+        args.mesh_token.strip() or ctx.token,
+    )
+    print_json(out)
+    return 0
+
+
+def cmd_resume(ctx: Ctx, args: argparse.Namespace) -> int:
+    approval_url = args.approval_url.strip() or ctx.service_url('approval')
+    payload = {
+        'plan': args.plan,
+        'runId': args.run_id,
+        'approvalKey': args.approval_key,
+        'idempotencyKey': args.idempotency_key,
+        'policyUrl': args.policy_url.strip() or ctx.service_url('policy'),
+        'lifecycleUrl': args.lifecycle_url.strip() or ctx.service_url('lifecycle'),
+        'routerUrl': args.router_url.strip() or ctx.service_url('router'),
+        'schedulerUrl': args.scheduler_url.strip() or ctx.service_url('scheduler'),
+        'executionUrl': args.execution_url.strip() or ctx.service_url('execution'),
+        'approvalUrl': approval_url,
+        'orchestratorUrl': args.orchestrator_url.strip() or ctx.service_url('orchestrator'),
+        'meshToken': args.mesh_token.strip() or ctx.token,
+        'reconcileCmd': args.reconcile_cmd,
+    }
+    out = http_request('POST', f"{approval_url}/v1/approval/resume", payload, args.mesh_token.strip() or ctx.token)
+    print_json(out)
+    return int(out.get('exitCode', 1 if not bool(out.get('ok', False)) else 0))
+
+
+def cmd_run_status(ctx: Ctx, args: argparse.Namespace) -> int:
+    approval_url = args.approval_url.strip() or ctx.service_url('approval')
+    out = http_request('GET', f"{approval_url}/v1/approval/{args.approval_key}/run-status", None, args.mesh_token.strip() or ctx.token)
+    print_json(out)
+    return 0
+
+
+def cmd_memory(ctx: Ctx, args: argparse.Namespace) -> int:
+    mem_url = args.memory_core_url.strip() or ctx.service_url('memory-core')
+    token = args.mesh_token.strip() or ctx.token
+
+    if args.memory_cmd == 'put':
+        payload = {
+            'namespace': args.namespace,
+            'key': args.key,
+            'value': parse_json_or_literal(args.value),
+            'metadata': parse_json_or_literal(args.metadata) if args.metadata.strip() else {},
+        }
+        out = http_request('POST', f"{mem_url}/v1/memory-core/put", payload, token)
+    elif args.memory_cmd == 'get':
+        out = http_request('POST', f"{mem_url}/v1/memory-core/get", {'namespace': args.namespace, 'key': args.key}, token)
+    elif args.memory_cmd == 'delete':
+        out = http_request('POST', f"{mem_url}/v1/memory-core/delete", {'namespace': args.namespace, 'key': args.key}, token)
+    elif args.memory_cmd == 'list':
+        out = http_request('POST', f"{mem_url}/v1/memory-core/list", {'namespace': args.namespace}, token)
+    else:
+        raise RuntimeError(f'unknown memory command: {args.memory_cmd}')
+
+    print_json(out)
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(description='Umbrella control CLI')
+    ap.add_argument('--umbrella-root', default=str(Path(__file__).resolve().parents[1]))
+    ap.add_argument('--manifest', default='')
+    ap.add_argument('--mesh-token', default='')
+
+    sp = ap.add_subparsers(dest='cmd', required=True)
+
+    p_run = sp.add_parser('run', help='Run plan via runner/orchestrator')
+    p_run.add_argument('--plan', required=True)
+    p_run.add_argument('--run-id', default='')
+    p_run.add_argument('--resume-blocked', action='store_true')
+    p_run.add_argument('--orchestrator-caller', default='runner')
+    p_run.add_argument('--reconcile-cmd', default='memory-core-reconcile')
+    p_run.add_argument('--policy-url', default='')
+    p_run.add_argument('--lifecycle-url', default='')
+    p_run.add_argument('--router-url', default='')
+    p_run.add_argument('--scheduler-url', default='')
+    p_run.add_argument('--execution-url', default='')
+    p_run.add_argument('--approval-url', default='')
+    p_run.add_argument('--orchestrator-url', default='')
+
+    p_ap = sp.add_parser('approve', help='Approve by approvalKey')
+    p_ap.add_argument('--approval-key', required=True)
+    p_ap.add_argument('--by', default='operator')
+    p_ap.add_argument('--note', default='approved')
+    p_ap.add_argument('--approval-url', default='')
+
+    p_dn = sp.add_parser('deny', help='Deny by approvalKey')
+    p_dn.add_argument('--approval-key', required=True)
+    p_dn.add_argument('--by', default='operator')
+    p_dn.add_argument('--note', default='denied')
+    p_dn.add_argument('--approval-url', default='')
+
+    p_rs = sp.add_parser('resume', help='Resume blocked run via approval-service')
+    p_rs.add_argument('--plan', required=True)
+    p_rs.add_argument('--run-id', required=True)
+    p_rs.add_argument('--approval-key', required=True)
+    p_rs.add_argument('--idempotency-key', default='')
+    p_rs.add_argument('--reconcile-cmd', default='memory-core-reconcile')
+    p_rs.add_argument('--policy-url', default='')
+    p_rs.add_argument('--lifecycle-url', default='')
+    p_rs.add_argument('--router-url', default='')
+    p_rs.add_argument('--scheduler-url', default='')
+    p_rs.add_argument('--execution-url', default='')
+    p_rs.add_argument('--approval-url', default='')
+    p_rs.add_argument('--orchestrator-url', default='')
+
+    p_st = sp.add_parser('run-status', help='Get run status by approvalKey')
+    p_st.add_argument('--approval-key', required=True)
+    p_st.add_argument('--approval-url', default='')
+
+    p_mem = sp.add_parser('memory', help='Memory-core operations')
+    sp_mem = p_mem.add_subparsers(dest='memory_cmd', required=True)
+
+    p_mput = sp_mem.add_parser('put')
+    p_mput.add_argument('--namespace', required=True)
+    p_mput.add_argument('--key', required=True)
+    p_mput.add_argument('--value', required=True)
+    p_mput.add_argument('--metadata', default='')
+    p_mput.add_argument('--memory-core-url', default='')
+
+    p_mget = sp_mem.add_parser('get')
+    p_mget.add_argument('--namespace', required=True)
+    p_mget.add_argument('--key', required=True)
+    p_mget.add_argument('--memory-core-url', default='')
+
+    p_mdel = sp_mem.add_parser('delete')
+    p_mdel.add_argument('--namespace', required=True)
+    p_mdel.add_argument('--key', required=True)
+    p_mdel.add_argument('--memory-core-url', default='')
+
+    p_mlist = sp_mem.add_parser('list')
+    p_mlist.add_argument('--namespace', required=True)
+    p_mlist.add_argument('--memory-core-url', default='')
+
+    return ap
+
+
+def main() -> int:
+    ap = build_parser()
+    args = ap.parse_args()
+
+    root = Path(args.umbrella_root).resolve()
+    manifest_path = Path(args.manifest).resolve() if str(args.manifest).strip() else (root / 'control-plane' / 'runtime' / 'service-manifest.json')
+    ctx = Ctx(root=root, manifest_path=manifest_path, token_override=args.mesh_token)
+
+    try:
+        if args.cmd == 'run':
+            return cmd_run(ctx, args)
+        if args.cmd == 'approve':
+            return cmd_approve(ctx, args)
+        if args.cmd == 'deny':
+            return cmd_deny(ctx, args)
+        if args.cmd == 'resume':
+            return cmd_resume(ctx, args)
+        if args.cmd == 'run-status':
+            return cmd_run_status(ctx, args)
+        if args.cmd == 'memory':
+            return cmd_memory(ctx, args)
+    except Exception as ex:
+        print_json({'ok': False, 'error': str(ex)})
+        return 1
+
+    print_json({'ok': False, 'error': 'unknown command'})
+    return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

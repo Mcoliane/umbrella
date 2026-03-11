@@ -1,0 +1,35 @@
+name: Umbrella0.4 Contract Gate
+
+on:
+  push:
+    paths:
+      - 'umbrella0.4/**'
+      - '.github/workflows/contract-gate.yml'
+  pull_request:
+    paths:
+      - 'umbrella0.4/**'
+      - '.github/workflows/contract-gate.yml'
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Make Contract Gate Executable
+        run: chmod +x umbrella0.4/tests/contract/run-all-contracts.sh
+
+      - name: Run Contract Gate
+        run: ./umbrella0.4/tests/contract/run-all-contracts.sh
+
+      - name: Verify Pattern Coverage
+        run: |
+          chmod +x umbrella0.4/scripts/control-plane/verify-patterns
+          ./umbrella0.4/scripts/control-plane/verify-patterns --umbrella-root ./umbrella0.4 --require-docs

@@ -1,0 +1,10 @@
+{
+  "runId": "run-service-mesh-smoke-1773246191",
+  "stepId": "prepare-smoke-a",
+  "status": "SUCCESS",
+  "exitCode": 0,
+  "startedAt": "2026-03-11T16:23:13.118867+00:00",
+  "endedAt": "2026-03-11T16:23:13.139282+00:00",
+  "stdout": "service-mesh-a\n",
+  "stderr": ""
+}

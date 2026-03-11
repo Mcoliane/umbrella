@@ -1,0 +1,59 @@
+{
+  "runId": "run-umbrellactl-smoke-1773237186",
+  "planId": "umbrella.plan.umbrellactl.approval.v1",
+  "state": "SUCCEEDED",
+  "createdAt": "2026-03-11T13:53:08.076450+00:00",
+  "updatedAt": "2026-03-11T13:53:08.214034+00:00",
+  "terminalReason": "all_steps_succeeded",
+  "steps": [
+    {
+      "stepId": "approval-step",
+      "status": "SUCCESS",
+      "attemptCount": 1,
+      "startedAt": "2026-03-11T13:53:08.163851+00:00",
+      "endedAt": "2026-03-11T13:53:08.213085+00:00",
+      "result": {
+        "ok": true,
+        "exitCode": 0,
+        "result": {
+          "runId": "run-umbrellactl-smoke-1773237186",
+          "stepId": "approval-step",
+          "status": "SUCCESS",
+          "exitCode": 0,
+          "startedAt": "2026-03-11T13:53:08.193043+00:00",
+          "endedAt": "2026-03-11T13:53:08.209934+00:00",
+          "stdout": "umbrellactl-approval-ok\n",
+          "stderr": ""
+        },
+        "stderr": "",
+        "command": [
+          "/Users/coolfriend/desktop/umbrella0.3/umbrella0.4/scripts/adapters/removed-runtime-adapter",
+          "--umbrella-root",
+          "/Users/coolfriend/desktop/umbrella0.3/umbrella0.4",
+          "submit_step",
+          "--run-id",
+          "run-umbrellactl-smoke-1773237186",
+          "--step-id",
+          "approval-step",
+          "--command",
+          "python3 -c 'print(\"umbrellactl-approval-ok\")'",
+          "--workdir",
+          ".",
+          "--timeout-sec",
+          "30"
+        ]
+      },
+      "approvalKey": "umbrellactl-approval-key-1773237186"
+    }
+  ],
+  "services": {
+    "policy": "http://127.0.0.1:54181",
+    "lifecycle": "http://127.0.0.1:54182",
+    "router": "http://127.0.0.1:54183",
+    "scheduler": "http://127.0.0.1:54184",
+    "execution": "http://127.0.0.1:54186",
+    "approval": "http://127.0.0.1:54187",
+    "orchestrator": "local"
+  },
+  "finishedAt": "2026-03-11T13:53:08.214037+00:00"
+}

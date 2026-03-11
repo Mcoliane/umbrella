@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "umbrella.memory.service.edge.v1",
+  "type": "object",
+  "required": ["from_node_id", "to_node_id", "relation"],
+  "properties": {
+    "from_node_id": {"type": "string"},
+    "to_node_id": {"type": "string"},
+    "relation": {"type": "string", "enum": ["supports", "contradicts", "depends_on", "derived_from", "about"]},
+    "weight": {"type": "number"}
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,41 @@
+{
+  "id": "umbrella.plan.memory-core-shared-smoke.v1",
+  "steps": [
+    {
+      "stepId": "agent-a-memory-write",
+      "objective": "Agent A writes shared team memory",
+      "action": "memoryWrite",
+      "namespace": "team",
+      "key": "shared-context",
+      "value": {
+        "text": "umbrella-shared-memory-ok",
+        "from": "agent-a"
+      },
+      "metadata": {
+        "agentId": "agent-a"
+      },
+      "timeoutSec": 30,
+      "timeoutClass": "short",
+      "riskClass": "low",
+      "requiresApproval": false
+    },
+    {
+      "stepId": "agent-b-memory-read",
+      "objective": "Agent B reads shared team memory",
+      "action": "memoryRead",
+      "namespace": "team",
+      "key": "shared-context",
+      "expectValue": {
+        "text": "umbrella-shared-memory-ok",
+        "from": "agent-a"
+      },
+      "metadata": {
+        "agentId": "agent-b"
+      },
+      "timeoutSec": 30,
+      "timeoutClass": "short",
+      "riskClass": "low",
+      "requiresApproval": false
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "runId": "run-policy-gates-a-1773237159",
+  "state": "FAILED",
+  "terminalReason": "adapter_error",
+  "stepCount": 1,
+  "completedSteps": 1,
+  "runPath": "/Users/coolfriend/desktop/umbrella0.3/umbrella0.4/control-plane/observability/runs/run-policy-gates-a-1773237159",
+  "createdAt": "2026-03-11T13:52:39.942203+00:00",
+  "finishedAt": "2026-03-11T13:52:40.039069+00:00"
+}

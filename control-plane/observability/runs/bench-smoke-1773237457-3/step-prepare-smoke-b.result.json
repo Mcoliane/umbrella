@@ -1,0 +1,10 @@
+{
+  "runId": "bench-smoke-1773237457-3",
+  "stepId": "prepare-smoke-b",
+  "status": "SUCCESS",
+  "exitCode": 0,
+  "startedAt": "2026-03-11T13:57:37.786023+00:00",
+  "endedAt": "2026-03-11T13:57:37.802595+00:00",
+  "stdout": "service-mesh-b\n",
+  "stderr": ""
+}

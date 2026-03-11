@@ -1,0 +1,42 @@
+openapi: 3.1.0
+info:
+  title: Umbrella Policy Service API
+  version: 1.0.0
+servers:
+  - url: http://127.0.0.1:8791
+paths:
+  /v1/policy/health:
+    get:
+      summary: Service health
+      responses:
+        '200': { description: OK }
+  /v1/policy/check-command:
+    post:
+      summary: Evaluate command against no-cutover policy
+      responses:
+        '200': { description: Decision }
+  /v1/policy/preflight/drift-lint:
+    post:
+      summary: Run drift lint preflight
+      responses:
+        '200': { description: Drift lint result }
+  /v1/policy/preflight/capability-parity:
+    post:
+      summary: Run capability parity preflight
+      responses:
+        '200': { description: Parity gate result }
+  /v1/policy/preflight/all:
+    post:
+      summary: Run all preflight checks
+      responses:
+        '200': { description: Combined preflight result }
+  /v1/policy/agents/register:
+    post:
+      summary: Register external agent and capability claims
+      responses:
+        '200': { description: Registration result }
+  /v1/policy/authorize-step:
+    post:
+      summary: Authorize step against multi-agent registration/capability gates
+      responses:
+        '200': { description: Authorization decision }

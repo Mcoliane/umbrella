@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  register-agent --agent-id ID [--capability CAP]... [--capabilities csv] [--source SOURCE]
+                 [--token TOKEN] [--umbrella-root PATH] [--manifest PATH] [--out PATH]
+
+Registers an external agent in policy-service and emits a signed config blob.
+EOF
+}
+
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+MANIFEST=""
+AGENT_ID=""
+SOURCE="external"
+TOKEN="${UMBRELLA_AGENT_TOKEN:-}"
+OUT_PATH=""
+CAPS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --umbrella-root)
+      ROOT="$2"; shift 2 ;;
+    --manifest)
+      MANIFEST="$2"; shift 2 ;;
+    --agent-id)
+      AGENT_ID="$2"; shift 2 ;;
+    --source)
+      SOURCE="$2"; shift 2 ;;
+    --token)
+      TOKEN="$2"; shift 2 ;;
+    --capability)
+      CAPS+=("$2"); shift 2 ;;
+    --capabilities)
+      IFS=',' read -r -a EXTRA <<< "$2"
+      for c in "${EXTRA[@]}"; do
+        c_trim="$(echo "$c" | awk '{$1=$1};1')"
+        [[ -n "$c_trim" ]] && CAPS+=("$c_trim")
+      done
+      shift 2 ;;
+    --out)
+      OUT_PATH="$2"; shift 2 ;;
+    -h|--help)
+      usage; exit 0 ;;
+    *)
+      echo "unknown argument: $1"
+      usage
+      exit 2 ;;
+  esac
+done
+
+if [[ -z "$AGENT_ID" ]]; then
+  echo "--agent-id is required" >&2
+  exit 2
+fi
+
+ROOT="$(cd "$ROOT" && pwd)"
+if [[ -z "$MANIFEST" ]]; then
+  MANIFEST="$ROOT/control-plane/runtime/service-manifest.json"
+fi
+if [[ ! -f "$MANIFEST" ]]; then
+  echo "service manifest not found: $MANIFEST" >&2
+  exit 1
+fi
+
+SECRET_PATH="$ROOT/control-plane/runtime/bootstrap-secret.txt"
+if [[ ! -f "$SECRET_PATH" ]]; then
+  python3 - "$SECRET_PATH" <<'PY'
+import secrets, sys
+from pathlib import Path
+p=Path(sys.argv[1])
+p.parent.mkdir(parents=True, exist_ok=True)
+p.write_text(secrets.token_hex(32) + '\n', encoding='utf-8')
+PY
+fi
+
+python3 - "$MANIFEST" "$SECRET_PATH" "$AGENT_ID" "$SOURCE" "$TOKEN" "$OUT_PATH" "${CAPS[@]}" <<'PY'
+import hashlib
+import hmac
+import json
+import sys
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+manifest_path = Path(sys.argv[1])
+secret_path = Path(sys.argv[2])
+agent_id = sys.argv[3]
+source = sys.argv[4]
+token = sys.argv[5]
+out_path = sys.argv[6]
+capabilities = [c for c in sys.argv[7:] if c.strip()]
+
+manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+services = manifest.get('services', {})
+auth = manifest.get('auth') if isinstance(manifest.get('auth'), dict) else {}
+if not token.strip():
+    token_path = str(auth.get('tokenPath', '')).strip()
+    if token_path:
+        tp = Path(token_path)
+        if tp.exists():
+            token = tp.read_text(encoding='utf-8').strip()
+
+required = ['policy', 'lifecycle', 'router', 'scheduler', 'execution', 'memory-core', 'orchestrator', 'approval']
+missing = [k for k in required if k not in services or not str((services.get(k) or {}).get('url', '')).strip()]
+if missing:
+    raise SystemExit(f'manifest missing services: {", ".join(missing)}')
+
+policy_url = str(services['policy']['url']).rstrip('/')
+register_payload = {
+    'agentId': agent_id,
+    'source': source,
+    'capabilities': sorted(set(capabilities)),
+}
+req = urllib.request.Request(
+    policy_url + '/v1/policy/agents/register',
+    method='POST',
+    data=json.dumps(register_payload).encode('utf-8'),
+    headers={
+        'Content-Type': 'application/json',
+        **({'Authorization': f'Bearer {token}'} if token.strip() else {}),
+    },
+)
+with urllib.request.urlopen(req, timeout=30) as resp:
+    register_out = json.loads(resp.read().decode('utf-8'))
+if not bool(register_out.get('ok', False)):
+    raise SystemExit('policy registration failed')
+
+config = {
+    'version': 'umbrella.agent-config.v1',
+    'issuedAt': datetime.now(timezone.utc).isoformat(),
+    'agent': {
+        'agentId': agent_id,
+        'source': source,
+        'capabilities': sorted(set(capabilities)),
+    },
+    'services': {
+        'policyUrl': services['policy']['url'],
+        'lifecycleUrl': services['lifecycle']['url'],
+        'routerUrl': services['router']['url'],
+        'schedulerUrl': services['scheduler']['url'],
+        'executionUrl': services['execution']['url'],
+        'memoryCoreUrl': services['memory-core']['url'],
+        'orchestratorUrl': services['orchestrator']['url'],
+        'approvalUrl': services['approval']['url'],
+    },
+    'auth': {
+        'bearerToken': token,
+    },
+    'registration': register_out,
+}
+
+secret = secret_path.read_text(encoding='utf-8').strip().encode('utf-8')
+canonical = json.dumps(config, sort_keys=True, separators=(',', ':')).encode('utf-8')
+signature = hmac.new(secret, canonical, hashlib.sha256).hexdigest()
+
+out = {
+    'ok': True,
+    'config': config,
+    'signature': {
+        'alg': 'HMAC-SHA256',
+        'keyId': 'bootstrap-secret.v1',
+        'value': signature,
+    },
+}
+
+blob = json.dumps(out, indent=2) + '\n'
+if out_path:
+    p = Path(out_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(blob, encoding='utf-8')
+print(blob, end='')
+PY

@@ -1,0 +1,34 @@
+{
+  "runId": "run-service-mesh-smoke-1773191975",
+  "planId": "umbrella.plan.service-mesh-smoke.v1",
+  "state": "PENDING",
+  "createdAt": "2026-03-11T01:19:36.499446+00:00",
+  "updatedAt": "2026-03-11T01:19:36.499579+00:00",
+  "terminalReason": "",
+  "steps": [
+    {
+      "stepId": "prepare-smoke-a",
+      "status": "READY",
+      "attemptCount": 0,
+      "startedAt": "",
+      "endedAt": "",
+      "result": {}
+    },
+    {
+      "stepId": "prepare-smoke-b",
+      "status": "READY",
+      "attemptCount": 0,
+      "startedAt": "",
+      "endedAt": "",
+      "result": {}
+    }
+  ],
+  "services": {
+    "policy": "http://127.0.0.1:62851",
+    "lifecycle": "http://127.0.0.1:62852",
+    "router": "http://127.0.0.1:62853",
+    "scheduler": "http://127.0.0.1:62854",
+    "execution": "http://127.0.0.1:62855",
+    "approval": "http://127.0.0.1:8792"
+  }
+}

@@ -1,0 +1,23 @@
+openapi: 3.1.0
+info:
+  title: Umbrella Router Service API
+  version: 1.0.0
+servers:
+  - url: http://127.0.0.1:8795
+paths:
+  /v1/router/health:
+    get:
+      responses:
+        '200': { description: OK }
+  /v1/router/config:
+    get:
+      responses:
+        '200': { description: Router config }
+  /v1/router/route-step:
+    post:
+      responses:
+        '200': { description: Route decision }
+  /v1/router/reroute-step:
+    post:
+      responses:
+        '200': { description: Reroute decision }

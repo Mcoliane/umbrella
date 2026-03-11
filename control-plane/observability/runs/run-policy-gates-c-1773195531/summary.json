@@ -1,0 +1,10 @@
+{
+  "runId": "run-policy-gates-c-1773195531",
+  "state": "SUCCEEDED",
+  "terminalReason": "all_steps_succeeded",
+  "stepCount": 1,
+  "completedSteps": 1,
+  "runPath": "/Users/coolfriend/desktop/umbrella0.3/umbrella0.4/control-plane/observability/runs/run-policy-gates-c-1773195531",
+  "createdAt": "2026-03-11T02:18:52.455380+00:00",
+  "finishedAt": "2026-03-11T02:18:52.547046+00:00"
+}

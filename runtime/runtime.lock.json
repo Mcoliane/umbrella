@@ -1,0 +1,17 @@
+{
+  "schema": "umbrella.runtime.lock.v1",
+  "python": {
+    "recommended": "3.11.9",
+    "minimum": "3.11.0",
+    "maximumExclusive": "3.12.0"
+  },
+  "tooling": {
+    "pip": "24.2",
+    "setuptools": "75.1.0",
+    "wheel": "0.44.0"
+  },
+  "notes": [
+    "Umbrella0.4 services currently use Python standard library modules only.",
+    "Pinning is still applied to packaging/runtime tooling for reproducibility."
+  ]
+}

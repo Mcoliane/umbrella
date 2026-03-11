@@ -1,0 +1,19 @@
+{
+  "id": "umbrella.router.runtime-routing.v2",
+  "defaultRuntime": "removed",
+  "rules": [
+    {"matchStepPrefix": "prepare", "runtime": "removed"},
+    {"matchStepPrefix": "compile", "runtime": "removed"},
+    {"matchStepPrefix": "audit", "runtime": "removed"},
+    {"matchStepPrefix": "fresh", "runtime": "removed"},
+    {"matchStepPrefix": "verify", "runtime": "removed"},
+    {"matchStepPrefix": "validate", "runtime": "removed"},
+    {"matchStepPrefix": "memory", "runtime": "removed"}
+  ],
+  "reroute": {
+    "enabled": true,
+    "fallbackRuntimes": {
+      "removed": []
+    }
+  }
+}

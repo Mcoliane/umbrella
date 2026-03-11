@@ -1,0 +1,23 @@
+openapi: 3.1.0
+info:
+  title: Umbrella Lifecycle Service API
+  version: 1.0.0
+servers:
+  - url: http://127.0.0.1:8793
+paths:
+  /v1/lifecycle/health:
+    get:
+      responses:
+        '200': { description: OK }
+  /v1/lifecycle/model:
+    get:
+      responses:
+        '200': { description: Lifecycle model }
+  /v1/lifecycle/validate-transition:
+    post:
+      responses:
+        '200': { description: Transition validation }
+  /v1/lifecycle/validate-terminal-reason:
+    post:
+      responses:
+        '200': { description: Terminal reason validation }

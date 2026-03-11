@@ -1,0 +1,26 @@
+{
+  "id": "umbrella.plan.service-mesh-smoke.v1",
+  "description": "Smoke run through policy/lifecycle/router/scheduler/execution services.",
+  "stepSchema": "control-plane/planner/step-spec.schema.json",
+  "steps": [
+    {
+      "stepId": "prepare-smoke-a",
+      "objective": "Run first service-mesh command step.",
+      "command": "python3 -c 'print(\"service-mesh-a\")'",
+      "workdir": ".",
+      "timeoutSec": 30,
+      "timeoutClass": "short",
+      "riskClass": "low"
+    },
+    {
+      "stepId": "prepare-smoke-b",
+      "objective": "Run second service-mesh command step.",
+      "command": "python3 -c 'print(\"service-mesh-b\")'",
+      "workdir": ".",
+      "timeoutSec": 30,
+      "timeoutClass": "short",
+      "riskClass": "low",
+      "dependsOn": ["prepare-smoke-a"]
+    }
+  ]
+}

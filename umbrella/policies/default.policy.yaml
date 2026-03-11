@@ -1,0 +1,12 @@
+# umbrella/default.policy.yaml
+id: umbrella.policy.default
+version: 0.2
+policy_rev: 2026-03-10
+controls:
+  runtime_abstraction_required: true
+  require_secret_redaction_in_templates: true
+  exclude_sessions_and_logs_from_distribution: true
+  require_post_setup_verification: true
+  no_live_cutover_without_explicit_approval: true
+  memory_service_required: false
+  memory_service_fallback: local_workspace_cache

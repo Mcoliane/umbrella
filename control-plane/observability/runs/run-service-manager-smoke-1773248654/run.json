@@ -1,0 +1,96 @@
+{
+  "runId": "run-service-manager-smoke-1773248654",
+  "planId": "umbrella.plan.service-mesh-smoke.v1",
+  "state": "SUCCEEDED",
+  "createdAt": "2026-03-11T17:04:15.661201+00:00",
+  "updatedAt": "2026-03-11T17:04:15.847605+00:00",
+  "terminalReason": "all_steps_succeeded",
+  "steps": [
+    {
+      "stepId": "prepare-smoke-a",
+      "status": "SUCCESS",
+      "attemptCount": 1,
+      "startedAt": "2026-03-11T17:04:15.749226+00:00",
+      "endedAt": "2026-03-11T17:04:15.797819+00:00",
+      "result": {
+        "ok": true,
+        "exitCode": 0,
+        "result": {
+          "runId": "run-service-manager-smoke-1773248654",
+          "stepId": "prepare-smoke-a",
+          "status": "SUCCESS",
+          "exitCode": 0,
+          "startedAt": "2026-03-11T17:04:15.777474+00:00",
+          "endedAt": "2026-03-11T17:04:15.794627+00:00",
+          "stdout": "service-mesh-a\n",
+          "stderr": ""
+        },
+        "stderr": "",
+        "command": [
+          "/Users/coolfriend/Desktop/umbrella0.4/scripts/adapters/removed-runtime-adapter",
+          "--umbrella-root",
+          "/Users/coolfriend/Desktop/umbrella0.4",
+          "submit_step",
+          "--run-id",
+          "run-service-manager-smoke-1773248654",
+          "--step-id",
+          "prepare-smoke-a",
+          "--command",
+          "python3 -c 'print(\"service-mesh-a\")'",
+          "--workdir",
+          ".",
+          "--timeout-sec",
+          "30"
+        ]
+      }
+    },
+    {
+      "stepId": "prepare-smoke-b",
+      "status": "SUCCESS",
+      "attemptCount": 1,
+      "startedAt": "2026-03-11T17:04:15.798318+00:00",
+      "endedAt": "2026-03-11T17:04:15.846656+00:00",
+      "result": {
+        "ok": true,
+        "exitCode": 0,
+        "result": {
+          "runId": "run-service-manager-smoke-1773248654",
+          "stepId": "prepare-smoke-b",
+          "status": "SUCCESS",
+          "exitCode": 0,
+          "startedAt": "2026-03-11T17:04:15.827145+00:00",
+          "endedAt": "2026-03-11T17:04:15.843566+00:00",
+          "stdout": "service-mesh-b\n",
+          "stderr": ""
+        },
+        "stderr": "",
+        "command": [
+          "/Users/coolfriend/Desktop/umbrella0.4/scripts/adapters/removed-runtime-adapter",
+          "--umbrella-root",
+          "/Users/coolfriend/Desktop/umbrella0.4",
+          "submit_step",
+          "--run-id",
+          "run-service-manager-smoke-1773248654",
+          "--step-id",
+          "prepare-smoke-b",
+          "--command",
+          "python3 -c 'print(\"service-mesh-b\")'",
+          "--workdir",
+          ".",
+          "--timeout-sec",
+          "30"
+        ]
+      }
+    }
+  ],
+  "services": {
+    "policy": "http://127.0.0.1:57907",
+    "lifecycle": "http://127.0.0.1:57908",
+    "router": "http://127.0.0.1:57909",
+    "scheduler": "http://127.0.0.1:57910",
+    "execution": "http://127.0.0.1:57912",
+    "approval": "http://127.0.0.1:57913",
+    "orchestrator": "local"
+  },
+  "finishedAt": "2026-03-11T17:04:15.847608+00:00"
+}

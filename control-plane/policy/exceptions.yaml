@@ -1,0 +1,4 @@
+policy_rev: 2026-03-10
+# Explicit exception register for drift-lint overrides.
+# Keep empty by default; each exception must be explicit and auditable.
+exceptions: []

@@ -1,0 +1,10 @@
+{
+  "runId": "run-memory-core-shared-1773246655",
+  "state": "SUCCEEDED",
+  "terminalReason": "all_steps_succeeded",
+  "stepCount": 2,
+  "completedSteps": 2,
+  "runPath": "/Users/coolfriend/Desktop/umbrella0.4/control-plane/observability/runs/run-memory-core-shared-1773246655",
+  "createdAt": "2026-03-11T16:30:56.202837+00:00",
+  "finishedAt": "2026-03-11T16:30:56.302849+00:00"
+}

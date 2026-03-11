@@ -1,0 +1,10 @@
+{
+  "runId": "run-service-manager-smoke-1773237160",
+  "stepId": "prepare-smoke-b",
+  "status": "SUCCESS",
+  "exitCode": 0,
+  "startedAt": "2026-03-11T13:52:41.417679+00:00",
+  "endedAt": "2026-03-11T13:52:41.434551+00:00",
+  "stdout": "service-mesh-b\n",
+  "stderr": ""
+}

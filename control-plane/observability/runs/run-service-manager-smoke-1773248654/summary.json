@@ -1,0 +1,10 @@
+{
+  "runId": "run-service-manager-smoke-1773248654",
+  "state": "SUCCEEDED",
+  "terminalReason": "all_steps_succeeded",
+  "stepCount": 2,
+  "completedSteps": 2,
+  "runPath": "/Users/coolfriend/Desktop/umbrella0.4/control-plane/observability/runs/run-service-manager-smoke-1773248654",
+  "createdAt": "2026-03-11T17:04:15.661201+00:00",
+  "finishedAt": "2026-03-11T17:04:15.847608+00:00"
+}

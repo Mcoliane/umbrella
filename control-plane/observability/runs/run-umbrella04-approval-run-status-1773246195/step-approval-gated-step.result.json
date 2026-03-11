@@ -1,0 +1,10 @@
+{
+  "runId": "run-umbrella04-approval-run-status-1773246195",
+  "stepId": "approval-gated-step",
+  "status": "SUCCESS",
+  "exitCode": 0,
+  "startedAt": "2026-03-11T16:23:16.695776+00:00",
+  "endedAt": "2026-03-11T16:23:16.712283+00:00",
+  "stdout": "approval-run-status-ok\n",
+  "stderr": ""
+}

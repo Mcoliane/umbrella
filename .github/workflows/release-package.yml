@@ -1,0 +1,40 @@
+name: Umbrella0.4 Release Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (for example 0.4.1)'
+        required: false
+        type: string
+  push:
+    tags:
+      - 'umbrella0.4-v*'
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build Release Artifact
+        run: |
+          chmod +x umbrella0.4/scripts/dist/build-release.sh
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            ./umbrella0.4/scripts/dist/build-release.sh --version "${{ github.event.inputs.version }}"
+          else
+            ./umbrella0.4/scripts/dist/build-release.sh
+          fi
+
+      - name: Upload Release Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: umbrella0.4-release
+          path: umbrella0.4/dist/releases/*

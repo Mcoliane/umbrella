@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import urllib.request
+import urllib.error
+from pathlib import Path
+
+
+def _headers(mesh_token: str) -> dict:
+    h = {'Content-Type': 'application/json'}
+    if mesh_token.strip():
+        h['Authorization'] = f'Bearer {mesh_token.strip()}'
+    return h
+
+
+def post_json(base_url: str, path: str, payload: dict, timeout: int = 120, mesh_token: str = '') -> dict:
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}{path}",
+        method='POST',
+        data=json.dumps(payload).encode('utf-8'),
+        headers=_headers(mesh_token),
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as ex:
+        body = ''
+        try:
+            body = ex.read().decode('utf-8')
+        except Exception:
+            body = ''
+        raise RuntimeError(f'HTTP {ex.code} from {path}: {body}') from ex
+
+
+def get_json(base_url: str, path: str, timeout: int = 15, mesh_token: str = '') -> dict:
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}{path}",
+        method='GET',
+        headers=({'Authorization': f'Bearer {mesh_token.strip()}'} if mesh_token.strip() else {}),
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode('utf-8'))
+
+
+def terminal_status_code(state: str) -> int:
+    if state == 'SUCCEEDED':
+        return 0
+    if state == 'BLOCKED':
+        return 3
+    return 1
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description='Umbrella0.4 control-plane runner (thin orchestrator client)')
+    ap.add_argument('--umbrella-root', default=str(Path(__file__).resolve().parents[2]))
+    ap.add_argument('--plan', required=True)
+    ap.add_argument('--run-id', required=True)
+    ap.add_argument('--policy-url', default='http://127.0.0.1:8791')
+    ap.add_argument('--lifecycle-url', default='http://127.0.0.1:8793')
+    ap.add_argument('--router-url', default='http://127.0.0.1:8795')
+    ap.add_argument('--scheduler-url', default='http://127.0.0.1:8796')
+    ap.add_argument('--execution-url', default='http://127.0.0.1:8794')
+    ap.add_argument('--approval-url', default='http://127.0.0.1:8792')
+    ap.add_argument('--orchestrator-url', default='http://127.0.0.1:8797')
+    ap.add_argument('--orchestrator-caller', default='runner')
+    ap.add_argument('--mesh-token', default='')
+    ap.add_argument('--reconcile-cmd', default='memory-core-reconcile')
+    ap.add_argument('--resume-blocked', action='store_true')
+    ap.add_argument('--idempotency-key', default='')
+    ap.add_argument('--skip-drift-lint', action='store_true')
+    ap.add_argument('--skip-capability-parity', action='store_true')
+    args = ap.parse_args()
+
+    _ = get_json(args.orchestrator_url, '/v1/orchestrator/health', mesh_token=args.mesh_token)
+
+    out = post_json(
+        args.orchestrator_url,
+        '/v1/orchestrator/runs/start',
+        {
+            'umbrellaRoot': args.umbrella_root,
+            'plan': args.plan,
+            'runId': args.run_id,
+            'policyUrl': args.policy_url,
+            'lifecycleUrl': args.lifecycle_url,
+            'routerUrl': args.router_url,
+            'schedulerUrl': args.scheduler_url,
+            'executionUrl': args.execution_url,
+            'approvalUrl': args.approval_url,
+            'reconcileCmd': args.reconcile_cmd,
+            'resumeBlocked': bool(args.resume_blocked),
+            'caller': str(args.orchestrator_caller or 'runner'),
+            'idempotencyKey': args.idempotency_key,
+            'skipDriftLint': bool(args.skip_drift_lint),
+            'skipCapabilityParity': bool(args.skip_capability_parity),
+            'meshToken': args.mesh_token,
+        },
+        timeout=180,
+        mesh_token=args.mesh_token,
+    )
+
+    summary = out.get('summary') if isinstance(out.get('summary'), dict) else {}
+    if not summary:
+        summary = {
+            'runId': args.run_id,
+            'state': 'FAILED',
+            'terminalReason': 'orchestrator_error',
+            'stepCount': 0,
+            'completedSteps': 0,
+            'runPath': '',
+        }
+
+    print(json.dumps(summary, indent=2))
+    return int(out.get('exitCode', terminal_status_code(str(summary.get('state', 'FAILED')))))
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

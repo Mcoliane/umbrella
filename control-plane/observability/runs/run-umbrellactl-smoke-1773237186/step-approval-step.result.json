@@ -1,0 +1,10 @@
+{
+  "runId": "run-umbrellactl-smoke-1773237186",
+  "stepId": "approval-step",
+  "status": "SUCCESS",
+  "exitCode": 0,
+  "startedAt": "2026-03-11T13:53:08.193043+00:00",
+  "endedAt": "2026-03-11T13:53:08.209934+00:00",
+  "stdout": "umbrellactl-approval-ok\n",
+  "stderr": ""
+}

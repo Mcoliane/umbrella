@@ -1,0 +1,321 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  manage-service-mesh bringup [--umbrella-root PATH] [--manifest PATH] [--token TOKEN]
+  manage-service-mesh status  [--umbrella-root PATH] [--manifest PATH]
+  manage-service-mesh shutdown [--umbrella-root PATH] [--manifest PATH]
+EOF
+}
+
+cmd="${1:-}"
+if [[ -z "$cmd" ]]; then
+  usage
+  exit 2
+fi
+shift || true
+
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+MANIFEST=""
+MESH_TOKEN=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --umbrella-root)
+      ROOT="$2"
+      shift 2
+      ;;
+    --manifest)
+      MANIFEST="$2"
+      shift 2
+      ;;
+    --token)
+      MESH_TOKEN="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1"
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+ROOT="$(cd "$ROOT" && pwd)"
+if [[ -z "$MANIFEST" ]]; then
+  MANIFEST="$ROOT/control-plane/runtime/service-manifest.json"
+fi
+RUNTIME_DIR="$(dirname "$MANIFEST")"
+LOG_DIR="$RUNTIME_DIR/logs"
+TOKEN_PATH="$RUNTIME_DIR/service-token.txt"
+mkdir -p "$RUNTIME_DIR" "$LOG_DIR"
+
+free_port() {
+  python3 - <<'PY'
+import socket
+s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()
+PY
+}
+
+wait_health() {
+  local url="$1"
+  local token="${2:-}"
+  local attempts=40
+  local i=1
+  while [[ "$i" -le "$attempts" ]]; do
+    if python3 - "$url" "$token" <<'PY'
+import json, sys, urllib.request
+url=sys.argv[1]
+token=sys.argv[2]
+try:
+    headers={}
+    if token:
+        headers['Authorization']=f'Bearer {token}'
+    req=urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=1.5) as r:
+        data=json.loads(r.read().decode('utf-8'))
+    ok=(data.get('status')=='ok')
+    raise SystemExit(0 if ok else 1)
+except Exception:
+    raise SystemExit(1)
+PY
+    then
+      return 0
+    fi
+    sleep 0.2
+    i=$((i+1))
+  done
+  return 1
+}
+
+build_manifest() {
+  python3 - "$MANIFEST" "$ROOT" "$LOG_DIR" "$TOKEN_PATH" "$POLICY_PORT" "$LIFECYCLE_PORT" "$ROUTER_PORT" "$SCHEDULER_PORT" "$MEMORY_CORE_PORT" "$EXECUTION_PORT" "$APPROVAL_PORT" "$ORCHESTRATOR_PORT" "$P1" "$P2" "$P3" "$P4" "$P5" "$P6" "$P7" "$P8" <<'PY'
+import json, sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+(
+  manifest, root, log_dir, token_path,
+  policy_port, lifecycle_port, router_port, scheduler_port, memory_core_port, execution_port, approval_port, orchestrator_port,
+  p1, p2, p3, p4, p5, p6, p7, p8
+) = sys.argv[1:]
+
+now = datetime.now(timezone.utc).isoformat()
+services = {
+  'policy': {'port': int(policy_port), 'pid': int(p1), 'health': '/v1/policy/health'},
+  'lifecycle': {'port': int(lifecycle_port), 'pid': int(p2), 'health': '/v1/lifecycle/health'},
+  'router': {'port': int(router_port), 'pid': int(p3), 'health': '/v1/router/health'},
+  'scheduler': {'port': int(scheduler_port), 'pid': int(p4), 'health': '/v1/scheduler/health'},
+  'memory-core': {'port': int(memory_core_port), 'pid': int(p5), 'health': '/v1/memory-core/health'},
+  'execution': {'port': int(execution_port), 'pid': int(p6), 'health': '/v1/execution/health'},
+  'approval': {'port': int(approval_port), 'pid': int(p7), 'health': '/v1/approval/health'},
+  'orchestrator': {'port': int(orchestrator_port), 'pid': int(p8), 'health': '/v1/orchestrator/health'},
+}
+for name, row in services.items():
+  row['url'] = f"http://127.0.0.1:{row['port']}"
+  row['logOut'] = str(Path(log_dir) / f"{name}.out")
+  row['logErr'] = str(Path(log_dir) / f"{name}.err")
+
+manifest_obj = {
+  'version': 'umbrella.service-manifest.v1',
+  'createdAt': now,
+  'umbrellaRoot': root,
+  'auth': {'tokenPath': token_path},
+  'services': services,
+}
+Path(manifest).write_text(json.dumps(manifest_obj, indent=2) + '\n', encoding='utf-8')
+print(json.dumps(manifest_obj, indent=2))
+PY
+}
+
+load_manifest_field() {
+  local expr="$1"
+  python3 - "$MANIFEST" "$expr" <<'PY'
+import json, sys
+from pathlib import Path
+manifest = Path(sys.argv[1])
+expr = sys.argv[2]
+obj = json.loads(manifest.read_text())
+if expr == 'pids':
+  print(' '.join(str(s['pid']) for s in obj.get('services', {}).values()))
+elif expr == 'health_urls':
+  out=[]
+  for s in obj.get('services', {}).values():
+    out.append((s.get('url','').rstrip('/') + s.get('health','')).strip())
+  print('\n'.join(out))
+elif expr == 'summary':
+  print(json.dumps(obj, indent=2))
+else:
+  raise SystemExit(2)
+PY
+}
+
+status_impl() {
+  if [[ ! -f "$MANIFEST" ]]; then
+    echo "{\"ok\":false,\"reason\":\"manifest_not_found\",\"manifest\":\"$MANIFEST\"}"
+    return 1
+  fi
+  python3 - "$MANIFEST" <<'PY'
+import json, os, sys, urllib.request
+from pathlib import Path
+m = json.loads(Path(sys.argv[1]).read_text())
+auth = m.get('auth') if isinstance(m.get('auth'), dict) else {}
+token = ''
+tp = str(auth.get('tokenPath','')).strip()
+if tp:
+  p = Path(tp)
+  if p.exists():
+    token = p.read_text(encoding='utf-8').strip()
+rows=[]
+ok=True
+for name, s in m.get('services', {}).items():
+  pid=int(s.get('pid',0))
+  alive=False
+  if pid>0:
+    try:
+      os.kill(pid, 0)
+      alive=True
+    except Exception:
+      alive=False
+  health_ok=False
+  if alive:
+    url=(s.get('url','').rstrip('/') + s.get('health','')).strip()
+    try:
+      headers={}
+      if token:
+        headers['Authorization']=f'Bearer {token}'
+      req=urllib.request.Request(url, headers=headers)
+      with urllib.request.urlopen(req, timeout=1.5) as r:
+        data=json.loads(r.read().decode('utf-8'))
+      health_ok=(data.get('status')=='ok')
+    except Exception:
+      health_ok=False
+  row={'service':name,'pid':pid,'alive':alive,'healthOk':health_ok,'url':s.get('url','')}
+  rows.append(row)
+  if not (alive and health_ok):
+    ok=False
+print(json.dumps({'ok':ok,'manifest':str(Path(sys.argv[1])),'services':rows}, indent=2))
+raise SystemExit(0 if ok else 1)
+PY
+}
+
+bringup_impl() {
+  if [[ -f "$MANIFEST" ]]; then
+    set +e
+    status_impl >/dev/null 2>&1
+    local rc=$?
+    set -e
+    if [[ "$rc" -eq 0 ]]; then
+      echo "service mesh already running; manifest: $MANIFEST"
+      load_manifest_field summary
+      return 0
+    fi
+  fi
+
+  if [[ -z "$MESH_TOKEN" ]]; then
+    if [[ -f "$TOKEN_PATH" ]]; then
+      MESH_TOKEN="$(cat "$TOKEN_PATH" | tr -d '\n' | tr -d '\r')"
+    fi
+  fi
+  if [[ -z "$MESH_TOKEN" ]]; then
+    MESH_TOKEN="$(python3 - <<'PY'
+import secrets
+print(secrets.token_hex(24))
+PY
+)"
+  fi
+  printf '%s\n' "$MESH_TOKEN" > "$TOKEN_PATH"
+
+  POLICY_PORT="${POLICY_PORT:-$(free_port)}"
+  LIFECYCLE_PORT="${LIFECYCLE_PORT:-$(free_port)}"
+  ROUTER_PORT="${ROUTER_PORT:-$(free_port)}"
+  SCHEDULER_PORT="${SCHEDULER_PORT:-$(free_port)}"
+  MEMORY_CORE_PORT="${MEMORY_CORE_PORT:-$(free_port)}"
+  EXECUTION_PORT="${EXECUTION_PORT:-$(free_port)}"
+  APPROVAL_PORT="${APPROVAL_PORT:-$(free_port)}"
+  ORCHESTRATOR_PORT="${ORCHESTRATOR_PORT:-$(free_port)}"
+
+  POLICY_URL="http://127.0.0.1:$POLICY_PORT"
+  LIFECYCLE_URL="http://127.0.0.1:$LIFECYCLE_PORT"
+  ROUTER_URL="http://127.0.0.1:$ROUTER_PORT"
+  SCHEDULER_URL="http://127.0.0.1:$SCHEDULER_PORT"
+  MEMORY_CORE_URL="http://127.0.0.1:$MEMORY_CORE_PORT"
+  EXECUTION_URL="http://127.0.0.1:$EXECUTION_PORT"
+  APPROVAL_URL="http://127.0.0.1:$APPROVAL_PORT"
+
+  python3 "$ROOT/services/policy/app.py" --host 127.0.0.1 --port "$POLICY_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN" >"$LOG_DIR/policy.out" 2>"$LOG_DIR/policy.err" & P1=$!
+  python3 "$ROOT/services/lifecycle/app.py" --host 127.0.0.1 --port "$LIFECYCLE_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN" >"$LOG_DIR/lifecycle.out" 2>"$LOG_DIR/lifecycle.err" & P2=$!
+  python3 "$ROOT/services/router/app.py" --host 127.0.0.1 --port "$ROUTER_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN" >"$LOG_DIR/router.out" 2>"$LOG_DIR/router.err" & P3=$!
+  python3 "$ROOT/services/scheduler/app.py" --host 127.0.0.1 --port "$SCHEDULER_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN" >"$LOG_DIR/scheduler.out" 2>"$LOG_DIR/scheduler.err" & P4=$!
+  python3 "$ROOT/services/memory-core/app.py" --host 127.0.0.1 --port "$MEMORY_CORE_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN" >"$LOG_DIR/memory-core.out" 2>"$LOG_DIR/memory-core.err" & P5=$!
+  python3 "$ROOT/services/execution/app.py" --host 127.0.0.1 --port "$EXECUTION_PORT" --umbrella-root "$ROOT" --memory-core-url "$MEMORY_CORE_URL" --policy-url "$POLICY_URL" --mesh-token "$MESH_TOKEN" --token "$MESH_TOKEN" >"$LOG_DIR/execution.out" 2>"$LOG_DIR/execution.err" & P6=$!
+  python3 "$ROOT/services/approval/app.py" --host 127.0.0.1 --port "$APPROVAL_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN" >"$LOG_DIR/approval.out" 2>"$LOG_DIR/approval.err" & P7=$!
+  python3 "$ROOT/services/orchestrator/app.py" --host 127.0.0.1 --port "$ORCHESTRATOR_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN" >"$LOG_DIR/orchestrator.out" 2>"$LOG_DIR/orchestrator.err" & P8=$!
+
+  build_manifest >/dev/null
+
+  wait_health "$POLICY_URL/v1/policy/health" "$MESH_TOKEN"
+  wait_health "$LIFECYCLE_URL/v1/lifecycle/health" "$MESH_TOKEN"
+  wait_health "$ROUTER_URL/v1/router/health" "$MESH_TOKEN"
+  wait_health "$SCHEDULER_URL/v1/scheduler/health" "$MESH_TOKEN"
+  wait_health "$MEMORY_CORE_URL/v1/memory-core/health" "$MESH_TOKEN"
+  wait_health "$EXECUTION_URL/v1/execution/health" "$MESH_TOKEN"
+  wait_health "$APPROVAL_URL/v1/approval/health" "$MESH_TOKEN"
+  wait_health "http://127.0.0.1:$ORCHESTRATOR_PORT/v1/orchestrator/health" "$MESH_TOKEN"
+
+  status_impl
+}
+
+shutdown_impl() {
+  if [[ ! -f "$MANIFEST" ]]; then
+    echo "{\"ok\":true,\"stopped\":[],\"manifest\":\"$MANIFEST\",\"note\":\"manifest_not_found\"}"
+    return 0
+  fi
+
+  local pids
+  pids="$(load_manifest_field pids)"
+  if [[ -n "$pids" ]]; then
+    kill $pids >/dev/null 2>&1 || true
+    sleep 0.4
+    for pid in $pids; do
+      if kill -0 "$pid" >/dev/null 2>&1; then
+        kill -9 "$pid" >/dev/null 2>&1 || true
+      fi
+    done
+  fi
+
+  python3 - "$MANIFEST" <<'PY'
+import json, sys
+from datetime import datetime, timezone
+from pathlib import Path
+p=Path(sys.argv[1])
+obj=json.loads(p.read_text())
+obj['stoppedAt']=datetime.now(timezone.utc).isoformat()
+for s in obj.get('services', {}).values():
+  s['pid']=0
+p.write_text(json.dumps(obj, indent=2) + '\n', encoding='utf-8')
+print(json.dumps({'ok': True, 'manifest': str(p), 'stoppedAt': obj['stoppedAt']}, indent=2))
+PY
+}
+
+case "$cmd" in
+  bringup)
+    bringup_impl
+    ;;
+  status)
+    status_impl
+    ;;
+  shutdown)
+    shutdown_impl
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

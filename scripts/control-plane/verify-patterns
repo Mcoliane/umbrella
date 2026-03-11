@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Iterable
+
+
+@dataclass(frozen=True)
+class PatternRule:
+    key: str
+    name: str
+    required_files: tuple[str, ...]
+    required_contract_tests: tuple[str, ...]
+
+
+PATTERNS: tuple[PatternRule, ...] = (
+    PatternRule(
+        key="runtime",
+        name="Runtime Pattern",
+        required_files=(
+            "scripts/control-plane/manage-service-mesh",
+            "scripts/control-plane/run-umbrella-control-plane",
+        ),
+        required_contract_tests=(
+            "test-service-mesh-runner.sh",
+            "test-service-manager.sh",
+            "test-service-auth-mesh.sh",
+        ),
+    ),
+    PatternRule(
+        key="orchestration",
+        name="Orchestration Pattern",
+        required_files=(
+            "services/orchestrator/app.py",
+            "services/scheduler/app.py",
+            "services/router/app.py",
+        ),
+        required_contract_tests=(
+            "test-service-mesh-runner.sh",
+            "test-approval-authority-runner.sh",
+        ),
+    ),
+    PatternRule(
+        key="reliability",
+        name="Reliability Pattern",
+        required_files=(
+            "services/approval/app.py",
+            "scripts/control-plane/validate-run-transition",
+        ),
+        required_contract_tests=(
+            "test-approval-resume-idempotency.sh",
+            "test-approval-run-status.sh",
+            "test-run-transition-guard.sh",
+        ),
+    ),
+    PatternRule(
+        key="memory",
+        name="Memory Pattern",
+        required_files=(
+            "services/memory-core/app.py",
+            "scripts/tools/memory-put",
+            "scripts/tools/memory-get",
+            "scripts/tools/memory-search",
+            "scripts/tools/memory-link",
+        ),
+        required_contract_tests=(
+            "test-memory-core-shared-e2e.sh",
+            "test-umbrellactl-smoke.sh",
+        ),
+    ),
+    PatternRule(
+        key="drift_guard",
+        name="Drift-Guard Pattern",
+        required_files=(
+            "scripts/control-plane/drift-lint",
+            "control-plane/policy/no-cutover-policy.json",
+            "control-plane/policy/exceptions.yaml",
+        ),
+        required_contract_tests=(
+            "test-policy-multi-agent-gates.sh",
+        ),
+    ),
+    PatternRule(
+        key="operator_loop",
+        name="Operator Loop Pattern",
+        required_files=(
+            "scripts/umbrellactl",
+            "services/approval/app.py",
+        ),
+        required_contract_tests=(
+            "test-umbrellactl-smoke.sh",
+            "test-approval-run-status.sh",
+        ),
+    ),
+    PatternRule(
+        key="capability_parity",
+        name="Capability-Parity Pattern",
+        required_files=(
+            "scripts/control-plane/capability-parity-gate",
+            "scripts/bootstrap/register-agent",
+        ),
+        required_contract_tests=(
+            "test-policy-multi-agent-gates.sh",
+            "test-bootstrap-register-agent.sh",
+        ),
+    ),
+)
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def load_contract_tests(contract_gate_path: Path) -> list[str]:
+    tests: list[str] = []
+    for raw in contract_gate_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if "tests/contract/test-" not in line:
+            continue
+        start = line.find("test-")
+        end = line.find(".sh", start)
+        if start == -1 or end == -1:
+            continue
+        tests.append(line[start : end + 3])
+    return sorted(set(tests))
+
+
+def missing(root: Path, rel_paths: Iterable[str]) -> list[str]:
+    out: list[str] = []
+    for rel in rel_paths:
+        if not (root / rel).exists():
+            out.append(rel)
+    return out
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Verify Umbrella0.4 pattern representation coverage.")
+    ap.add_argument("--umbrella-root", default=str(Path(__file__).resolve().parents[2]))
+    ap.add_argument("--contract-gate", default="tests/contract/run-all-contracts.sh")
+    ap.add_argument("--require-docs", action="store_true")
+    args = ap.parse_args()
+
+    root = Path(args.umbrella_root).resolve()
+    contract_gate_path = root / args.contract_gate
+    contract_tests = load_contract_tests(contract_gate_path) if contract_gate_path.exists() else []
+
+    docs_required = (
+        "docs/pattern-closure-plan.md",
+        "docs/pattern-evidence.md",
+    )
+
+    rows = []
+    overall_ok = True
+    for rule in PATTERNS:
+        missing_files = missing(root, rule.required_files)
+        missing_tests = [t for t in rule.required_contract_tests if t not in contract_tests]
+        status = "FULL" if not missing_files and not missing_tests else "PARTIAL"
+        if status != "FULL":
+            overall_ok = False
+        rows.append(
+            {
+                "patternKey": rule.key,
+                "patternName": rule.name,
+                "status": status,
+                "missingFiles": missing_files,
+                "missingContractTests": missing_tests,
+                "requiredFiles": list(rule.required_files),
+                "requiredContractTests": list(rule.required_contract_tests),
+            }
+        )
+
+    docs_missing: list[str] = []
+    if args.require_docs:
+        docs_missing = missing(root, docs_required)
+        if docs_missing:
+            overall_ok = False
+
+    payload = {
+        "ok": overall_ok and not docs_missing,
+        "status": "PASS" if overall_ok and not docs_missing else "FAILED",
+        "umbrellaRoot": str(root),
+        "contractGate": str(contract_gate_path),
+        "contractTestCount": len(contract_tests),
+        "docsRequired": bool(args.require_docs),
+        "docsMissing": docs_missing,
+        "patterns": rows,
+        "checkedAt": now_iso(),
+    }
+    print(json.dumps(payload, indent=2))
+    return 0 if payload["ok"] else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def parse_payload(raw: str):
+    raw = (raw or '').strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        # tolerate tools that print logs + JSON on last line
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        for ln in reversed(lines):
+            try:
+                return json.loads(ln)
+            except Exception:
+                continue
+    return None
+
+
+def run_reconcile(cmd: str, mode: str) -> dict:
+    proc = subprocess.run([cmd, f'--{mode}'], capture_output=True, text=True)
+    payload = parse_payload(proc.stdout)
+    ok = None
+    if isinstance(payload, dict) and 'ok' in payload:
+        ok = bool(payload.get('ok'))
+    if ok is None:
+        ok = proc.returncode == 0
+    return {
+        'mode': mode,
+        'exitCode': proc.returncode,
+        'ok': ok,
+        'payload': payload,
+        'stdout': (proc.stdout or '')[-2000:],
+        'stderr': (proc.stderr or '')[-2000:],
+        'ts': now_iso(),
+    }
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description='Capability parity strict->fix->strict gate wrapper.')
+    ap.add_argument('--umbrella-root', default=str(Path(__file__).resolve().parents[2]))
+    ap.add_argument('--reconcile-cmd', default='memory-core-reconcile')
+    args = ap.parse_args()
+
+    cmd = args.reconcile_cmd
+    resolved = shutil.which(cmd) if not Path(cmd).is_absolute() else cmd
+    if not resolved and cmd == 'memory-core-reconcile':
+        fallback = Path.home() / '.removed' / 'workspace' / 'bin' / 'memory-core-reconcile'
+        if fallback.exists():
+            resolved = str(fallback)
+    if not resolved:
+        print(
+            json.dumps(
+                {
+                    'status': 'BLOCKED',
+                    'reason': 'reconcile_command_not_found',
+                    'reconcileCmd': cmd,
+                    'phases': [],
+                },
+                indent=2,
+            )
+        )
+        return 3
+
+    phases = []
+
+    strict1 = run_reconcile(resolved, 'strict')
+    phases.append(strict1)
+    if strict1['ok']:
+        print(
+            json.dumps(
+                {
+                    'status': 'PASS',
+                    'reconcileCmd': resolved,
+                    'phases': phases,
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    fix = run_reconcile(resolved, 'fix')
+    phases.append(fix)
+
+    strict2 = run_reconcile(resolved, 'strict')
+    phases.append(strict2)
+
+    if strict2['ok']:
+        print(
+            json.dumps(
+                {
+                    'status': 'PASS_WITH_FIX',
+                    'reconcileCmd': resolved,
+                    'phases': phases,
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    print(
+        json.dumps(
+            {
+                'status': 'BLOCKED',
+                'reason': 'parity_drift_unresolved',
+                'reconcileCmd': resolved,
+                'phases': phases,
+            },
+            indent=2,
+        )
+    )
+    return 3
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

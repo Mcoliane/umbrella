@@ -1,0 +1,35 @@
+{
+  "runId": "run-memory-core-shared-1773195101",
+  "planId": "umbrella.plan.memory-core-shared-smoke.v1",
+  "state": "RUNNING",
+  "createdAt": "2026-03-11T02:11:42.368052+00:00",
+  "updatedAt": "2026-03-11T02:11:42.458235+00:00",
+  "terminalReason": "",
+  "steps": [
+    {
+      "stepId": "agent-a-memory-write",
+      "status": "READY",
+      "attemptCount": 0,
+      "startedAt": "",
+      "endedAt": "",
+      "result": {}
+    },
+    {
+      "stepId": "agent-b-memory-read",
+      "status": "READY",
+      "attemptCount": 0,
+      "startedAt": "",
+      "endedAt": "",
+      "result": {}
+    }
+  ],
+  "services": {
+    "policy": "http://127.0.0.1:63895",
+    "lifecycle": "http://127.0.0.1:63896",
+    "router": "http://127.0.0.1:63897",
+    "scheduler": "http://127.0.0.1:63898",
+    "execution": "http://127.0.0.1:63899",
+    "approval": "http://127.0.0.1:63900",
+    "orchestrator": "local"
+  }
+}

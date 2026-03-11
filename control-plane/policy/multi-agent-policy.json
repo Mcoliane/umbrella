@@ -1,0 +1,119 @@
+{
+  "id": "umbrella.policy.multi-agent.v1",
+  "requiredRegistrationForPrivilegedActions": true,
+  "privilegedActions": [
+    "memoryWrite",
+    "memoryDelete",
+    "memoryList"
+  ],
+  "toolCapabilityClaims": {
+    "memoryWrite": "memory.write",
+    "memoryRead": "memory.read",
+    "memoryDelete": "memory.delete",
+    "memoryList": "memory.read"
+  },
+  "agents": {
+    "agent-a": {
+      "agentId": "agent-a",
+      "registered": true,
+      "source": "external",
+      "capabilities": [
+        "memory.write"
+      ],
+      "updatedAt": "2026-03-11T16:30:56.158097+00:00"
+    },
+    "external-agent-1773195531": {
+      "agentId": "external-agent-1773195531",
+      "registered": true,
+      "source": "external",
+      "capabilities": [
+        "memory.write"
+      ],
+      "updatedAt": "2026-03-11T02:18:52.408145+00:00"
+    },
+    "external-agent-1773195547": {
+      "agentId": "external-agent-1773195547",
+      "registered": true,
+      "source": "external",
+      "capabilities": [
+        "memory.write"
+      ],
+      "updatedAt": "2026-03-11T02:19:08.155546+00:00"
+    },
+    "bootstrap-agent-1773196142": {
+      "agentId": "bootstrap-agent-1773196142",
+      "registered": true,
+      "source": "external",
+      "capabilities": [
+        "memory.read",
+        "memory.write"
+      ],
+      "updatedAt": "2026-03-11T02:29:02.960486+00:00"
+    },
+    "bootstrap-agent-1773196798": {
+      "agentId": "bootstrap-agent-1773196798",
+      "registered": true,
+      "source": "external",
+      "capabilities": [
+        "memory.read",
+        "memory.write"
+      ],
+      "updatedAt": "2026-03-11T02:39:58.835190+00:00"
+    },
+    "external-agent-1773237127": {
+      "agentId": "external-agent-1773237127",
+      "registered": true,
+      "source": "external",
+      "capabilities": [
+        "memory.write"
+      ],
+      "updatedAt": "2026-03-11T13:52:08.635404+00:00"
+    },
+    "external-agent-1773237159": {
+      "agentId": "external-agent-1773237159",
+      "registered": true,
+      "source": "external",
+      "capabilities": [
+        "memory.write"
+      ],
+      "updatedAt": "2026-03-11T13:52:40.306198+00:00"
+    },
+    "bootstrap-agent-1773237176": {
+      "agentId": "bootstrap-agent-1773237176",
+      "registered": true,
+      "source": "external",
+      "capabilities": [
+        "memory.read",
+        "memory.write"
+      ],
+      "updatedAt": "2026-03-11T13:52:57.251735+00:00"
+    },
+    "external-agent-1773246198": {
+      "agentId": "external-agent-1773246198",
+      "registered": true,
+      "source": "external",
+      "capabilities": [
+        "memory.write"
+      ],
+      "updatedAt": "2026-03-11T16:23:19.435901+00:00"
+    },
+    "external-agent-1773246451": {
+      "agentId": "external-agent-1773246451",
+      "registered": true,
+      "source": "external",
+      "capabilities": [
+        "memory.write"
+      ],
+      "updatedAt": "2026-03-11T16:27:32.271222+00:00"
+    },
+    "external-agent-1773246656": {
+      "agentId": "external-agent-1773246656",
+      "registered": true,
+      "source": "external",
+      "capabilities": [
+        "memory.write"
+      ],
+      "updatedAt": "2026-03-11T16:30:57.291808+00:00"
+    }
+  }
+}

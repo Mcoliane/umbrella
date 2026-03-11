@@ -1,0 +1,59 @@
+{
+  "runId": "run-umbrella04-approval-idempotency-1773246448",
+  "planId": "umbrella.plan.approval-idempotency-smoke.v1",
+  "state": "SUCCEEDED",
+  "createdAt": "2026-03-11T16:27:29.259157+00:00",
+  "updatedAt": "2026-03-11T16:27:29.422604+00:00",
+  "terminalReason": "all_steps_succeeded",
+  "steps": [
+    {
+      "stepId": "approval-gated-idempotent-step",
+      "status": "SUCCESS",
+      "attemptCount": 1,
+      "startedAt": "2026-03-11T16:27:29.362591+00:00",
+      "endedAt": "2026-03-11T16:27:29.421720+00:00",
+      "result": {
+        "ok": true,
+        "exitCode": 0,
+        "result": {
+          "runId": "run-umbrella04-approval-idempotency-1773246448",
+          "stepId": "approval-gated-idempotent-step",
+          "status": "SUCCESS",
+          "exitCode": 0,
+          "startedAt": "2026-03-11T16:27:29.396556+00:00",
+          "endedAt": "2026-03-11T16:27:29.418724+00:00",
+          "stdout": "counter 1\n",
+          "stderr": ""
+        },
+        "stderr": "",
+        "command": [
+          "/Users/coolfriend/Desktop/umbrella0.4/scripts/adapters/removed-runtime-adapter",
+          "--umbrella-root",
+          "/Users/coolfriend/Desktop/umbrella0.4",
+          "submit_step",
+          "--run-id",
+          "run-umbrella04-approval-idempotency-1773246448",
+          "--step-id",
+          "approval-gated-idempotent-step",
+          "--command",
+          "python3 -c 'from pathlib import Path; p=Path(\"tmp/approval-idempotency-counter.txt\"); n=int(p.read_text()) if p.exists() else 0; p.write_text(str(n+1)); print(\"counter\", n+1)'",
+          "--workdir",
+          ".",
+          "--timeout-sec",
+          "30"
+        ]
+      },
+      "approvalKey": "umbrella04-approval-idempotency-key"
+    }
+  ],
+  "services": {
+    "policy": "http://127.0.0.1:57009",
+    "lifecycle": "http://127.0.0.1:57010",
+    "router": "http://127.0.0.1:57011",
+    "scheduler": "http://127.0.0.1:57012",
+    "execution": "http://127.0.0.1:57013",
+    "approval": "http://127.0.0.1:57014",
+    "orchestrator": "local"
+  },
+  "finishedAt": "2026-03-11T16:27:29.422607+00:00"
+}

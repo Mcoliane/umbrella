@@ -1,0 +1,22 @@
+{
+  "runId": "run-umbrella04-approval-idempotency-1773246448",
+  "approvalKey": "umbrella04-approval-idempotency-key",
+  "idempotencyKey": "idem-run-umbrella04-approval-idempotency-1773246448",
+  "createdAt": "2026-03-11T16:27:29.426364+00:00",
+  "response": {
+    "ok": true,
+    "exitCode": 0,
+    "result": {
+      "runId": "run-umbrella04-approval-idempotency-1773246448",
+      "state": "SUCCEEDED",
+      "terminalReason": "all_steps_succeeded",
+      "stepCount": 1,
+      "completedSteps": 1,
+      "runPath": "/Users/coolfriend/Desktop/umbrella0.4/control-plane/observability/runs/run-umbrella04-approval-idempotency-1773246448",
+      "createdAt": "2026-03-11T16:27:29.259157+00:00",
+      "finishedAt": "2026-03-11T16:27:29.422607+00:00"
+    },
+    "stderr": ""
+  },
+  "journalPath": "/Users/coolfriend/Desktop/umbrella0.4/control-plane/approvals/resume-journal/run-umbrella04-approval-idempotency-1773246448__umbrella04-approval-idempotency-key__idem-run-umbrella04-approval-idempotency-1773246448.json"
+}

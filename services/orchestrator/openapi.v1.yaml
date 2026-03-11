@@ -1,0 +1,27 @@
+openapi: 3.1.0
+info:
+  title: Umbrella Orchestrator Service API
+  version: 1.0.0
+servers:
+  - url: http://127.0.0.1:8797
+paths:
+  /v1/orchestrator/health:
+    get:
+      summary: Service health
+      responses:
+        '200': { description: OK }
+  /v1/orchestrator/runs/{run_id}/summary:
+    get:
+      summary: Get run summary
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Run summary }
+  /v1/orchestrator/runs/start:
+    post:
+      summary: Start and execute run to terminal state
+      responses:
+        '200': { description: Run execution result }

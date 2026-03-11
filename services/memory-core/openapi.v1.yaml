@@ -1,0 +1,32 @@
+openapi: 3.1.0
+info:
+  title: Umbrella Memory Core Service API
+  version: 1.0.0
+servers:
+  - url: http://127.0.0.1:8798
+paths:
+  /v1/memory-core/health:
+    get:
+      summary: Service health
+      responses:
+        '200': { description: OK }
+  /v1/memory-core/put:
+    post:
+      summary: Create or update memory value
+      responses:
+        '200': { description: Memory write result }
+  /v1/memory-core/get:
+    post:
+      summary: Read memory value by namespace/key
+      responses:
+        '200': { description: Memory read result }
+  /v1/memory-core/delete:
+    post:
+      summary: Delete memory value by namespace/key
+      responses:
+        '200': { description: Memory delete result }
+  /v1/memory-core/list:
+    post:
+      summary: List memory entries in namespace
+      responses:
+        '200': { description: Memory list result }

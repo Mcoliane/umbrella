@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from control_plane_lifecycle import LifecycleError, LifecycleModel  # noqa: E402
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description='Validate a control-plane run-state transition against lifecycle spec.')
+    ap.add_argument('--umbrella-root', default=str(Path(__file__).resolve().parents[2]))
+    ap.add_argument('--lifecycle', default='control-plane/state-machine/run-lifecycle.json')
+    ap.add_argument('--from-state', required=True)
+    ap.add_argument('--to-state', required=True)
+    args = ap.parse_args()
+
+    root = Path(args.umbrella_root).resolve()
+    lifecycle_path = root / args.lifecycle
+
+    try:
+        model = LifecycleModel.load(lifecycle_path)
+        valid = model.can_transition(args.from_state, args.to_state)
+        payload = {
+            'lifecycleId': model.id,
+            'from': args.from_state,
+            'to': args.to_state,
+            'valid': valid,
+        }
+        print(json.dumps(payload, indent=2))
+        return 0 if valid else 2
+    except LifecycleError as ex:
+        print(json.dumps({'error': str(ex)}, indent=2))
+        return 2
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

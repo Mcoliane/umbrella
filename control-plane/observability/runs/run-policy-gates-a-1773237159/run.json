@@ -1,0 +1,48 @@
+{
+  "runId": "run-policy-gates-a-1773237159",
+  "planId": "umbrella.plan.policy-multi-agent-gates.v1",
+  "state": "FAILED",
+  "createdAt": "2026-03-11T13:52:39.942203+00:00",
+  "updatedAt": "2026-03-11T13:52:40.039067+00:00",
+  "terminalReason": "adapter_error",
+  "steps": [
+    {
+      "stepId": "priv-memory-write",
+      "status": "FAILED",
+      "attemptCount": 1,
+      "startedAt": "2026-03-11T13:52:40.034325+00:00",
+      "endedAt": "2026-03-11T13:52:40.038637+00:00",
+      "result": {
+        "ok": false,
+        "exitCode": 1,
+        "result": {
+          "status": "FAILED",
+          "kind": "policy",
+          "policyDecision": {
+            "ok": false,
+            "allowed": false,
+            "reason": "external_agent_registration_required",
+            "policyId": "umbrella.policy.multi-agent.v1",
+            "action": "memoryWrite",
+            "agentId": "external-agent-1773237159"
+          }
+        },
+        "stderr": "external_agent_registration_required",
+        "command": [
+          "policy",
+          "authorize-step"
+        ]
+      }
+    }
+  ],
+  "services": {
+    "policy": "http://127.0.0.1:53997",
+    "lifecycle": "http://127.0.0.1:53998",
+    "router": "http://127.0.0.1:53999",
+    "scheduler": "http://127.0.0.1:54000",
+    "execution": "http://127.0.0.1:54001",
+    "approval": "http://127.0.0.1:54002",
+    "orchestrator": "local"
+  },
+  "finishedAt": "2026-03-11T13:52:40.039069+00:00"
+}

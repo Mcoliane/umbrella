@@ -1,0 +1,84 @@
+openapi: 3.1.0
+info:
+  title: Umbrella Approval Service API
+  version: 1.0.0
+servers:
+  - url: http://127.0.0.1:8792
+paths:
+  /v1/approval/health:
+    get:
+      summary: Service health
+      responses:
+        '200': { description: OK }
+  /v1/approval/{approval_key}:
+    get:
+      summary: Get approval artifact
+      parameters:
+        - in: path
+          name: approval_key
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Approval artifact }
+  /v1/approval/{approval_key}/run-status:
+    get:
+      summary: Get run status for approval key (PENDING|BLOCKED|RUNNING|SUCCEEDED|FAILED)
+      parameters:
+        - in: path
+          name: approval_key
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Run status }
+  /v1/approval/{approval_key}/request:
+    post:
+      summary: Create or refresh pending approval
+      responses:
+        '200': { description: Approval artifact }
+  /v1/approval/{approval_key}/approve:
+    post:
+      summary: Mark approval as approved
+      responses:
+        '200': { description: Approval artifact }
+  /v1/approval/{approval_key}/deny:
+    post:
+      summary: Mark approval as denied
+      responses:
+        '200': { description: Approval artifact }
+  /v1/approval/resume:
+    post:
+      summary: Resume blocked run via runner/orchestrator path (requires approved approvalKey; supports idempotencyKey replay)
+      responses:
+        '200': { description: Resume result }
+  /v1/approval/resume-journal:
+    get:
+      summary: List resume journal entries by runId (optional approvalKey filter)
+      parameters:
+        - in: query
+          name: runId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: approvalKey
+          required: false
+          schema: { type: string }
+      responses:
+        '200': { description: Resume journal list }
+  /v1/approval/resume-journal/{run_id}/{approval_key}/{idempotency_key}:
+    get:
+      summary: Get one resume journal entry by tuple
+      parameters:
+        - in: path
+          name: run_id
+          required: true
+          schema: { type: string }
+        - in: path
+          name: approval_key
+          required: true
+          schema: { type: string }
+        - in: path
+          name: idempotency_key
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Resume journal entry }

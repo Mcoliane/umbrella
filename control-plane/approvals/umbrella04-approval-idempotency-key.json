@@ -1,0 +1,12 @@
+{
+  "approvalKey": "umbrella04-approval-idempotency-key",
+  "status": "APPROVED",
+  "requestedAt": "2026-03-11T01:41:35.009021+00:00",
+  "updatedAt": "2026-03-11T16:30:54.200452+00:00",
+  "runId": "run-umbrella04-approval-idempotency-1773246653",
+  "stepId": "approval-gated-idempotent-step",
+  "note": "step requires approval",
+  "previousDecisionBy": "qa",
+  "decisionBy": "qa",
+  "decisionNote": "approved for idempotency test"
+}

@@ -1,0 +1,59 @@
+{
+  "runId": "run-umbrella04-approval-run-status-1773246654",
+  "planId": "umbrella.plan.approval-run-status-smoke.v1",
+  "state": "SUCCEEDED",
+  "createdAt": "2026-03-11T16:30:55.336528+00:00",
+  "updatedAt": "2026-03-11T16:30:55.473490+00:00",
+  "terminalReason": "all_steps_succeeded",
+  "steps": [
+    {
+      "stepId": "approval-gated-step",
+      "status": "SUCCESS",
+      "attemptCount": 1,
+      "startedAt": "2026-03-11T16:30:55.423600+00:00",
+      "endedAt": "2026-03-11T16:30:55.472586+00:00",
+      "result": {
+        "ok": true,
+        "exitCode": 0,
+        "result": {
+          "runId": "run-umbrella04-approval-run-status-1773246654",
+          "stepId": "approval-gated-step",
+          "status": "SUCCESS",
+          "exitCode": 0,
+          "startedAt": "2026-03-11T16:30:55.452640+00:00",
+          "endedAt": "2026-03-11T16:30:55.469362+00:00",
+          "stdout": "approval-run-status-ok\n",
+          "stderr": ""
+        },
+        "stderr": "",
+        "command": [
+          "/Users/coolfriend/Desktop/umbrella0.4/scripts/adapters/removed-runtime-adapter",
+          "--umbrella-root",
+          "/Users/coolfriend/Desktop/umbrella0.4",
+          "submit_step",
+          "--run-id",
+          "run-umbrella04-approval-run-status-1773246654",
+          "--step-id",
+          "approval-gated-step",
+          "--command",
+          "python3 -c 'print(\"approval-run-status-ok\")'",
+          "--workdir",
+          ".",
+          "--timeout-sec",
+          "30"
+        ]
+      },
+      "approvalKey": "umbrella04-approval-run-status-key"
+    }
+  ],
+  "services": {
+    "policy": "http://127.0.0.1:57399",
+    "lifecycle": "http://127.0.0.1:57400",
+    "router": "http://127.0.0.1:57401",
+    "scheduler": "http://127.0.0.1:57402",
+    "execution": "http://127.0.0.1:57403",
+    "approval": "http://127.0.0.1:57404",
+    "orchestrator": "local"
+  },
+  "finishedAt": "2026-03-11T16:30:55.473494+00:00"
+}

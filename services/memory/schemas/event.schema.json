@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "umbrella.memory.service.event.v1",
+  "type": "object",
+  "required": ["event_id", "namespace", "op", "actor", "ts"],
+  "properties": {
+    "event_id": {"type": "integer"},
+    "namespace": {"type": "string"},
+    "op": {"type": "string", "enum": ["create", "update", "delete", "edge_upsert", "import"]},
+    "node_id": {"type": ["string", "null"]},
+    "actor": {"type": "string"},
+    "request_id": {"type": ["string", "null"]},
+    "ts": {"type": "string"}
+  },
+  "additionalProperties": true
+}
