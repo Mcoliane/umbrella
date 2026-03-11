@@ -30,6 +30,12 @@ umbrellactl memory put --namespace team --key hello --value '{"v":"world"}'
 umbrellactl memory get --namespace team --key hello
 ```
 
+## Memory model (short-term vs long-term)
+
+- `memory-core` is the default short-term/working memory used by orchestrated runs and `umbrellactl memory ...`.
+- Node memory (`services/memory`, `/v1/nodes`, `/v1/edges`) is intended for longer-term structured knowledge (nodes, links, history).
+- Writing to node memory is explicit/opt-in. Agents must call node-memory tools/actions (for example `scripts/tools/memory-put`, `memory.get`, `memory.search`, `memory.link`) when they want to persist long-lived knowledge.
+
 ## 5) Shutdown
 
 ```bash
@@ -41,4 +47,5 @@ umbrella-manage shutdown
 - Local service mesh lifecycle commands
 - Signed agent bootstrap flow (`scripts/bootstrap/register-agent`)
 - Approval-gated orchestration and resume support
-- Memory-core APIs and CLI helpers
+- Automatic short-term memory via memory-core APIs and CLI helpers
+- Explicit long-term node memory APIs/tools for structured knowledge

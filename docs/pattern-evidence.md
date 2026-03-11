@@ -16,7 +16,9 @@ Update this file after each full gate run.
 - Runtime: `control-plane/observability/runs/run-service-manager-smoke-*`, `run-service-mesh-smoke-*`, `run-auth-mesh-good-*`
 - Orchestration: `run-service-mesh-smoke-*`, `run-umbrella04-approval-authority-*`
 - Reliability: `run-umbrella04-approval-idempotency-*`, `run-umbrella04-approval-run-status-*`
-- Memory: `run-memory-core-shared-*`
+- Memory:
+  - short-term/automatic memory-core path: `run-memory-core-shared-*`
+  - long-term/explicit node-memory path: node APIs/tools (`/v1/nodes`, `/v1/edges`, `scripts/tools/memory-*`)
 - Drift-Guard: drift policy files + contract policy gates
 - Operator Loop: `run-umbrellactl-smoke-*`, approval status transitions
 - Capability-Parity: policy multi-agent gates + bootstrap registration path
