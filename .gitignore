@@ -9,6 +9,7 @@ __pycache__/
 tmp/
 control-plane/observability/runs/
 control-plane/observability/memory-boundary/
+control-plane/observability/memory-service/
 control-plane/approvals/*.json
 control-plane/approvals/resume-journal/
 control-plane/runtime/bootstrap-secret.txt
