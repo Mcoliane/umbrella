@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import urllib.request
+
+
+def post_json(url: str, payload: dict, token: str) -> dict:
+    req = urllib.request.Request(url, method='POST', data=json.dumps(payload).encode('utf-8'))
+    req.add_header('Content-Type', 'application/json')
+    if token:
+        req.add_header('Authorization', f'Bearer {token}')
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode('utf-8'))
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description='Hydrate memory-core key/value from durable node memory')
+    ap.add_argument('--memory-core-url', default=os.environ.get('UMBRELLA_MEMORY_CORE_BASE_URL', 'http://127.0.0.1:8798'))
+    ap.add_argument('--memory-url', default=os.environ.get('UMBRELLA_MEMORY_BASE_URL', 'http://127.0.0.1:8787'))
+    ap.add_argument('--node-id', required=True)
+    ap.add_argument('--target-namespace', default='')
+    ap.add_argument('--target-key', default='')
+    ap.add_argument('--phase', default='bootstrap')
+    ap.add_argument('--actor', default='tool:memory-hydrate')
+    ap.add_argument('--memory-core-token', default=os.environ.get('UMBRELLA_MEMORY_CORE_TOKEN', ''))
+    ap.add_argument('--memory-token', default=os.environ.get('UMBRELLA_MEMORY_TOKEN', ''))
+    args = ap.parse_args()
+
+    payload = {
+        'node_id': args.node_id,
+        'target': {
+            'namespace': args.target_namespace,
+            'key': args.target_key,
+        },
+        'context': {
+            'phase': str(args.phase).strip().lower(),
+        },
+    }
+    hydration = post_json(f"{args.memory_url.rstrip('/')}/v1/hydrations/payload", payload, args.memory_token)
+    mem = hydration.get('memoryCore') if isinstance(hydration.get('memoryCore'), dict) else {}
+    if not mem:
+        raise SystemExit('hydration payload missing memoryCore object')
+
+    put_out = post_json(
+        f"{args.memory_core_url.rstrip('/')}/v1/memory-core/put",
+        {
+            'namespace': mem.get('namespace'),
+            'key': mem.get('key'),
+            'value': mem.get('value'),
+            'metadata': mem.get('metadata') if isinstance(mem.get('metadata'), dict) else {},
+        },
+        args.memory_core_token,
+    )
+    out = {
+        'ok': bool(put_out.get('ok', False)),
+        'hydration': hydration,
+        'memoryCoreWrite': put_out,
+        'actor': args.actor,
+    }
+    print(json.dumps(out, indent=2))
+    return 0 if out['ok'] else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

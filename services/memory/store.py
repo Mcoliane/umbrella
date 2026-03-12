@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,6 +27,13 @@ class MemoryStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        self.boundary_root = self.db_path.parent.parent / 'memory-boundary'
+        self.promotion_queue_dir = self.boundary_root / 'promotion-queue'
+        self.promotion_dlq_dir = self.boundary_root / 'promotion-dlq'
+        self.promotion_processed_dir = self.boundary_root / 'promotion-processed'
+        self.promotion_queue_dir.mkdir(parents=True, exist_ok=True)
+        self.promotion_dlq_dir.mkdir(parents=True, exist_ok=True)
+        self.promotion_processed_dir.mkdir(parents=True, exist_ok=True)
 
     def init_db(self, migration_sql: str):
         self.conn.executescript(migration_sql)
@@ -290,6 +298,362 @@ class MemoryStore:
         self.log_event(namespace=namespace, op='import', node_id=None, actor=actor, request_id=request_id, payload={'canonicalPath': str(canonical_path), 'imported': imported, 'updated': updated})
         self.conn.commit()
         return {'namespace': namespace, 'imported': imported, 'updated': updated}
+
+    def promote_from_memory_core(self, req: dict, actor: str, request_id: str = '') -> dict:
+        source = req.get('source') if isinstance(req.get('source'), dict) else {}
+        target = req.get('target') if isinstance(req.get('target'), dict) else {}
+        provenance = req.get('provenance') if isinstance(req.get('provenance'), dict) else {}
+
+        source_namespace = str(source.get('namespace', '')).strip()
+        source_key = str(source.get('key', '')).strip()
+        if not source_namespace or not source_key:
+            raise ValueError('source.namespace and source.key are required')
+
+        namespace = str(target.get('namespace', '')).strip() or source_namespace
+        node_id = str(target.get('node_id', '')).strip() or f'fact:{source_namespace}:{source_key}'
+        title = str(target.get('title', '')).strip() or f'{source_namespace}:{source_key}'
+        kind = str(target.get('kind', 'fact')).strip() or 'fact'
+        tags = target.get('tags')
+        if not isinstance(tags, list):
+            tags = ['memory-core', 'promoted']
+
+        if not self.get_namespace(namespace):
+            self.upsert_namespace(
+                {
+                    'id': namespace,
+                    'owner_type': 'system',
+                    'owner_id': 'umbrella',
+                    'visibility': 'shared',
+                    'retention_days': None,
+                }
+            )
+
+        payload = {
+            'node_id': node_id,
+            'namespace': namespace,
+            'kind': kind,
+            'title': title,
+            'content': {
+                'value': source.get('value'),
+                'metadata': source.get('metadata') if isinstance(source.get('metadata'), dict) else {},
+                'sourceNamespace': source_namespace,
+                'sourceKey': source_key,
+                'promotedAt': now_iso(),
+                'provenance': provenance,
+            },
+            'tags': tags,
+            'source': str(target.get('source', 'memory-core-promotion')),
+        }
+
+        mode = 'created'
+        existing = self.get_node(node_id, include_deleted=True)
+        if existing:
+            mode = 'updated'
+            out, problem = self.update_node(node_id=node_id, patch=payload, if_match=existing['etag'], actor=actor, request_id=request_id)
+            if problem:
+                raise ValueError(f'promotion update failed: {problem}')
+            node = out
+        else:
+            node = self.create_node(payload, actor=actor, request_id=request_id)
+
+        result = {
+            'ok': True,
+            'mode': mode,
+            'source': {'namespace': source_namespace, 'key': source_key},
+            'node': node,
+            'provenance': provenance,
+        }
+        self.log_event(namespace=namespace, op='promote', node_id=node_id, actor=actor, request_id=request_id, payload=result)
+        self.conn.commit()
+        return result
+
+    def _promotion_token(self) -> str:
+        return f'{datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")}-{uuid.uuid4().hex[:10]}'
+
+    def _queue_path(self, token: str) -> Path:
+        return self.promotion_queue_dir / f'{token}.json'
+
+    def _dlq_path(self, token: str) -> Path:
+        return self.promotion_dlq_dir / f'{token}.json'
+
+    def _processed_path(self, token: str) -> Path:
+        return self.promotion_processed_dir / f'{token}.json'
+
+    def _metrics_path(self) -> Path:
+        return self.boundary_root / 'metrics.json'
+
+    def _load_metrics(self) -> dict:
+        p = self._metrics_path()
+        if not p.exists():
+            return {
+                'queuedTotal': 0,
+                'processedTotal': 0,
+                'succeededTotal': 0,
+                'failedTotal': 0,
+                'replayedTotal': 0,
+                'replaySucceededTotal': 0,
+                'replayFailedTotal': 0,
+                'updatedAt': now_iso(),
+            }
+        try:
+            row = json.loads(p.read_text(encoding='utf-8'))
+        except Exception:
+            row = {}
+        out = {
+            'queuedTotal': int(row.get('queuedTotal', 0)),
+            'processedTotal': int(row.get('processedTotal', 0)),
+            'succeededTotal': int(row.get('succeededTotal', 0)),
+            'failedTotal': int(row.get('failedTotal', 0)),
+            'replayedTotal': int(row.get('replayedTotal', 0)),
+            'replaySucceededTotal': int(row.get('replaySucceededTotal', 0)),
+            'replayFailedTotal': int(row.get('replayFailedTotal', 0)),
+            'updatedAt': str(row.get('updatedAt', now_iso())),
+        }
+        return out
+
+    def _save_metrics(self, metrics: dict):
+        metrics['updatedAt'] = now_iso()
+        self._metrics_path().write_text(json.dumps(metrics, indent=2) + '\n', encoding='utf-8')
+
+    def _bump_metrics(self, **counts: int):
+        m = self._load_metrics()
+        for k, v in counts.items():
+            if k in m:
+                m[k] = int(m.get(k, 0)) + int(v)
+        self._save_metrics(m)
+
+    def _oldest_age_seconds(self, folder: Path) -> float:
+        files = sorted(folder.glob('*.json'))
+        if not files:
+            return 0.0
+        oldest = min(f.stat().st_mtime for f in files)
+        now_ts = datetime.now(timezone.utc).timestamp()
+        age = now_ts - float(oldest)
+        return age if age > 0 else 0.0
+
+    def enqueue_promotion(self, req: dict, actor: str, request_id: str = '') -> dict:
+        token = self._promotion_token()
+        entry = {
+            'token': token,
+            'queuedAt': now_iso(),
+            'attempts': 0,
+            'actor': actor,
+            'requestId': request_id,
+            'payload': req,
+        }
+        self._queue_path(token).write_text(json.dumps(entry, indent=2) + '\n', encoding='utf-8')
+        self._bump_metrics(queuedTotal=1)
+        return {'ok': True, 'queued': True, 'token': token, 'queuePath': str(self._queue_path(token))}
+
+    def process_promotion_queue(self, actor: str, request_id: str = '', max_items: int = 50) -> dict:
+        processed = 0
+        succeeded = 0
+        failed = 0
+        dlq_tokens: list[str] = []
+        for p in sorted(self.promotion_queue_dir.glob('*.json')):
+            if processed >= max_items:
+                break
+            processed += 1
+            token = p.stem
+            try:
+                entry = json.loads(p.read_text(encoding='utf-8'))
+            except Exception:
+                entry = {'payload': {}, 'attempts': 0}
+            attempts = int(entry.get('attempts', 0)) + 1
+            payload = entry.get('payload') if isinstance(entry.get('payload'), dict) else {}
+            try:
+                out = self.promote_from_memory_core(payload, actor=actor, request_id=request_id)
+                done = {
+                    'token': token,
+                    'status': 'SUCCESS',
+                    'processedAt': now_iso(),
+                    'attempts': attempts,
+                    'result': out,
+                }
+                self._processed_path(token).write_text(json.dumps(done, indent=2) + '\n', encoding='utf-8')
+                succeeded += 1
+            except Exception as ex:
+                failed += 1
+                dlq_tokens.append(token)
+                failed_entry = {
+                    'token': token,
+                    'status': 'FAILED',
+                    'failedAt': now_iso(),
+                    'attempts': attempts,
+                    'lastError': str(ex),
+                    'payload': payload,
+                    'actor': actor,
+                    'requestId': request_id,
+                }
+                self._dlq_path(token).write_text(json.dumps(failed_entry, indent=2) + '\n', encoding='utf-8')
+            finally:
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+
+        self._bump_metrics(processedTotal=processed, succeededTotal=succeeded, failedTotal=failed)
+
+        return {
+            'ok': True,
+            'processed': processed,
+            'succeeded': succeeded,
+            'failed': failed,
+            'dlqTokens': dlq_tokens,
+            'queueDepth': len(list(self.promotion_queue_dir.glob('*.json'))),
+            'dlqDepth': len(list(self.promotion_dlq_dir.glob('*.json'))),
+        }
+
+    def list_promotion_dlq(self, limit: int = 100) -> dict:
+        rows = []
+        for p in sorted(self.promotion_dlq_dir.glob('*.json'))[: max(1, limit)]:
+            try:
+                rows.append(json.loads(p.read_text(encoding='utf-8')))
+            except Exception:
+                rows.append({'token': p.stem, 'status': 'FAILED', 'parseError': True})
+        return {'ok': True, 'count': len(rows), 'entries': rows}
+
+    def replay_promotion_dlq(self, actor: str, request_id: str = '', max_items: int = 20) -> dict:
+        replayed = 0
+        succeeded = 0
+        failed = 0
+        for p in sorted(self.promotion_dlq_dir.glob('*.json')):
+            if replayed >= max_items:
+                break
+            replayed += 1
+            token = p.stem
+            try:
+                entry = json.loads(p.read_text(encoding='utf-8'))
+            except Exception:
+                failed += 1
+                continue
+            attempts = int(entry.get('attempts', 0)) + 1
+            payload = entry.get('payload') if isinstance(entry.get('payload'), dict) else {}
+            try:
+                out = self.promote_from_memory_core(payload, actor=actor, request_id=request_id)
+                done = {
+                    'token': token,
+                    'status': 'SUCCESS',
+                    'replayedAt': now_iso(),
+                    'attempts': attempts,
+                    'result': out,
+                }
+                self._processed_path(token).write_text(json.dumps(done, indent=2) + '\n', encoding='utf-8')
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+                succeeded += 1
+            except Exception as ex:
+                failed += 1
+                entry['attempts'] = attempts
+                entry['lastError'] = str(ex)
+                entry['failedAt'] = now_iso()
+                p.write_text(json.dumps(entry, indent=2) + '\n', encoding='utf-8')
+        self._bump_metrics(replayedTotal=replayed, replaySucceededTotal=succeeded, replayFailedTotal=failed)
+        return {
+            'ok': True,
+            'replayed': replayed,
+            'succeeded': succeeded,
+            'failed': failed,
+            'dlqDepth': len(list(self.promotion_dlq_dir.glob('*.json'))),
+        }
+
+    def boundary_stats(self) -> dict:
+        m = self._load_metrics()
+        processed_total = int(m.get('processedTotal', 0))
+        replayed_total = int(m.get('replayedTotal', 0))
+        failure_rate = float(m.get('failedTotal', 0)) / float(processed_total) if processed_total > 0 else 0.0
+        replay_success_rate = float(m.get('replaySucceededTotal', 0)) / float(replayed_total) if replayed_total > 0 else 0.0
+        return {
+            'ok': True,
+            'promotionQueueDepth': len(list(self.promotion_queue_dir.glob('*.json'))),
+            'promotionDlqDepth': len(list(self.promotion_dlq_dir.glob('*.json'))),
+            'promotionProcessedCount': len(list(self.promotion_processed_dir.glob('*.json'))),
+            'promotionQueueOldestAgeSec': round(self._oldest_age_seconds(self.promotion_queue_dir), 3),
+            'promotionDlqOldestAgeSec': round(self._oldest_age_seconds(self.promotion_dlq_dir), 3),
+            'counters': m,
+            'slo': {
+                'promotionFailureRate': round(failure_rate, 6),
+                'promotionReplaySuccessRate': round(replay_success_rate, 6),
+            },
+            'checkedAt': now_iso(),
+        }
+
+    def boundary_metrics_text(self) -> str:
+        stats = self.boundary_stats()
+        counters = stats.get('counters') if isinstance(stats.get('counters'), dict) else {}
+        lines = [
+            '# HELP umbrella_memory_promotion_queue_depth Current promotion queue depth',
+            '# TYPE umbrella_memory_promotion_queue_depth gauge',
+            f"umbrella_memory_promotion_queue_depth {int(stats.get('promotionQueueDepth', 0))}",
+            '# HELP umbrella_memory_promotion_dlq_depth Current promotion DLQ depth',
+            '# TYPE umbrella_memory_promotion_dlq_depth gauge',
+            f"umbrella_memory_promotion_dlq_depth {int(stats.get('promotionDlqDepth', 0))}",
+            '# HELP umbrella_memory_promotion_processed_total Total processed promotions',
+            '# TYPE umbrella_memory_promotion_processed_total counter',
+            f"umbrella_memory_promotion_processed_total {int(counters.get('processedTotal', 0))}",
+            '# HELP umbrella_memory_promotion_failed_total Total failed promotions',
+            '# TYPE umbrella_memory_promotion_failed_total counter',
+            f"umbrella_memory_promotion_failed_total {int(counters.get('failedTotal', 0))}",
+            '# HELP umbrella_memory_promotion_failure_rate Promotion failure rate',
+            '# TYPE umbrella_memory_promotion_failure_rate gauge',
+            f"umbrella_memory_promotion_failure_rate {float((stats.get('slo') or {}).get('promotionFailureRate', 0.0))}",
+            '# HELP umbrella_memory_promotion_replay_success_rate DLQ replay success rate',
+            '# TYPE umbrella_memory_promotion_replay_success_rate gauge',
+            f"umbrella_memory_promotion_replay_success_rate {float((stats.get('slo') or {}).get('promotionReplaySuccessRate', 0.0))}",
+            '# HELP umbrella_memory_promotion_queue_oldest_age_seconds Age of oldest queue item in seconds',
+            '# TYPE umbrella_memory_promotion_queue_oldest_age_seconds gauge',
+            f"umbrella_memory_promotion_queue_oldest_age_seconds {float(stats.get('promotionQueueOldestAgeSec', 0.0))}",
+            '# HELP umbrella_memory_promotion_dlq_oldest_age_seconds Age of oldest DLQ item in seconds',
+            '# TYPE umbrella_memory_promotion_dlq_oldest_age_seconds gauge',
+            f"umbrella_memory_promotion_dlq_oldest_age_seconds {float(stats.get('promotionDlqOldestAgeSec', 0.0))}",
+        ]
+        return '\n'.join(lines) + '\n'
+
+    def hydration_payload_for_memory_core(self, req: dict, actor: str, request_id: str = '') -> dict:
+        node_id = str(req.get('node_id', '')).strip()
+        target = req.get('target') if isinstance(req.get('target'), dict) else {}
+        context = req.get('context') if isinstance(req.get('context'), dict) else {}
+        phase = str(context.get('phase', '')).strip().lower()
+        if not node_id:
+            raise ValueError('node_id is required')
+        if phase not in {'bootstrap', 'resume'}:
+            raise ValueError('context.phase must be bootstrap or resume')
+
+        node = self.get_node(node_id, include_deleted=False)
+        if not node:
+            raise ValueError('node not found')
+
+        target_namespace = str(target.get('namespace', '')).strip() or str(node.get('namespace', ''))
+        target_key = str(target.get('key', '')).strip() or f'hydrate:{node_id}'
+        content = node.get('content')
+        value = content.get('value') if isinstance(content, dict) and 'value' in content else content
+        metadata = {
+            'hydrateFromNodeId': node_id,
+            'hydrateFromEtag': str(node.get('etag', '')),
+            'hydrateFromVersion': int(node.get('version', 0)),
+            'hydratedAt': now_iso(),
+            'actor': actor,
+        }
+
+        out = {
+            'ok': True,
+            'target': {'namespace': target_namespace, 'key': target_key},
+            'memoryCore': {'namespace': target_namespace, 'key': target_key, 'value': value, 'metadata': metadata},
+            'node': {'node_id': node_id, 'namespace': node.get('namespace', ''), 'kind': node.get('kind', ''), 'title': node.get('title', '')},
+            'context': {'phase': phase},
+        }
+        self.log_event(
+            namespace=str(node.get('namespace', '')),
+            op='hydrate',
+            node_id=node_id,
+            actor=actor,
+            request_id=request_id,
+            payload={'target': out['target'], 'fromNode': out['node']},
+        )
+        self.conn.commit()
+        return out
 
     def log_event(self, namespace: str, op: str, node_id: str | None, actor: str, request_id: str, payload: dict):
         self.conn.execute(

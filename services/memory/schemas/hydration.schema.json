@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "umbrella.memory.service.hydration-payload.v1",
+  "type": "object",
+  "required": ["node_id", "context"],
+  "properties": {
+    "node_id": {"type": "string"},
+    "target": {
+      "type": "object",
+      "properties": {
+        "namespace": {"type": "string"},
+        "key": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "context": {
+      "type": "object",
+      "required": ["phase"],
+      "properties": {
+        "phase": {"type": "string", "enum": ["bootstrap", "resume"]}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

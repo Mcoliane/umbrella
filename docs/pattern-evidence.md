@@ -19,6 +19,9 @@ Update this file after each full gate run.
 - Memory:
   - short-term/automatic memory-core path: `run-memory-core-shared-*`
   - long-term/explicit node-memory path: node APIs/tools (`/v1/nodes`, `/v1/edges`, `scripts/tools/memory-*`)
+  - explicit cross-layer operations: `test-memory-boundary-promote-hydrate.sh`
+  - async promotion queue + DLQ replay + hydration guardrails: `test-memory-boundary-queue-dlq.sh`
+  - policy hard-fail hot-path boundary guards: `test-memory-boundary-policy-hotpath.sh`
 - Drift-Guard: drift policy files + contract policy gates
 - Operator Loop: `run-umbrellactl-smoke-*`, approval status transitions
 - Capability-Parity: policy multi-agent gates + bootstrap registration path

@@ -108,8 +108,20 @@ class ExecutionEngine:
 
     def submit_step_spec(self, run_id: str, step_id: str, step_spec: dict) -> dict:
         action = str(step_spec.get('action', '')).strip()
+        policy_step = dict(step_spec) if isinstance(step_spec, dict) else {}
+        metadata = policy_step.get('metadata') if isinstance(policy_step.get('metadata'), dict) else {}
+        boundary_context = metadata.get('boundaryContext') if isinstance(metadata.get('boundaryContext'), dict) else {}
+        if not boundary_context:
+            boundary_context = {'phase': 'active-run'}
+        if not str(boundary_context.get('phase', '')).strip():
+            boundary_context['phase'] = 'active-run'
+        boundary_context['runId'] = run_id
+        if step_id:
+            boundary_context['stepId'] = step_id
+        metadata['boundaryContext'] = boundary_context
+        policy_step['metadata'] = metadata
         if action:
-            auth = self._authorize_step(step_spec=step_spec)
+            auth = self._authorize_step(step_spec=policy_step)
             if not bool(auth.get('allowed', False)):
                 return {
                     'ok': False,

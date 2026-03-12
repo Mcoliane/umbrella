@@ -73,6 +73,50 @@ paths:
       summary: Upsert edge
       responses:
         '200': { description: Edge }
+  /v1/promotions:
+    post:
+      summary: Promote operational memory-core data into durable node memory
+      responses:
+        '200': { description: Promotion result }
+  /v1/promotions/queue:
+    post:
+      summary: Enqueue explicit promotion request for asynchronous processing
+      responses:
+        '200': { description: Promotion queued }
+  /v1/promotions/process-queue:
+    post:
+      summary: Process queued promotion requests and move failures to DLQ
+      responses:
+        '200': { description: Queue processing report }
+  /v1/promotions/replay-dlq:
+    post:
+      summary: Replay promotion DLQ entries
+      responses:
+        '200': { description: DLQ replay report }
+  /v1/promotions/dlq:
+    get:
+      summary: List promotion DLQ entries
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer }
+      responses:
+        '200': { description: DLQ entries }
+  /v1/hydrations/payload:
+    post:
+      summary: Build explicit hydration payload for writing node knowledge into memory-core (bootstrap/resume only)
+      responses:
+        '200': { description: Hydration payload }
+  /v1/memory/boundary/stats:
+    get:
+      summary: Boundary observability stats for promotion queue, DLQ, and processed items
+      responses:
+        '200': { description: Boundary stats }
+  /v1/memory/boundary/metrics:
+    get:
+      summary: Prometheus-style boundary SLO metrics export
+      responses:
+        '200': { description: Text metrics }
   /v1/events:
     get:
       summary: List events

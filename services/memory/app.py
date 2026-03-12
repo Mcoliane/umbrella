@@ -85,6 +85,25 @@ def handler_factory(store: MemoryStore, token: str, root: Path):
                 out = store.list_events(namespace=namespace, cursor=cursor)
                 return json_response(self, 200, out)
 
+            if path == '/v1/promotions/dlq':
+                q = parse_qs(u.query)
+                limit = int((q.get('limit') or ['100'])[0])
+                out = store.list_promotion_dlq(limit=limit)
+                return json_response(self, 200, out)
+
+            if path == '/v1/memory/boundary/stats':
+                out = store.boundary_stats()
+                return json_response(self, 200, out)
+
+            if path == '/v1/memory/boundary/metrics':
+                body = store.boundary_metrics_text().encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/plain; version=0.0.4; charset=utf-8')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
             return json_response(self, 404, err('NOT_FOUND', 'route not found', req_id))
 
         def do_POST(self):
@@ -107,6 +126,23 @@ def handler_factory(store: MemoryStore, token: str, root: Path):
                     return json_response(self, 200, out)
                 if path == '/v1/edges/upsert':
                     out = store.upsert_edge(body, actor=actor, request_id=req_id)
+                    return json_response(self, 200, out)
+                if path == '/v1/promotions':
+                    out = store.promote_from_memory_core(body, actor=actor, request_id=req_id)
+                    return json_response(self, 200, out)
+                if path == '/v1/promotions/queue':
+                    out = store.enqueue_promotion(body, actor=actor, request_id=req_id)
+                    return json_response(self, 200, out)
+                if path == '/v1/promotions/process-queue':
+                    max_items = int(body.get('maxItems', 50))
+                    out = store.process_promotion_queue(actor=actor, request_id=req_id, max_items=max_items)
+                    return json_response(self, 200, out)
+                if path == '/v1/promotions/replay-dlq':
+                    max_items = int(body.get('maxItems', 20))
+                    out = store.replay_promotion_dlq(actor=actor, request_id=req_id, max_items=max_items)
+                    return json_response(self, 200, out)
+                if path == '/v1/hydrations/payload':
+                    out = store.hydration_payload_for_memory_core(body, actor=actor, request_id=req_id)
                     return json_response(self, 200, out)
                 if path == '/v1/import/removed':
                     namespace = str(body.get('namespace', '')).strip()

@@ -2,6 +2,10 @@
 
 Standalone shared memory service for umbrella-hosted agent memory.
 
+Role:
+- short-term operational memory (hot runtime plane)
+- default memory path for orchestrator/execution and `umbrellactl memory ...`
+
 ## Run
 
 ```bash

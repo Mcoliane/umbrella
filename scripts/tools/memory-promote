@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import urllib.request
+
+
+def post_json(url: str, payload: dict, token: str) -> dict:
+    req = urllib.request.Request(url, method='POST', data=json.dumps(payload).encode('utf-8'))
+    req.add_header('Content-Type', 'application/json')
+    if token:
+        req.add_header('Authorization', f'Bearer {token}')
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode('utf-8'))
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description='Promote memory-core key/value into durable node memory')
+    ap.add_argument('--memory-core-url', default=os.environ.get('UMBRELLA_MEMORY_CORE_BASE_URL', 'http://127.0.0.1:8798'))
+    ap.add_argument('--memory-url', default=os.environ.get('UMBRELLA_MEMORY_BASE_URL', 'http://127.0.0.1:8787'))
+    ap.add_argument('--namespace', required=True)
+    ap.add_argument('--key', required=True)
+    ap.add_argument('--target-namespace', default='')
+    ap.add_argument('--node-id', default='')
+    ap.add_argument('--kind', default='fact')
+    ap.add_argument('--title', default='')
+    ap.add_argument('--tags', default='memory-core,promoted')
+    ap.add_argument('--run-id', default='')
+    ap.add_argument('--step-id', default='')
+    ap.add_argument('--idempotency-key', default='')
+    ap.add_argument('--queue', action='store_true')
+    ap.add_argument('--process-queue', action='store_true')
+    ap.add_argument('--actor', default='tool:memory-promote')
+    ap.add_argument('--memory-core-token', default=os.environ.get('UMBRELLA_MEMORY_CORE_TOKEN', ''))
+    ap.add_argument('--memory-token', default=os.environ.get('UMBRELLA_MEMORY_TOKEN', ''))
+    args = ap.parse_args()
+
+    src = post_json(
+        f"{args.memory_core_url.rstrip('/')}/v1/memory-core/get",
+        {'namespace': args.namespace, 'key': args.key},
+        args.memory_core_token,
+    )
+    if not bool(src.get('exists', False)):
+        raise SystemExit(f'memory-core key not found: {args.namespace}/{args.key}')
+
+    tags = [t.strip() for t in args.tags.split(',') if t.strip()]
+    payload = {
+        'source': {
+            'namespace': args.namespace,
+            'key': args.key,
+            'value': (src.get('memory') or {}).get('value'),
+            'metadata': (src.get('memory') or {}).get('metadata') or {},
+        },
+        'target': {
+            'namespace': args.target_namespace or args.namespace,
+            'node_id': args.node_id,
+            'kind': args.kind,
+            'title': args.title,
+            'tags': tags,
+            'source': 'memory-core-promotion',
+        },
+        'provenance': {
+            'runId': args.run_id,
+            'stepId': args.step_id,
+            'idempotencyKey': args.idempotency_key,
+            'actor': args.actor,
+        },
+    }
+    if args.queue:
+        out = post_json(f"{args.memory_url.rstrip('/')}/v1/promotions/queue", payload, args.memory_token)
+        if args.process_queue:
+            process = post_json(f"{args.memory_url.rstrip('/')}/v1/promotions/process-queue", {'maxItems': 1}, args.memory_token)
+            out = {'queued': out, 'processed': process}
+    else:
+        out = post_json(f"{args.memory_url.rstrip('/')}/v1/promotions", payload, args.memory_token)
+    print(json.dumps(out, indent=2))
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

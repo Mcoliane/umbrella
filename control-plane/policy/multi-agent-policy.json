@@ -4,13 +4,51 @@
   "privilegedActions": [
     "memoryWrite",
     "memoryDelete",
-    "memoryList"
+    "memoryList",
+    "memory.put",
+    "memory.link",
+    "memory.import",
+    "memory.promote",
+    "memory.hydrate"
   ],
   "toolCapabilityClaims": {
-    "memoryWrite": "memory.write",
-    "memoryRead": "memory.read",
-    "memoryDelete": "memory.delete",
-    "memoryList": "memory.read"
+    "memoryWrite": "memorycore.write",
+    "memoryRead": "memorycore.read",
+    "memoryDelete": "memorycore.delete",
+    "memoryList": "memorycore.read",
+    "memory.get": "knowledge.read",
+    "memory.put": "knowledge.write",
+    "memory.search": "knowledge.read",
+    "memory.link": "knowledge.write",
+    "memory.import": "knowledge.write",
+    "memory.promote": "knowledge.promote",
+    "memory.hydrate": "knowledge.backfill"
+  },
+  "toolCapabilityClaimAlternates": {
+    "memoryWrite": [
+      "memory.write"
+    ],
+    "memoryRead": [
+      "memory.read"
+    ],
+    "memoryDelete": [
+      "memory.delete"
+    ],
+    "memoryList": [
+      "memory.read"
+    ],
+    "memory.put": [
+      "memory.write"
+    ],
+    "memory.get": [
+      "memory.read"
+    ],
+    "memory.search": [
+      "memory.read"
+    ],
+    "memory.link": [
+      "memory.write"
+    ]
   },
   "agents": {
     "agent-a": {
@@ -18,9 +56,10 @@
       "registered": true,
       "source": "external",
       "capabilities": [
-        "memory.write"
+        "memory.write",
+        "memorycore.write"
       ],
-      "updatedAt": "2026-03-11T16:30:56.158097+00:00"
+      "updatedAt": "2026-03-12T00:13:31.868897+00:00"
     },
     "external-agent-1773195531": {
       "agentId": "external-agent-1773195531",
@@ -114,6 +153,85 @@
         "memory.write"
       ],
       "updatedAt": "2026-03-11T16:30:57.291808+00:00"
+    },
+    "external-agent-1773273498": {
+      "agentId": "external-agent-1773273498",
+      "registered": true,
+      "source": "external",
+      "capabilities": [
+        "memory.write"
+      ],
+      "updatedAt": "2026-03-11T23:58:19.778295+00:00"
+    },
+    "agent-b": {
+      "agentId": "agent-b",
+      "registered": true,
+      "source": "external",
+      "capabilities": [
+        "memory.read",
+        "memorycore.read"
+      ],
+      "updatedAt": "2026-03-12T00:13:31.869710+00:00"
+    },
+    "external-agent-1773273617": {
+      "agentId": "external-agent-1773273617",
+      "registered": true,
+      "source": "external",
+      "capabilities": [
+        "memory.write"
+      ],
+      "updatedAt": "2026-03-12T00:00:18.744214+00:00"
+    },
+    "external-agent-1773273666": {
+      "agentId": "external-agent-1773273666",
+      "registered": true,
+      "source": "external",
+      "capabilities": [
+        "memory.write"
+      ],
+      "updatedAt": "2026-03-12T00:01:07.873897+00:00"
+    },
+    "bootstrap-agent-1773273717": {
+      "agentId": "bootstrap-agent-1773273717",
+      "registered": true,
+      "source": "external",
+      "capabilities": [
+        "memory.read",
+        "memory.write"
+      ],
+      "updatedAt": "2026-03-12T00:01:58.110165+00:00"
+    },
+    "external-agent-1773274051": {
+      "agentId": "external-agent-1773274051",
+      "registered": true,
+      "source": "external",
+      "capabilities": [
+        "memory.write"
+      ],
+      "updatedAt": "2026-03-12T00:07:32.650369+00:00"
+    },
+    "boundary-agent-1773274402": {
+      "agentId": "boundary-agent-1773274402",
+      "registered": true,
+      "source": "external",
+      "capabilities": [
+        "knowledge.backfill",
+        "knowledge.promote",
+        "knowledge.read",
+        "knowledge.write",
+        "memorycore.read",
+        "memorycore.write"
+      ],
+      "updatedAt": "2026-03-12T00:13:22.770348+00:00"
+    },
+    "external-agent-1773274411": {
+      "agentId": "external-agent-1773274411",
+      "registered": true,
+      "source": "external",
+      "capabilities": [
+        "memory.write"
+      ],
+      "updatedAt": "2026-03-12T00:13:32.062357+00:00"
     }
   }
 }

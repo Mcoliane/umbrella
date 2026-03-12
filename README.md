@@ -19,6 +19,7 @@ umbrella-manage status
 - Upgrade notes: `docs/UPGRADE.md`
 - Uninstall/reset: `docs/UNINSTALL_RESET.md`
 - Known limitations: `docs/KNOWN_LIMITATIONS.md`
+- Memory boundary contract: `docs/memory-boundary-contract.md`
 
 ## Core Commands
 

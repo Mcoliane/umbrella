@@ -83,6 +83,50 @@ def err(code: str, message: str, request_id: str) -> dict:
     return {'error': {'code': code, 'message': message, 'request_id': request_id}}
 
 
+DEFAULT_MULTI_AGENT_POLICY = {
+    'id': 'umbrella.policy.multi-agent.v1',
+    'requiredRegistrationForPrivilegedActions': True,
+    'privilegedActions': [
+        'memoryWrite',
+        'memoryDelete',
+        'memoryList',
+        'memory.put',
+        'memory.link',
+        'memory.import',
+        'memory.promote',
+        'memory.hydrate',
+    ],
+    'toolCapabilityClaims': {
+        # Operational memory plane (short-term, hot path).
+        'memoryWrite': 'memorycore.write',
+        'memoryRead': 'memorycore.read',
+        'memoryDelete': 'memorycore.delete',
+        'memoryList': 'memorycore.read',
+        # Knowledge memory plane (durable node/edge graph).
+        'memory.get': 'knowledge.read',
+        'memory.put': 'knowledge.write',
+        'memory.search': 'knowledge.read',
+        'memory.link': 'knowledge.write',
+        'memory.import': 'knowledge.write',
+        # Cross-layer operations must be explicit and privileged.
+        'memory.promote': 'knowledge.promote',
+        'memory.hydrate': 'knowledge.backfill',
+    },
+    # Backward compatibility for existing agents/tests that still use v0 claims.
+    'toolCapabilityClaimAlternates': {
+        'memoryWrite': ['memory.write'],
+        'memoryRead': ['memory.read'],
+        'memoryDelete': ['memory.delete'],
+        'memoryList': ['memory.read'],
+        'memory.put': ['memory.write'],
+        'memory.get': ['memory.read'],
+        'memory.search': ['memory.read'],
+        'memory.link': ['memory.write'],
+    },
+    'agents': {},
+}
+
+
 class PolicyEngine:
     def __init__(self, umbrella_root: Path, parity_reconcile_cmd: str, multi_agent_policy_path: str):
         self.root = umbrella_root
@@ -93,33 +137,22 @@ class PolicyEngine:
         self.parity_gate = self.root / 'scripts' / 'control-plane' / 'capability-parity-gate'
         self.multi_agent_policy_path.parent.mkdir(parents=True, exist_ok=True)
         if not self.multi_agent_policy_path.exists():
-            write_json(
-                self.multi_agent_policy_path,
-                {
-                    'id': 'umbrella.policy.multi-agent.v1',
-                    'requiredRegistrationForPrivilegedActions': True,
-                    'privilegedActions': ['memoryWrite', 'memoryDelete', 'memoryList'],
-                    'toolCapabilityClaims': {
-                        'memoryWrite': 'memory.write',
-                        'memoryRead': 'memory.read',
-                        'memoryDelete': 'memory.delete',
-                        'memoryList': 'memory.read',
-                    },
-                    'agents': {},
-                },
-            )
+            write_json(self.multi_agent_policy_path, DEFAULT_MULTI_AGENT_POLICY)
 
     def load_multi_agent_policy(self) -> dict:
-        return load_json(
-            self.multi_agent_policy_path,
-            {
-                'id': 'umbrella.policy.multi-agent.v1',
-                'requiredRegistrationForPrivilegedActions': True,
-                'privilegedActions': ['memoryWrite', 'memoryDelete', 'memoryList'],
-                'toolCapabilityClaims': {},
-                'agents': {},
-            },
-        )
+        pol = load_json(self.multi_agent_policy_path, DEFAULT_MULTI_AGENT_POLICY)
+        if not isinstance(pol, dict):
+            pol = dict(DEFAULT_MULTI_AGENT_POLICY)
+        # Best-effort migration for older policy files.
+        if not isinstance(pol.get('toolCapabilityClaims'), dict):
+            pol['toolCapabilityClaims'] = dict(DEFAULT_MULTI_AGENT_POLICY['toolCapabilityClaims'])
+        if not isinstance(pol.get('toolCapabilityClaimAlternates'), dict):
+            pol['toolCapabilityClaimAlternates'] = dict(DEFAULT_MULTI_AGENT_POLICY['toolCapabilityClaimAlternates'])
+        if not isinstance(pol.get('privilegedActions'), list):
+            pol['privilegedActions'] = list(DEFAULT_MULTI_AGENT_POLICY['privilegedActions'])
+        if not isinstance(pol.get('agents'), dict):
+            pol['agents'] = {}
+        return pol
 
     def register_agent(self, agent_id: str, capabilities: list[str], source: str = 'external') -> dict:
         pol = self.load_multi_agent_policy()
@@ -138,12 +171,61 @@ class PolicyEngine:
     def authorize_step(self, step_spec: dict) -> dict:
         pol = self.load_multi_agent_policy()
         action = str(step_spec.get('action', '')).strip()
-        agent_id = str(step_spec.get('agentId') or (step_spec.get('metadata') or {}).get('agentId', '')).strip()
+        metadata = step_spec.get('metadata') if isinstance(step_spec.get('metadata'), dict) else {}
+        boundary_context = metadata.get('boundaryContext') if isinstance(metadata.get('boundaryContext'), dict) else {}
+        phase = str(boundary_context.get('phase') or metadata.get('phase') or step_spec.get('phase') or '').strip().lower()
+        agent_id = str(step_spec.get('agentId') or metadata.get('agentId', '')).strip()
         privileged = set(str(x).strip() for x in (pol.get('privilegedActions') or []))
         claims = pol.get('toolCapabilityClaims') if isinstance(pol.get('toolCapabilityClaims'), dict) else {}
+        alternates = pol.get('toolCapabilityClaimAlternates') if isinstance(pol.get('toolCapabilityClaimAlternates'), dict) else {}
         agents = pol.get('agents') if isinstance(pol.get('agents'), dict) else {}
         required_registration = bool(pol.get('requiredRegistrationForPrivilegedActions', True))
         required_capability = str(claims.get(action, '')).strip()
+        operational_actions = {'memoryWrite', 'memoryRead', 'memoryDelete', 'memoryList'}
+        knowledge_actions = {'memory.get', 'memory.put', 'memory.search', 'memory.link', 'memory.import'}
+        cross_layer_actions = {'memory.promote', 'memory.hydrate'}
+        active_phases = {'active-run', 'running', 'runtime'}
+
+        row = agents.get(agent_id) if isinstance(agents.get(agent_id), dict) else None
+
+        # Hard-fail boundary protections: active run hot path must not invoke direct knowledge actions.
+        if action in knowledge_actions and phase in active_phases:
+            return {
+                'ok': False,
+                'allowed': False,
+                'reason': 'boundary_hot_path_forbidden',
+                'policyId': pol.get('id', 'umbrella.policy.multi-agent.v1'),
+                'action': action,
+                'agentId': agent_id,
+                'boundary': {
+                    'phase': phase,
+                    'allowedOperationalActions': sorted(operational_actions),
+                    'allowedCrossLayer': ['memory.promote (async only)', 'memory.hydrate (bootstrap/resume only)'],
+                },
+            }
+
+        if action == 'memory.hydrate' and phase not in {'bootstrap', 'resume'}:
+            return {
+                'ok': False,
+                'allowed': False,
+                'reason': 'hydration_phase_forbidden',
+                'policyId': pol.get('id', 'umbrella.policy.multi-agent.v1'),
+                'action': action,
+                'agentId': agent_id,
+                'requiredPhase': ['bootstrap', 'resume'],
+                'phase': phase or 'unknown',
+            }
+
+        if action == 'memory.promote' and phase in active_phases and not bool(metadata.get('async', False)):
+            return {
+                'ok': False,
+                'allowed': False,
+                'reason': 'cross_layer_hot_path_forbidden',
+                'policyId': pol.get('id', 'umbrella.policy.multi-agent.v1'),
+                'action': action,
+                'agentId': agent_id,
+                'requirement': 'metadata.async=true for active-run promotion',
+            }
 
         if action in privileged and required_registration:
             if not agent_id:
@@ -155,7 +237,6 @@ class PolicyEngine:
                     'action': action,
                     'agentId': '',
                 }
-            row = agents.get(agent_id) if isinstance(agents.get(agent_id), dict) else None
             if not row or not bool(row.get('registered', False)):
                 return {
                     'ok': False,
@@ -165,18 +246,43 @@ class PolicyEngine:
                     'action': action,
                     'agentId': agent_id,
                 }
-            if required_capability:
-                caps = set(str(c).strip() for c in (row.get('capabilities') or []))
-                if required_capability not in caps:
-                    return {
-                        'ok': False,
-                        'allowed': False,
-                        'reason': 'tool_capability_claim_missing',
-                        'policyId': pol.get('id', 'umbrella.policy.multi-agent.v1'),
-                        'action': action,
-                        'agentId': agent_id,
-                        'requiredCapability': required_capability,
-                    }
+
+        if required_capability:
+            if not agent_id:
+                return {
+                    'ok': False,
+                    'allowed': False,
+                    'reason': 'agent_identity_required',
+                    'policyId': pol.get('id', 'umbrella.policy.multi-agent.v1'),
+                    'action': action,
+                    'agentId': '',
+                    'requiredCapability': required_capability,
+                }
+            if not row:
+                return {
+                    'ok': False,
+                    'allowed': False,
+                    'reason': 'external_agent_registration_required',
+                    'policyId': pol.get('id', 'umbrella.policy.multi-agent.v1'),
+                    'action': action,
+                    'agentId': agent_id,
+                }
+            caps = set(str(c).strip() for c in (row.get('capabilities') or []))
+            candidate_caps = {required_capability}
+            alt_caps = alternates.get(action)
+            if isinstance(alt_caps, list):
+                candidate_caps.update(str(c).strip() for c in alt_caps if str(c).strip())
+            if not candidate_caps.intersection(caps):
+                return {
+                    'ok': False,
+                    'allowed': False,
+                    'reason': 'tool_capability_claim_missing',
+                    'policyId': pol.get('id', 'umbrella.policy.multi-agent.v1'),
+                    'action': action,
+                    'agentId': agent_id,
+                    'requiredCapability': required_capability,
+                    'acceptableCapabilities': sorted(candidate_caps),
+                }
 
         return {
             'ok': True,

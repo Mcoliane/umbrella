@@ -6,7 +6,7 @@
   "properties": {
     "event_id": {"type": "integer"},
     "namespace": {"type": "string"},
-    "op": {"type": "string", "enum": ["create", "update", "delete", "edge_upsert", "import"]},
+    "op": {"type": "string", "enum": ["create", "update", "delete", "edge_upsert", "import", "promote", "hydrate"]},
     "node_id": {"type": ["string", "null"]},
     "actor": {"type": "string"},
     "request_id": {"type": ["string", "null"]},

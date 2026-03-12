@@ -91,11 +91,15 @@ wait_health "$ORCH_URL/v1/orchestrator/health"
 python3 - "$POLICY_URL" <<'PY'
 import json, sys, urllib.request
 policy_url = sys.argv[1]
-payload = {'agentId': 'agent-a', 'source': 'external', 'capabilities': ['memory.write']}
-req = urllib.request.Request(policy_url + '/v1/policy/agents/register', method='POST', data=json.dumps(payload).encode('utf-8'), headers={'Content-Type':'application/json'})
-with urllib.request.urlopen(req, timeout=30) as resp:
-    out = json.loads(resp.read().decode('utf-8'))
-assert out.get('ok') is True, out
+payloads = [
+    {'agentId': 'agent-a', 'source': 'external', 'capabilities': ['memorycore.write', 'memory.write']},
+    {'agentId': 'agent-b', 'source': 'external', 'capabilities': ['memorycore.read', 'memory.read']},
+]
+for payload in payloads:
+    req = urllib.request.Request(policy_url + '/v1/policy/agents/register', method='POST', data=json.dumps(payload).encode('utf-8'), headers={'Content-Type':'application/json'})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        out = json.loads(resp.read().decode('utf-8'))
+    assert out.get('ok') is True, out
 PY
 
 "$RUNNER" \
