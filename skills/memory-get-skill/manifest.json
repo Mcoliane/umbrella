@@ -1,0 +1,82 @@
+{
+  "id": "memory.get.skill",
+  "name": "Memory Get Skill",
+  "version": "0.1.0",
+  "apiVersion": "umbrella.catalog.manifest.v1",
+  "kind": "skill",
+  "runtime": "python",
+  "entrypoint": "bin/memory-get-skill",
+  "defaultEnabled": true,
+  "isolationMode": "process",
+  "compatibility": {
+    "umbrella": {
+      "minVersion": "0.4.0"
+    },
+    "pluginHostRuntimes": [
+      "python"
+    ],
+    "apiVersions": [
+      "umbrella.catalog.manifest.v1"
+    ],
+    "actionSchemaVersions": [
+      "umbrella.catalog.action.v1"
+    ],
+    "requiresFeatures": []
+  },
+  "executionPolicy": {
+    "envAllowlist": [
+      "UMBRELLA_MEMORY_BASE_URL",
+      "UMBRELLA_MEMORY_TOKEN"
+    ],
+    "network": "none",
+    "fs": "scratch-only",
+    "maxRuntimeSec": 10,
+    "maxOutputBytes": 4096,
+    "maxInputBytes": 16384,
+    "isolationProfile": "python-restricted"
+  },
+  "sessionHooks": {
+    "suggestedContexts": [
+      "memory",
+      "knowledge"
+    ]
+  },
+  "actions": [
+    {
+      "id": "skill.memory.get",
+      "title": "Get Memory Node",
+      "description": "Read a durable knowledge node through the existing memory-get tool.",
+      "requiredCapabilities": [
+        "knowledge.read"
+      ],
+      "policyHints": {
+        "riskClass": "low",
+        "approvalMode": "none",
+        "memoryAccess": "durable-memory",
+        "fsAccess": "scratch-only",
+        "networkAccess": "none",
+        "processAccess": "restricted-subprocess",
+        "delegationAllowed": true,
+        "subAgentAllowed": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "nodeId": { "type": "string" },
+          "baseUrl": { "type": "string" }
+        },
+        "required": [
+          "nodeId"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "node": { "type": "object" },
+          "nodeId": { "type": "string" },
+          "summary": { "type": "string" }
+        }
+      }
+    }
+  ]
+}

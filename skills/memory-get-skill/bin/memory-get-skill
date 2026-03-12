@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import urllib.request
+from pathlib import Path
+
+
+def direct_fetch(base_url: str, node_id: str, token: str) -> dict:
+    req = urllib.request.Request(f"{base_url.rstrip('/')}/v1/nodes/{node_id}")
+    if token:
+        req.add_header('Authorization', f'Bearer {token}')
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read().decode('utf-8'))
+
+
+def main() -> int:
+    payload = json.loads(sys.stdin.read() or '{}')
+    invocation = payload.get('invocation') if isinstance(payload.get('invocation'), dict) else {}
+    inputs = invocation.get('inputs') if isinstance(invocation.get('inputs'), dict) else {}
+    context = invocation.get('context') if isinstance(invocation.get('context'), dict) else {}
+
+    node_id = str(inputs.get('nodeId', '')).strip()
+    if not node_id:
+        print(json.dumps({'error': 'nodeId is required'}))
+        return 1
+
+    base_url = (
+        str(inputs.get('baseUrl', '')).strip()
+        or str(context.get('memoryBaseUrl', '')).strip()
+        or os.environ.get('UMBRELLA_MEMORY_BASE_URL', 'http://127.0.0.1:8787')
+    )
+    token = str(context.get('memoryToken', '')).strip() or os.environ.get('UMBRELLA_MEMORY_TOKEN', '')
+
+    repo_root = Path(__file__).resolve().parents[3]
+    tool_path = repo_root / 'scripts' / 'tools' / 'memory-get'
+    if tool_path.exists():
+        cmd = [sys.executable, str(tool_path), '--base-url', base_url, '--node-id', node_id]
+        if token:
+            cmd.extend(['--token', token])
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if proc.returncode != 0:
+            print(json.dumps({'error': (proc.stderr or proc.stdout or '').strip() or 'memory-get failed'}))
+            return proc.returncode
+        node = json.loads(proc.stdout or '{}')
+    else:
+        node = direct_fetch(base_url=base_url, node_id=node_id, token=token)
+
+    print(
+        json.dumps(
+            {
+                'ok': True,
+                'nodeId': node_id,
+                'node': node,
+                'summary': f'memory.get returned {node_id}',
+            }
+        )
+    )
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

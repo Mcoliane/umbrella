@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import urllib.request
+from pathlib import Path
+
+
+def direct_search(base_url: str, namespace: str, query: str, k: int, token: str) -> dict:
+    payload = {'namespace': namespace, 'query': query, 'k': k}
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}/v1/nodes/search",
+        method='POST',
+        data=json.dumps(payload).encode('utf-8'),
+        headers={'Content-Type': 'application/json'},
+    )
+    if token:
+        req.add_header('Authorization', f'Bearer {token}')
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.loads(resp.read().decode('utf-8'))
+
+
+def main() -> int:
+    payload = json.loads(sys.stdin.read() or '{}')
+    invocation = payload.get('invocation') if isinstance(payload.get('invocation'), dict) else {}
+    inputs = invocation.get('inputs') if isinstance(invocation.get('inputs'), dict) else {}
+    context = invocation.get('context') if isinstance(invocation.get('context'), dict) else {}
+
+    namespace = str(inputs.get('namespace', '')).strip()
+    if not namespace:
+        print(json.dumps({'error': 'namespace is required'}))
+        return 1
+    query = str(inputs.get('query', '')).strip()
+    try:
+        k = int(inputs.get('k', 20) or 20)
+    except Exception:
+        print(json.dumps({'error': 'k must be an integer'}))
+        return 1
+
+    base_url = (
+        str(inputs.get('baseUrl', '')).strip()
+        or str(context.get('memoryBaseUrl', '')).strip()
+        or os.environ.get('UMBRELLA_MEMORY_BASE_URL', 'http://127.0.0.1:8787')
+    )
+    token = str(context.get('memoryToken', '')).strip() or os.environ.get('UMBRELLA_MEMORY_TOKEN', '')
+
+    repo_root = Path(__file__).resolve().parents[3]
+    tool_path = repo_root / 'scripts' / 'tools' / 'memory-search'
+    if tool_path.exists():
+        cmd = [sys.executable, str(tool_path), '--base-url', base_url, '--namespace', namespace, '--query', query, '--k', str(k)]
+        if token:
+            cmd.extend(['--token', token])
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        if proc.returncode != 0:
+            print(json.dumps({'error': (proc.stderr or proc.stdout or '').strip() or 'memory-search failed'}))
+            return proc.returncode
+        result = json.loads(proc.stdout or '{}')
+    else:
+        result = direct_search(base_url=base_url, namespace=namespace, query=query, k=k, token=token)
+
+    results = result.get('results') if isinstance(result.get('results'), list) else []
+    print(
+        json.dumps(
+            {
+                'ok': True,
+                'namespace': namespace,
+                'query': query,
+                'results': results,
+                'summary': f'memory.search returned {len(results)} result(s) from {namespace}',
+            }
+        )
+    )
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

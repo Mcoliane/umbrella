@@ -1,0 +1,85 @@
+{
+  "id": "memory.search.skill",
+  "name": "Memory Search Skill",
+  "version": "0.1.0",
+  "apiVersion": "umbrella.catalog.manifest.v1",
+  "kind": "skill",
+  "runtime": "python",
+  "entrypoint": "bin/memory-search-skill",
+  "defaultEnabled": true,
+  "isolationMode": "process",
+  "compatibility": {
+    "umbrella": {
+      "minVersion": "0.4.0"
+    },
+    "pluginHostRuntimes": [
+      "python"
+    ],
+    "apiVersions": [
+      "umbrella.catalog.manifest.v1"
+    ],
+    "actionSchemaVersions": [
+      "umbrella.catalog.action.v1"
+    ],
+    "requiresFeatures": []
+  },
+  "executionPolicy": {
+    "envAllowlist": [
+      "UMBRELLA_MEMORY_BASE_URL",
+      "UMBRELLA_MEMORY_TOKEN"
+    ],
+    "network": "none",
+    "fs": "scratch-only",
+    "maxRuntimeSec": 10,
+    "maxOutputBytes": 8192,
+    "maxInputBytes": 16384,
+    "isolationProfile": "python-restricted"
+  },
+  "sessionHooks": {
+    "suggestedContexts": [
+      "memory",
+      "research"
+    ]
+  },
+  "actions": [
+    {
+      "id": "skill.memory.search",
+      "title": "Search Memory Nodes",
+      "description": "Search durable knowledge nodes through the existing memory-search tool.",
+      "requiredCapabilities": [
+        "knowledge.read"
+      ],
+      "policyHints": {
+        "riskClass": "low",
+        "approvalMode": "none",
+        "memoryAccess": "durable-memory",
+        "fsAccess": "scratch-only",
+        "networkAccess": "none",
+        "processAccess": "restricted-subprocess",
+        "delegationAllowed": true,
+        "subAgentAllowed": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "namespace": { "type": "string" },
+          "query": { "type": "string" },
+          "k": { "type": "integer" },
+          "baseUrl": { "type": "string" }
+        },
+        "required": [
+          "namespace"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "namespace": { "type": "string" },
+          "query": { "type": "string" },
+          "results": { "type": "array" },
+          "summary": { "type": "string" }
+        }
+      }
+    }
+  ]
+}
