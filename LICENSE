@@ -1,0 +1,51 @@
+Umbrella Testing License
+Version 1.0
+
+Copyright (c) 2026 Emcom Umbrella Contributors
+All rights reserved.
+
+1. Definitions
+
+"Software" means this repository, all source and object code, documentation, interfaces, scripts, tests, and related materials.
+
+"Intellectual Property" means all rights, title, and interest in and to the Software, including all copyrights, trade secrets, trademarks, know-how, and derivative works.
+
+"Intended User" means a person or entity that has received express written approval from the copyright holder to use the Software.
+
+2. Limited Testing License
+
+Subject to this License, Intended Users are granted a limited, revocable, non-exclusive, non-transferable, non-sublicensable license to use the Software solely to test Emcom Umbrella.
+
+No other purpose is permitted.
+
+3. Restrictions
+
+Except as expressly permitted in Section 2, all use is prohibited. Without limitation, no person may:
+
+- use the Software without express written approval;
+- use the Software for production, commercial, operational, educational, research, benchmarking, competitive analysis, or any non-testing purpose;
+- copy, distribute, publish, host, lease, sublicense, sell, or otherwise make the Software available to any third party;
+- modify, create derivative works of, reverse engineer, decompile, disassemble, or otherwise attempt to derive source code or underlying logic;
+- use any Umbrella Intellectual Property, name, marks, artifacts, or materials except as strictly necessary for approved testing.
+
+4. Ownership
+
+All rights not expressly granted are reserved. No ownership or Intellectual Property rights are transferred under this License.
+
+5. Revocation and Termination
+
+This License may be revoked at any time, with or without cause, by the copyright holder.
+
+This License terminates automatically upon any breach. Upon termination, all use must cease immediately, and all copies in the user's possession or control must be deleted.
+
+6. No Warranty
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT.
+
+7. Limitation of Liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE COPYRIGHT HOLDER SHALL NOT BE LIABLE FOR ANY DAMAGES OR LOSSES ARISING OUT OF OR RELATED TO THE SOFTWARE OR THIS LICENSE.
+
+8. Governing Law
+
+This License is governed by the laws of the jurisdiction chosen by the copyright holder, without regard to conflict-of-law principles.

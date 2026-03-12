@@ -2,6 +2,10 @@
 
 Umbrella0.4 is a local multi-service orchestration stack with approval-gated execution, memory-core integration, policy gates, and operator tooling.
 
+## License
+
+This project is licensed under the `Umbrella Testing License` in [LICENSE](/Users/coolfriend/Desktop/Emcom_umbrella0.4/LICENSE). Use is limited to express-approved users for testing Emcom Umbrella only.
+
 ## Fast Path
 
 ```bash
