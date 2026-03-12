@@ -59,7 +59,7 @@
         "memory.write",
         "memorycore.write"
       ],
-      "updatedAt": "2026-03-12T00:13:31.868897+00:00"
+      "updatedAt": "2026-03-12T02:26:02.207361+00:00"
     },
     "external-agent-1773195531": {
       "agentId": "external-agent-1773195531",
@@ -171,7 +171,7 @@
         "memory.read",
         "memorycore.read"
       ],
-      "updatedAt": "2026-03-12T00:13:31.869710+00:00"
+      "updatedAt": "2026-03-12T02:26:02.208067+00:00"
     },
     "external-agent-1773273617": {
       "agentId": "external-agent-1773273617",
@@ -232,6 +232,29 @@
         "memory.write"
       ],
       "updatedAt": "2026-03-12T00:13:32.062357+00:00"
+    },
+    "boundary-agent-1773282364": {
+      "agentId": "boundary-agent-1773282364",
+      "registered": true,
+      "source": "external",
+      "capabilities": [
+        "knowledge.backfill",
+        "knowledge.promote",
+        "knowledge.read",
+        "knowledge.write",
+        "memorycore.read",
+        "memorycore.write"
+      ],
+      "updatedAt": "2026-03-12T02:26:04.206063+00:00"
+    },
+    "external-agent-1773282364": {
+      "agentId": "external-agent-1773282364",
+      "registered": true,
+      "source": "external",
+      "capabilities": [
+        "memory.write"
+      ],
+      "updatedAt": "2026-03-12T02:26:05.660713+00:00"
     }
   }
 }
