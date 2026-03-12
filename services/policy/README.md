@@ -4,7 +4,7 @@ HTTP service for agent capability decisions and preflight checks.
 
 Static policy rules live in [control-plane/policy/multi-agent-policy.json](/Users/coolfriend/Desktop/Emcom_umbrella0.4/control-plane/policy/multi-agent-policy.json). Runtime agent registrations are written separately under [control-plane/observability/policy/agent-registry.json](/Users/coolfriend/Desktop/Emcom_umbrella0.4/control-plane/observability/policy/agent-registry.json), so normal service activity does not dirty the repo-tracked seed policy file.
 
-When `--catalog-url` is configured, policy can also resolve dynamic catalog actions and enforce their declared capability requirements.
+When `--catalog-url` is configured, policy can also resolve dynamic catalog actions, enforce their declared capability requirements, and compute an effective action-policy descriptor for approval, scope, delegation, and sub-agent use.
 
 ## Run
 
@@ -20,6 +20,20 @@ python3 services/policy/app.py --host 127.0.0.1 --port 8791
 - `POST /v1/policy/preflight/all`
 - `POST /v1/policy/agents/register`
 - `POST /v1/policy/authorize-step`
+
+Effective action policy:
+- `actionClass`
+- `riskClass`
+- `approvalMode`
+- `memoryAccess`
+- `networkAccess`
+- `fsAccess`
+- `processAccess`
+- `identityScope`
+- `delegationAllowed`
+- `subAgentAllowed`
+
+Catalog `policyHints` can propose these values. Policy merges those hints with platform defaults and action-specific overrides before returning or enforcing the decision.
 
 Multi-agent policy gates:
 - `external_agent_registration`

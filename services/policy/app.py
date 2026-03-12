@@ -122,6 +122,53 @@ DEFAULT_MULTI_AGENT_POLICY = {
         'memory.search': ['memory.read'],
         'memory.link': ['memory.write'],
     },
+    'actionPolicyDefaults': {
+        'builtin': {
+            'riskClass': 'moderate',
+            'approvalMode': 'conditional',
+            'memoryAccess': 'none',
+            'networkAccess': 'none',
+            'fsAccess': 'none',
+            'processAccess': 'restricted-subprocess',
+            'identityScope': {'agentIds': [], 'roles': [], 'shopIds': []},
+            'delegationAllowed': True,
+            'subAgentAllowed': True,
+        },
+        'skill': {
+            'riskClass': 'low',
+            'approvalMode': 'none',
+            'memoryAccess': 'session',
+            'networkAccess': 'none',
+            'fsAccess': 'scratch-only',
+            'processAccess': 'restricted-subprocess',
+            'identityScope': {'agentIds': [], 'roles': [], 'shopIds': []},
+            'delegationAllowed': True,
+            'subAgentAllowed': True,
+        },
+        'plugin': {
+            'riskClass': 'moderate',
+            'approvalMode': 'conditional',
+            'memoryAccess': 'none',
+            'networkAccess': 'none',
+            'fsAccess': 'scratch-only',
+            'processAccess': 'restricted-subprocess',
+            'identityScope': {'agentIds': [], 'roles': [], 'shopIds': []},
+            'delegationAllowed': True,
+            'subAgentAllowed': False,
+        },
+    },
+    'actionPolicyOverrides': {
+        'memory.promote': {
+            'riskClass': 'high',
+            'approvalMode': 'required',
+            'memoryAccess': 'durable-memory',
+        },
+        'memory.hydrate': {
+            'riskClass': 'high',
+            'approvalMode': 'required',
+            'memoryAccess': 'durable-memory',
+        },
+    },
     'agents': {},
 }
 
@@ -164,6 +211,21 @@ class PolicyEngine:
                 return None
             raise
 
+    def _catalog_item(self, item_id: str, timeout: int = 15) -> dict | None:
+        if not self.catalog_url:
+            return None
+        req = urllib.request.Request(
+            f'{self.catalog_url}/v1/catalog/items/{urllib.parse.quote(item_id, safe="")}',
+            method='GET',
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode('utf-8'))
+        except urllib.error.HTTPError as ex:
+            if ex.code == 404:
+                return None
+            raise
+
     def load_multi_agent_policy_seed(self) -> dict:
         pol = load_json(self.multi_agent_policy_path, DEFAULT_MULTI_AGENT_POLICY)
         if not isinstance(pol, dict):
@@ -175,6 +237,10 @@ class PolicyEngine:
             pol['toolCapabilityClaimAlternates'] = dict(DEFAULT_MULTI_AGENT_POLICY['toolCapabilityClaimAlternates'])
         if not isinstance(pol.get('privilegedActions'), list):
             pol['privilegedActions'] = list(DEFAULT_MULTI_AGENT_POLICY['privilegedActions'])
+        if not isinstance(pol.get('actionPolicyDefaults'), dict):
+            pol['actionPolicyDefaults'] = dict(DEFAULT_MULTI_AGENT_POLICY['actionPolicyDefaults'])
+        if not isinstance(pol.get('actionPolicyOverrides'), dict):
+            pol['actionPolicyOverrides'] = dict(DEFAULT_MULTI_AGENT_POLICY['actionPolicyOverrides'])
         return pol
 
     def load_agent_registry(self) -> dict:
@@ -220,10 +286,17 @@ class PolicyEngine:
         claims = pol.get('toolCapabilityClaims') if isinstance(pol.get('toolCapabilityClaims'), dict) else {}
         alternates = pol.get('toolCapabilityClaimAlternates') if isinstance(pol.get('toolCapabilityClaimAlternates'), dict) else {}
         agents = pol.get('agents') if isinstance(pol.get('agents'), dict) else {}
+        action_policy_defaults = pol.get('actionPolicyDefaults') if isinstance(pol.get('actionPolicyDefaults'), dict) else {}
+        action_policy_overrides = pol.get('actionPolicyOverrides') if isinstance(pol.get('actionPolicyOverrides'), dict) else {}
         required_registration = bool(pol.get('requiredRegistrationForPrivilegedActions', True))
         required_capability = str(claims.get(action, '')).strip()
         acceptable_capabilities: set[str] = {required_capability} if required_capability else set()
         catalog_action = self._catalog_action(action)
+        catalog_item = None
+        if isinstance(catalog_action, dict):
+            plugin_id = str(catalog_action.get('pluginId', '')).strip()
+            if plugin_id:
+                catalog_item = self._catalog_item(plugin_id)
         if isinstance(catalog_action, dict):
             acceptable_capabilities.update(
                 str(c).strip() for c in (catalog_action.get('requiredCapabilities') or []) if str(c).strip()
@@ -236,6 +309,41 @@ class PolicyEngine:
         active_phases = {'active-run', 'running', 'runtime'}
 
         row = agents.get(agent_id) if isinstance(agents.get(agent_id), dict) else None
+        action_class = 'builtin'
+        if isinstance(catalog_item, dict):
+            item_kind = str(catalog_item.get('kind', '')).strip()
+            action_class = item_kind if item_kind in {'skill', 'plugin'} else 'plugin'
+        action_policy = dict(action_policy_defaults.get(action_class) if isinstance(action_policy_defaults.get(action_class), dict) else {})
+        policy_hints = catalog_action.get('policyHints') if isinstance(catalog_action, dict) and isinstance(catalog_action.get('policyHints'), dict) else {}
+        if 'requiresApproval' in policy_hints and 'approvalMode' not in policy_hints:
+            policy_hints = dict(policy_hints)
+            policy_hints['approvalMode'] = 'required' if bool(policy_hints.get('requiresApproval')) else 'none'
+        override_policy = action_policy_overrides.get(action) if isinstance(action_policy_overrides.get(action), dict) else {}
+        action_policy.update({k: v for k, v in policy_hints.items() if v not in (None, '')})
+        action_policy.update({k: v for k, v in override_policy.items() if v not in (None, '')})
+        identity_scope = action_policy.get('identityScope') if isinstance(action_policy.get('identityScope'), dict) else {}
+        effective_action_policy = {
+            'actionClass': action_class,
+            'riskClass': str(action_policy.get('riskClass', 'moderate')).strip() or 'moderate',
+            'approvalMode': str(action_policy.get('approvalMode', 'conditional')).strip() or 'conditional',
+            'memoryAccess': str(action_policy.get('memoryAccess', 'none')).strip() or 'none',
+            'networkAccess': str(action_policy.get('networkAccess', 'none')).strip() or 'none',
+            'fsAccess': str(action_policy.get('fsAccess', 'none')).strip() or 'none',
+            'processAccess': str(action_policy.get('processAccess', 'restricted-subprocess')).strip() or 'restricted-subprocess',
+            'identityScope': {
+                'agentIds': [str(x).strip() for x in (identity_scope.get('agentIds') or []) if str(x).strip()],
+                'roles': [str(x).strip() for x in (identity_scope.get('roles') or []) if str(x).strip()],
+                'shopIds': [str(x).strip() for x in (identity_scope.get('shopIds') or []) if str(x).strip()],
+            },
+            'delegationAllowed': bool(action_policy.get('delegationAllowed', True)),
+            'subAgentAllowed': bool(action_policy.get('subAgentAllowed', True)),
+        }
+        approval_context = metadata.get('approvalContext') if isinstance(metadata.get('approvalContext'), dict) else {}
+        policy_context = metadata.get('policyContext') if isinstance(metadata.get('policyContext'), dict) else {}
+        role = str(metadata.get('role', '')).strip()
+        shop_id = str(metadata.get('shopId', '')).strip()
+        delegated_by = str(metadata.get('delegatedByAgentId', '')).strip()
+        sub_agent_id = str(metadata.get('subAgentId', '')).strip()
 
         # Hard-fail boundary protections: active run hot path must not invoke direct knowledge actions.
         if action in knowledge_actions and phase in active_phases:
@@ -251,6 +359,7 @@ class PolicyEngine:
                     'allowedOperationalActions': sorted(operational_actions),
                     'allowedCrossLayer': ['memory.promote (async only)', 'memory.hydrate (bootstrap/resume only)'],
                 },
+                'effectiveActionPolicy': effective_action_policy,
             }
 
         if action == 'memory.hydrate' and phase not in {'bootstrap', 'resume'}:
@@ -263,6 +372,7 @@ class PolicyEngine:
                 'agentId': agent_id,
                 'requiredPhase': ['bootstrap', 'resume'],
                 'phase': phase or 'unknown',
+                'effectiveActionPolicy': effective_action_policy,
             }
 
         if action == 'memory.promote' and phase in active_phases and not bool(metadata.get('async', False)):
@@ -274,6 +384,7 @@ class PolicyEngine:
                 'action': action,
                 'agentId': agent_id,
                 'requirement': 'metadata.async=true for active-run promotion',
+                'effectiveActionPolicy': effective_action_policy,
             }
 
         if action in privileged and required_registration:
@@ -285,6 +396,7 @@ class PolicyEngine:
                     'policyId': pol.get('id', 'umbrella.policy.multi-agent.v1'),
                     'action': action,
                     'agentId': '',
+                    'effectiveActionPolicy': effective_action_policy,
                 }
             if not row or not bool(row.get('registered', False)):
                 return {
@@ -294,6 +406,7 @@ class PolicyEngine:
                     'policyId': pol.get('id', 'umbrella.policy.multi-agent.v1'),
                     'action': action,
                     'agentId': agent_id,
+                    'effectiveActionPolicy': effective_action_policy,
                 }
 
         if required_capability or acceptable_capabilities:
@@ -306,6 +419,7 @@ class PolicyEngine:
                     'action': action,
                     'agentId': '',
                     'requiredCapability': required_capability,
+                    'effectiveActionPolicy': effective_action_policy,
                 }
             if not row:
                 return {
@@ -315,6 +429,7 @@ class PolicyEngine:
                     'policyId': pol.get('id', 'umbrella.policy.multi-agent.v1'),
                     'action': action,
                     'agentId': agent_id,
+                    'effectiveActionPolicy': effective_action_policy,
                 }
             caps = set(str(c).strip() for c in (row.get('capabilities') or []))
             candidate_caps = set(acceptable_capabilities)
@@ -333,7 +448,92 @@ class PolicyEngine:
                     'agentId': agent_id,
                     'requiredCapability': required_capability,
                     'acceptableCapabilities': sorted(candidate_caps),
+                    'effectiveActionPolicy': effective_action_policy,
                 }
+
+        allowed_agent_ids = set(effective_action_policy['identityScope']['agentIds'])
+        allowed_roles = set(effective_action_policy['identityScope']['roles'])
+        allowed_shop_ids = set(effective_action_policy['identityScope']['shopIds'])
+        if allowed_agent_ids and agent_id not in allowed_agent_ids:
+            return {
+                'ok': False,
+                'allowed': False,
+                'reason': 'action_identity_scope_denied',
+                'policyId': pol.get('id', 'umbrella.policy.multi-agent.v1'),
+                'action': action,
+                'agentId': agent_id,
+                'effectiveActionPolicy': effective_action_policy,
+            }
+        if allowed_roles and role not in allowed_roles:
+            return {
+                'ok': False,
+                'allowed': False,
+                'reason': 'action_identity_scope_denied',
+                'policyId': pol.get('id', 'umbrella.policy.multi-agent.v1'),
+                'action': action,
+                'agentId': agent_id,
+                'effectiveActionPolicy': effective_action_policy,
+            }
+        if allowed_shop_ids and shop_id not in allowed_shop_ids:
+            return {
+                'ok': False,
+                'allowed': False,
+                'reason': 'action_identity_scope_denied',
+                'policyId': pol.get('id', 'umbrella.policy.multi-agent.v1'),
+                'action': action,
+                'agentId': agent_id,
+                'effectiveActionPolicy': effective_action_policy,
+            }
+        if delegated_by and delegated_by != agent_id and not effective_action_policy['delegationAllowed']:
+            return {
+                'ok': False,
+                'allowed': False,
+                'reason': 'action_delegation_forbidden',
+                'policyId': pol.get('id', 'umbrella.policy.multi-agent.v1'),
+                'action': action,
+                'agentId': agent_id,
+                'effectiveActionPolicy': effective_action_policy,
+            }
+        if sub_agent_id and not effective_action_policy['subAgentAllowed']:
+            return {
+                'ok': False,
+                'allowed': False,
+                'reason': 'action_subagent_forbidden',
+                'policyId': pol.get('id', 'umbrella.policy.multi-agent.v1'),
+                'action': action,
+                'agentId': agent_id,
+                'effectiveActionPolicy': effective_action_policy,
+            }
+        if effective_action_policy['approvalMode'] == 'required' and not bool(approval_context.get('approved', False)):
+            return {
+                'ok': False,
+                'allowed': False,
+                'reason': 'action_approval_required',
+                'policyId': pol.get('id', 'umbrella.policy.multi-agent.v1'),
+                'action': action,
+                'agentId': agent_id,
+                'effectiveActionPolicy': effective_action_policy,
+            }
+        if effective_action_policy['fsAccess'] == 'workspace' and not bool(policy_context.get('workspaceFsAllowed', False)):
+            return {
+                'ok': False,
+                'allowed': False,
+                'reason': 'action_fs_scope_denied',
+                'policyId': pol.get('id', 'umbrella.policy.multi-agent.v1'),
+                'action': action,
+                'agentId': agent_id,
+                'effectiveActionPolicy': effective_action_policy,
+            }
+        if effective_action_policy['networkAccess'] == 'open' and not bool(policy_context.get('networkAccessAllowed', False)):
+            return {
+                'ok': False,
+                'allowed': False,
+                'reason': 'action_network_scope_denied',
+                'policyId': pol.get('id', 'umbrella.policy.multi-agent.v1'),
+                'action': action,
+                'agentId': agent_id,
+                'effectiveActionPolicy': effective_action_policy,
+            }
 
         return {
             'ok': True,
@@ -344,6 +544,7 @@ class PolicyEngine:
             'agentId': agent_id,
             'requiredCapability': required_capability,
             'catalogAction': catalog_action or {},
+            'effectiveActionPolicy': effective_action_policy,
         }
 
     def preflight_drift(self) -> dict:

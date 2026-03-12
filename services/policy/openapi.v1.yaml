@@ -1,9 +1,9 @@
 openapi: 3.1.0
 info:
   title: Umbrella Policy Service API
-  version: 1.0.0
+  version: 1.1.0
   description: Static policy rules are loaded from `control-plane/policy/multi-agent-policy.json`; runtime agent registrations are persisted separately under `control-plane/observability/policy/agent-registry.json`.
-    When configured with a catalog service, policy can also resolve capability requirements for dynamic catalog actions.
+    When configured with a catalog service, policy can also resolve capability requirements and effective action-policy descriptors for dynamic catalog actions.
 servers:
   - url: http://127.0.0.1:8791
 paths:
@@ -34,6 +34,6 @@ paths:
         '200': { description: Registration result }
   /v1/policy/authorize-step:
     post:
-      summary: Authorize step against multi-agent registration/capability gates
+      summary: Authorize step against multi-agent registration, capability, and effective action-policy gates
       responses:
         '200': { description: Authorization decision }
