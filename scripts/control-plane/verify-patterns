@@ -79,12 +79,11 @@ PATTERNS: tuple[PatternRule, ...] = (
         ),
     ),
     PatternRule(
-        key="drift_guard",
-        name="Drift-Guard Pattern",
+        key="policy_governance",
+        name="Policy-Governance Pattern",
         required_files=(
             "scripts/control-plane/drift-lint",
-            "control-plane/policy/no-cutover-policy.json",
-            "control-plane/policy/exceptions.yaml",
+            "umbrella/policies/default.policy.yaml",
         ),
         required_contract_tests=(
             "test-policy-multi-agent-gates.sh",

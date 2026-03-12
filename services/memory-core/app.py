@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -47,6 +48,7 @@ class MemoryStore:
     def __init__(self, umbrella_root: Path):
         self.root = umbrella_root
         self.store_path = self.root / 'control-plane' / 'memory-core' / 'store.json'
+        self._lock = threading.RLock()
         self.store_path.parent.mkdir(parents=True, exist_ok=True)
         if not self.store_path.exists():
             self._write({'namespaces': {'agent': {}, 'team': {}, 'global': {}}, 'updatedAt': now_iso()})
@@ -59,7 +61,9 @@ class MemoryStore:
 
     def _write(self, data: dict):
         data['updatedAt'] = now_iso()
-        self.store_path.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8')
+        tmp_path = self.store_path.with_name(f'.{self.store_path.name}.{uuid.uuid4().hex}.tmp')
+        tmp_path.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8')
+        tmp_path.replace(self.store_path)
 
     def _ensure_namespace(self, data: dict, namespace: str):
         if 'namespaces' not in data or not isinstance(data['namespaces'], dict):
@@ -68,43 +72,47 @@ class MemoryStore:
             data['namespaces'][namespace] = {}
 
     def put(self, namespace: str, key: str, value, metadata: dict | None = None) -> dict:
-        data = self._read()
-        self._ensure_namespace(data, namespace)
-        row = {
-            'namespace': namespace,
-            'key': key,
-            'value': value,
-            'metadata': metadata or {},
-            'updatedAt': now_iso(),
-        }
-        data['namespaces'][namespace][key] = row
-        self._write(data)
-        return row
+        with self._lock:
+            data = self._read()
+            self._ensure_namespace(data, namespace)
+            row = {
+                'namespace': namespace,
+                'key': key,
+                'value': value,
+                'metadata': metadata or {},
+                'updatedAt': now_iso(),
+            }
+            data['namespaces'][namespace][key] = row
+            self._write(data)
+            return row
 
     def get(self, namespace: str, key: str) -> dict | None:
-        data = self._read()
-        self._ensure_namespace(data, namespace)
-        row = data['namespaces'][namespace].get(key)
-        return row if isinstance(row, dict) else None
+        with self._lock:
+            data = self._read()
+            self._ensure_namespace(data, namespace)
+            row = data['namespaces'][namespace].get(key)
+            return row if isinstance(row, dict) else None
 
     def delete(self, namespace: str, key: str) -> bool:
-        data = self._read()
-        self._ensure_namespace(data, namespace)
-        exists = key in data['namespaces'][namespace]
-        if exists:
-            del data['namespaces'][namespace][key]
-            self._write(data)
-        return exists
+        with self._lock:
+            data = self._read()
+            self._ensure_namespace(data, namespace)
+            exists = key in data['namespaces'][namespace]
+            if exists:
+                del data['namespaces'][namespace][key]
+                self._write(data)
+            return exists
 
     def list(self, namespace: str) -> list[dict]:
-        data = self._read()
-        self._ensure_namespace(data, namespace)
-        out = []
-        for k in sorted(data['namespaces'][namespace].keys()):
-            row = data['namespaces'][namespace][k]
-            if isinstance(row, dict):
-                out.append(row)
-        return out
+        with self._lock:
+            data = self._read()
+            self._ensure_namespace(data, namespace)
+            out = []
+            for k in sorted(data['namespaces'][namespace].keys()):
+                row = data['namespaces'][namespace][k]
+                if isinstance(row, dict):
+                    out.append(row)
+            return out
 
 
 def handler_factory(store: MemoryStore, token: str):

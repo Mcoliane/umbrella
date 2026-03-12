@@ -34,10 +34,6 @@ def write_json(path: Path, obj: dict):
     path.write_text(json.dumps(obj, indent=2) + '\n', encoding='utf-8')
 
 
-def normalize_spaces(text: str) -> str:
-    return ' '.join(str(text or '').split())
-
-
 def parse_payload(raw: str):
     raw = (raw or '').strip()
     if not raw:
@@ -128,18 +124,27 @@ DEFAULT_MULTI_AGENT_POLICY = {
 
 
 class PolicyEngine:
-    def __init__(self, umbrella_root: Path, parity_reconcile_cmd: str, multi_agent_policy_path: str):
+    def __init__(
+        self,
+        umbrella_root: Path,
+        parity_reconcile_cmd: str,
+        multi_agent_policy_path: str,
+        agent_registry_path: str,
+    ):
         self.root = umbrella_root
         self.parity_reconcile_cmd = parity_reconcile_cmd
-        self.policy_path = self.root / 'control-plane' / 'policy' / 'no-cutover-policy.json'
         self.multi_agent_policy_path = (self.root / multi_agent_policy_path).resolve()
+        self.agent_registry_path = (self.root / agent_registry_path).resolve()
         self.drift_lint = self.root / 'scripts' / 'control-plane' / 'drift-lint'
         self.parity_gate = self.root / 'scripts' / 'control-plane' / 'capability-parity-gate'
         self.multi_agent_policy_path.parent.mkdir(parents=True, exist_ok=True)
+        self.agent_registry_path.parent.mkdir(parents=True, exist_ok=True)
         if not self.multi_agent_policy_path.exists():
             write_json(self.multi_agent_policy_path, DEFAULT_MULTI_AGENT_POLICY)
+        if not self.agent_registry_path.exists():
+            write_json(self.agent_registry_path, {'agents': {}})
 
-    def load_multi_agent_policy(self) -> dict:
+    def load_multi_agent_policy_seed(self) -> dict:
         pol = load_json(self.multi_agent_policy_path, DEFAULT_MULTI_AGENT_POLICY)
         if not isinstance(pol, dict):
             pol = dict(DEFAULT_MULTI_AGENT_POLICY)
@@ -150,13 +155,29 @@ class PolicyEngine:
             pol['toolCapabilityClaimAlternates'] = dict(DEFAULT_MULTI_AGENT_POLICY['toolCapabilityClaimAlternates'])
         if not isinstance(pol.get('privilegedActions'), list):
             pol['privilegedActions'] = list(DEFAULT_MULTI_AGENT_POLICY['privilegedActions'])
-        if not isinstance(pol.get('agents'), dict):
-            pol['agents'] = {}
+        return pol
+
+    def load_agent_registry(self) -> dict:
+        reg = load_json(self.agent_registry_path, {'agents': {}})
+        if not isinstance(reg, dict):
+            reg = {'agents': {}}
+        if not isinstance(reg.get('agents'), dict):
+            reg['agents'] = {}
+        return reg
+
+    def load_multi_agent_policy(self) -> dict:
+        pol = self.load_multi_agent_policy_seed()
+        seed_agents = pol.get('agents') if isinstance(pol.get('agents'), dict) else {}
+        reg = self.load_agent_registry()
+        agents = dict(seed_agents)
+        agents.update(reg.get('agents') or {})
+        pol['agents'] = agents
         return pol
 
     def register_agent(self, agent_id: str, capabilities: list[str], source: str = 'external') -> dict:
-        pol = self.load_multi_agent_policy()
-        agents = pol.get('agents') if isinstance(pol.get('agents'), dict) else {}
+        pol = self.load_multi_agent_policy_seed()
+        reg = self.load_agent_registry()
+        agents = reg.get('agents') if isinstance(reg.get('agents'), dict) else {}
         agents[agent_id] = {
             'agentId': agent_id,
             'registered': True,
@@ -164,8 +185,8 @@ class PolicyEngine:
             'capabilities': sorted({str(c).strip() for c in capabilities if str(c).strip()}),
             'updatedAt': now_iso(),
         }
-        pol['agents'] = agents
-        write_json(self.multi_agent_policy_path, pol)
+        reg['agents'] = agents
+        write_json(self.agent_registry_path, reg)
         return {'ok': True, 'policyId': pol.get('id', 'umbrella.policy.multi-agent.v1'), 'agent': agents[agent_id]}
 
     def authorize_step(self, step_spec: dict) -> dict:
@@ -294,26 +315,8 @@ class PolicyEngine:
             'requiredCapability': required_capability,
         }
 
-    def check_command(self, command: str) -> dict:
-        policy = load_json(self.policy_path, {})
-        forbidden = [normalize_spaces(x) for x in (policy.get('forbiddenCommandPatterns') or [])]
-        cmd_norm = normalize_spaces(command)
-        blocked_by = [p for p in forbidden if p and p in cmd_norm]
-        blocked = len(blocked_by) > 0
-        return {
-            'checkedAt': now_iso(),
-            'policyId': policy.get('id', 'umbrella.policy.no-cutover.v1'),
-            'command': command,
-            'blocked': blocked,
-            'decision': 'BLOCKED' if blocked else 'ALLOW',
-            'reason': 'policy_blocked' if blocked else 'policy_allow',
-            'matchedPatterns': blocked_by,
-        }
-
-    def preflight_drift(self, exceptions_path: str = '') -> dict:
+    def preflight_drift(self) -> dict:
         cmd = [str(self.drift_lint), '--umbrella-root', str(self.root)]
-        if exceptions_path.strip():
-            cmd.extend(['--exceptions', exceptions_path.strip()])
         rc, payload, out, err = run_cmd(cmd, self.root)
         result = payload if isinstance(payload, dict) else {'stdout': out[-4000:], 'stderr': err[-4000:]}
         return {
@@ -341,12 +344,9 @@ class PolicyEngine:
             'result': result,
         }
 
-    def preflight_all(self, command: str = '', exceptions_path: str = '', reconcile_cmd: str = '') -> dict:
+    def preflight_all(self, reconcile_cmd: str = '') -> dict:
         checks = []
-        if command.strip():
-            cc = self.check_command(command)
-            checks.append({'check': 'command_policy', 'ok': not cc['blocked'], 'result': cc})
-        drift = self.preflight_drift(exceptions_path=exceptions_path)
+        drift = self.preflight_drift()
         checks.append(drift)
         parity = self.preflight_parity(reconcile_cmd=reconcile_cmd)
         checks.append(parity)
@@ -388,22 +388,14 @@ def handler_factory(engine: PolicyEngine, token: str):
             body = parse_json(self)
 
             try:
-                if path == '/v1/policy/check-command':
-                    command = str(body.get('command', ''))
-                    out = engine.check_command(command)
-                    return json_response(self, 200, out)
                 if path == '/v1/policy/preflight/drift-lint':
-                    out = engine.preflight_drift(exceptions_path=str(body.get('exceptionsPath', '')))
+                    out = engine.preflight_drift()
                     return json_response(self, 200, out)
                 if path == '/v1/policy/preflight/capability-parity':
                     out = engine.preflight_parity(reconcile_cmd=str(body.get('reconcileCmd', '')))
                     return json_response(self, 200, out)
                 if path == '/v1/policy/preflight/all':
-                    out = engine.preflight_all(
-                        command=str(body.get('command', '')),
-                        exceptions_path=str(body.get('exceptionsPath', '')),
-                        reconcile_cmd=str(body.get('reconcileCmd', '')),
-                    )
+                    out = engine.preflight_all(reconcile_cmd=str(body.get('reconcileCmd', '')))
                     return json_response(self, 200, out)
                 if path == '/v1/policy/agents/register':
                     agent_id = str(body.get('agentId', '')).strip()
@@ -437,6 +429,7 @@ def main() -> int:
     ap.add_argument('--umbrella-root', default=str(Path(__file__).resolve().parents[2]))
     ap.add_argument('--parity-reconcile-cmd', default='memory-core-reconcile')
     ap.add_argument('--multi-agent-policy', default='control-plane/policy/multi-agent-policy.json')
+    ap.add_argument('--agent-registry', default='control-plane/observability/policy/agent-registry.json')
     ap.add_argument('--token', default='')
     args = ap.parse_args()
 
@@ -446,6 +439,7 @@ def main() -> int:
         umbrella_root=root,
         parity_reconcile_cmd=args.parity_reconcile_cmd,
         multi_agent_policy_path=args.multi_agent_policy,
+        agent_registry_path=args.agent_registry,
     )
     handler = handler_factory(engine, token)
     httpd = ThreadingHTTPServer((args.host, args.port), handler)

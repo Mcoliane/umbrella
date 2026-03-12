@@ -28,3 +28,8 @@ Step actions handled natively by execution-service:
 - `POST /v1/execution/result`
 - `POST /v1/execution/cancel`
 - `POST /v1/execution/compensate`
+
+Failure responses are structured enough to distinguish:
+- `failureCategory` such as `policy`, `validation`, `dependency`, or `runtime`
+- `failureSource` such as `policy`, `memory-core`, or `adapter`
+- `failureReason` such as `execution_policy_denied`, `execution_validation_failed`, `dependency_unavailable`, or `execution_runtime_failed`

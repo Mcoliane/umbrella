@@ -30,8 +30,14 @@
     "timeout",
     "retry_exhausted",
     "adapter_error",
+    "dependency_unavailable",
+    "dependency_request_failed",
+    "execution_policy_denied",
+    "execution_validation_failed",
+    "execution_runtime_failed",
     "approval_required",
     "approval_denied",
-    "parity_drift"
+    "parity_drift",
+    "scheduler_no_dispatchable_steps"
   ]
 }

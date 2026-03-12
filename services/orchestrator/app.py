@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from services.memory.auth import check_auth
+from services.id_utils import validate_identifier
 
 
 def now_iso() -> str:
@@ -112,14 +113,120 @@ def err(code: str, message: str, request_id: str) -> dict:
     return {'error': {'code': code, 'message': message, 'request_id': request_id}}
 
 
+def parse_service_error(ex: Exception) -> dict:
+    message = str(ex)
+    if 'HTTP ' in message:
+        return {
+            'failureCategory': 'dependency',
+            'failureReason': 'dependency_request_failed',
+            'failureMessage': message,
+        }
+    return {
+        'failureCategory': 'dependency',
+        'failureReason': 'dependency_unavailable',
+        'failureMessage': message,
+    }
+
+
+def classify_execution_failure(execution_result: dict) -> dict:
+    if not isinstance(execution_result, dict):
+        return {
+            'failureCategory': 'runtime',
+            'failureSource': 'execution',
+            'failureReason': 'execution_runtime_failed',
+            'failureMessage': 'execution result unavailable',
+        }
+    category = str(execution_result.get('failureCategory', '')).strip()
+    source = str(execution_result.get('failureSource', '')).strip() or 'execution'
+    reason = str(execution_result.get('failureReason', '')).strip()
+    if category and reason:
+        return {
+            'failureCategory': category,
+            'failureSource': source,
+            'failureReason': reason,
+            'failureMessage': str(execution_result.get('stderr', '')).strip() or str((execution_result.get('result') or {}).get('error', '')).strip(),
+        }
+    result = execution_result.get('result') if isinstance(execution_result.get('result'), dict) else {}
+    if bool(result.get('timedOut', False)) or int(execution_result.get('exitCode', 1)) == 124:
+        return {
+            'failureCategory': 'runtime',
+            'failureSource': source,
+            'failureReason': 'timeout',
+            'failureMessage': str(execution_result.get('stderr', '')).strip(),
+        }
+    if 'policyDecision' in result:
+        return {
+            'failureCategory': 'policy',
+            'failureSource': 'policy',
+            'failureReason': 'execution_policy_denied',
+            'failureMessage': str((result.get('policyDecision') or {}).get('reason', 'policy_denied')),
+        }
+    if 'error' in result:
+        return {
+            'failureCategory': 'validation',
+            'failureSource': source,
+            'failureReason': 'execution_validation_failed',
+            'failureMessage': str(result.get('error', 'validation failed')),
+        }
+    return {
+        'failureCategory': 'runtime',
+        'failureSource': source,
+        'failureReason': 'execution_runtime_failed',
+        'failureMessage': str(execution_result.get('stderr', '')).strip() or 'execution failed',
+    }
+
+
 class OrchestratorEngine:
     def __init__(self, umbrella_root: Path):
         self.root = umbrella_root
+
+    def _write_run_state(self, run_dir: Path, run: dict):
+        write_json(run_dir / 'run.json', run)
+
+    def _write_summary(self, run_dir: Path, run: dict, extra: dict | None = None) -> dict:
+        completed = sum(1 for s in run['steps'] if s.get('status') in {'SUCCESS', 'FAILED', 'BLOCKED'})
+        summary = {
+            'runId': run['runId'],
+            'state': run['state'],
+            'terminalReason': run['terminalReason'],
+            'stepCount': len(run['steps']),
+            'completedSteps': completed,
+            'runPath': str(run_dir),
+            'createdAt': run['createdAt'],
+            'finishedAt': run.get('finishedAt', ''),
+        }
+        if run.get('approvalKey'):
+            summary['approvalKey'] = run.get('approvalKey')
+        if run.get('blockedStepId'):
+            summary['blockedStepId'] = run.get('blockedStepId')
+        if run.get('failedStepId'):
+            summary['failedStepId'] = run.get('failedStepId')
+        if run.get('failureCategory'):
+            summary['failureCategory'] = run.get('failureCategory')
+        if run.get('failureSource'):
+            summary['failureSource'] = run.get('failureSource')
+        if run.get('failureMessage'):
+            summary['failureMessage'] = run.get('failureMessage')
+        if extra:
+            summary.update(extra)
+        write_json(run_dir / 'summary.json', summary)
+        return summary
+
+    def _finalize_run(self, run_dir: Path, run: dict, *, state: str, terminal_reason: str, extra: dict | None = None) -> dict:
+        run['state'] = state
+        run['terminalReason'] = terminal_reason
+        run['updatedAt'] = now_iso()
+        run['finishedAt'] = now_iso()
+        if extra:
+            run.update(extra)
+        self._write_run_state(run_dir, run)
+        return self._write_summary(run_dir, run)
 
     def run_summary_path(self, run_id: str) -> Path:
         return self.root / 'control-plane' / 'observability' / 'runs' / run_id / 'summary.json'
 
     def get_summary(self, run_id: str) -> dict | None:
+        run_id = validate_identifier(run_id, 'runId')
         p = self.run_summary_path(run_id)
         if not p.exists():
             return None
@@ -143,6 +250,7 @@ class OrchestratorEngine:
         caller: str,
         mesh_token: str = '',
     ) -> dict:
+        run_id = validate_identifier(run_id, 'runId')
         if resume_blocked and caller != 'approval-service':
             return {
                 'ok': False,
@@ -181,7 +289,7 @@ class OrchestratorEngine:
         step_rows = {}
         step_states = {}
         for i, s in enumerate(steps, start=1):
-            sid = step_id(s, i)
+            sid = validate_identifier(step_id(s, i), f'stepId[{i}]')
             row = {
                 'stepId': sid,
                 'status': 'READY',
@@ -194,47 +302,61 @@ class OrchestratorEngine:
             step_rows[sid] = row
             step_states[sid] = 'READY'
 
-        write_json(run_dir / 'run.json', run)
+        self._write_run_state(run_dir, run)
 
-        for url, path in [
-            (policy_url, '/v1/policy/health'),
-            (lifecycle_url, '/v1/lifecycle/health'),
-            (router_url, '/v1/router/health'),
-            (scheduler_url, '/v1/scheduler/health'),
-            (execution_url, '/v1/execution/health'),
-            (approval_url, '/v1/approval/health'),
-        ]:
-            _ = get_json(url, path, mesh_token=mesh_token)
+        try:
+            for service_name, url, path in [
+                ('policy', policy_url, '/v1/policy/health'),
+                ('lifecycle', lifecycle_url, '/v1/lifecycle/health'),
+                ('router', router_url, '/v1/router/health'),
+                ('scheduler', scheduler_url, '/v1/scheduler/health'),
+                ('execution', execution_url, '/v1/execution/health'),
+                ('approval', approval_url, '/v1/approval/health'),
+            ]:
+                _ = get_json(url, path, mesh_token=mesh_token)
+        except Exception as ex:
+            failure = parse_service_error(ex)
+            failure['failureSource'] = service_name
+            summary = self._finalize_run(
+                run_dir,
+                run,
+                state='FAILED',
+                terminal_reason=failure['failureReason'],
+                extra=failure,
+            )
+            return {'ok': False, 'exitCode': terminal_status_code('FAILED'), 'summary': summary}
 
-        preflight = post_json(
-            policy_url,
-            '/v1/policy/preflight/all',
-            {'reconcileCmd': reconcile_cmd},
-            mesh_token=mesh_token,
-        )
+        try:
+            preflight = post_json(
+                policy_url,
+                '/v1/policy/preflight/all',
+                {'reconcileCmd': reconcile_cmd},
+                mesh_token=mesh_token,
+            )
+        except Exception as ex:
+            failure = parse_service_error(ex)
+            failure['failureSource'] = 'policy'
+            summary = self._finalize_run(
+                run_dir,
+                run,
+                state='FAILED',
+                terminal_reason=failure['failureReason'],
+                extra={**failure, 'preflight': {'ok': False}},
+            )
+            return {'ok': False, 'exitCode': terminal_status_code('FAILED'), 'summary': summary}
         if not bool(preflight.get('ok', False)):
-            run['state'] = 'BLOCKED'
-            run['terminalReason'] = 'policy_blocked'
-            run['updatedAt'] = now_iso()
-            run['finishedAt'] = now_iso()
-            write_json(run_dir / 'run.json', run)
-            summary = {
-                'runId': run_id,
-                'state': run['state'],
-                'terminalReason': run['terminalReason'],
-                'stepCount': len(run['steps']),
-                'completedSteps': 0,
-                'runPath': str(run_dir),
-                'createdAt': run['createdAt'],
-                'finishedAt': run['finishedAt'],
-                'preflight': preflight,
-            }
-            write_json(run_dir / 'summary.json', summary)
+            summary = self._finalize_run(
+                run_dir,
+                run,
+                state='BLOCKED',
+                terminal_reason='policy_blocked',
+                extra={'failureCategory': 'policy', 'failureSource': 'policy', 'preflight': preflight},
+            )
             return {'ok': False, 'exitCode': terminal_status_code(run['state']), 'summary': summary}
 
         run['state'] = 'RUNNING'
         run['updatedAt'] = now_iso()
-        write_json(run_dir / 'run.json', run)
+        self._write_run_state(run_dir, run)
 
         while True:
             sched = post_json(
@@ -287,6 +409,9 @@ class OrchestratorEngine:
                         run['terminalReason'] = 'approval_required'
                         run['approvalKey'] = approval_key
                         run['blockedStepId'] = sid
+                        run['failureCategory'] = 'approval'
+                        run['failureSource'] = 'approval'
+                        run['failureMessage'] = 'step requires approval'
                         break
                     ap_get = get_json(approval_url, f'/v1/approval/{approval_key}', mesh_token=mesh_token)
                     approval = ap_get.get('approval') if isinstance(ap_get, dict) else {}
@@ -300,30 +425,61 @@ class OrchestratorEngine:
                         run['terminalReason'] = 'approval_required'
                         run['approvalKey'] = approval_key
                         run['blockedStepId'] = sid
+                        run['failureCategory'] = 'approval'
+                        run['failureSource'] = 'approval'
+                        run['failureMessage'] = 'approval not granted'
                         break
 
-                _ = post_json(router_url, '/v1/router/route-step', {'step': spec}, mesh_token=mesh_token)
+                try:
+                    _ = post_json(router_url, '/v1/router/route-step', {'step': spec}, mesh_token=mesh_token)
+                except Exception as ex:
+                    failure = parse_service_error(ex)
+                    run['state'] = 'FAILED'
+                    run['terminalReason'] = failure['failureReason']
+                    run['failedStepId'] = sid
+                    run['failureSource'] = 'router'
+                    run['failureCategory'] = failure['failureCategory']
+                    run['failureMessage'] = failure['failureMessage']
+                    row['status'] = 'FAILED'
+                    row['endedAt'] = now_iso()
+                    row['result'] = {'error': failure}
+                    step_states[sid] = 'FAILED'
+                    break
 
-                if spec.get('command'):
-                    ex = post_json(
-                        execution_url,
-                        '/v1/execution/submit-command',
-                        {
-                            'runId': run_id,
-                            'stepId': sid,
-                            'command': str(spec.get('command')),
-                            'workdir': str(spec.get('workdir', '.')),
-                            'timeoutSec': int(spec.get('timeoutSec', 300)),
-                        },
-                        mesh_token=mesh_token,
-                    )
-                else:
-                    ex = post_json(
-                        execution_url,
-                        '/v1/execution/submit-step-spec',
-                        {'runId': run_id, 'stepId': sid, 'stepSpec': spec},
-                        mesh_token=mesh_token,
-                    )
+                try:
+                    if spec.get('command'):
+                        ex = post_json(
+                            execution_url,
+                            '/v1/execution/submit-command',
+                            {
+                                'runId': run_id,
+                                'stepId': sid,
+                                'command': str(spec.get('command')),
+                                'workdir': str(spec.get('workdir', '.')),
+                                'timeoutSec': int(spec.get('timeoutSec', 300)),
+                            },
+                            mesh_token=mesh_token,
+                        )
+                    else:
+                        ex = post_json(
+                            execution_url,
+                            '/v1/execution/submit-step-spec',
+                            {'runId': run_id, 'stepId': sid, 'stepSpec': spec},
+                            mesh_token=mesh_token,
+                        )
+                except Exception as exn:
+                    failure = parse_service_error(exn)
+                    run['state'] = 'FAILED'
+                    run['terminalReason'] = failure['failureReason']
+                    run['failedStepId'] = sid
+                    run['failureSource'] = 'execution'
+                    run['failureCategory'] = failure['failureCategory']
+                    run['failureMessage'] = failure['failureMessage']
+                    row['status'] = 'FAILED'
+                    row['endedAt'] = now_iso()
+                    row['result'] = {'error': failure}
+                    step_states[sid] = 'FAILED'
+                    break
 
                 payload = ex.get('result') if isinstance(ex.get('result'), dict) else {}
                 status = str(payload.get('status', 'FAILED')).upper()
@@ -338,39 +494,35 @@ class OrchestratorEngine:
 
                 if row['status'] != 'SUCCESS':
                     run['state'] = 'FAILED'
-                    run['terminalReason'] = 'adapter_error'
+                    failure = classify_execution_failure(ex)
+                    run['terminalReason'] = failure['failureReason']
+                    run['failedStepId'] = sid
+                    run['failureSource'] = failure['failureSource']
+                    run['failureCategory'] = failure['failureCategory']
+                    run['failureMessage'] = failure['failureMessage']
                     break
 
             if run['state'] in {'FAILED', 'BLOCKED'}:
                 break
 
-        _ = post_json(
-            lifecycle_url,
-            '/v1/lifecycle/validate-terminal-reason',
-            {'reason': run['terminalReason']},
-            mesh_token=mesh_token,
-        )
+        lifecycle_warning = None
+        try:
+            _ = post_json(
+                lifecycle_url,
+                '/v1/lifecycle/validate-terminal-reason',
+                {'reason': run['terminalReason']},
+                mesh_token=mesh_token,
+            )
+        except Exception as ex:
+            lifecycle_warning = str(ex)
 
         run['updatedAt'] = now_iso()
         run['finishedAt'] = now_iso()
-        write_json(run_dir / 'run.json', run)
-
-        completed = sum(1 for s in run['steps'] if s.get('status') in {'SUCCESS', 'FAILED', 'BLOCKED'})
-        summary = {
-            'runId': run_id,
-            'state': run['state'],
-            'terminalReason': run['terminalReason'],
-            'stepCount': len(run['steps']),
-            'completedSteps': completed,
-            'runPath': str(run_dir),
-            'createdAt': run['createdAt'],
-            'finishedAt': run['finishedAt'],
-        }
-        if run.get('approvalKey'):
-            summary['approvalKey'] = run.get('approvalKey')
-        if run.get('blockedStepId'):
-            summary['blockedStepId'] = run.get('blockedStepId')
-        write_json(run_dir / 'summary.json', summary)
+        self._write_run_state(run_dir, run)
+        summary_extra = {}
+        if lifecycle_warning:
+            summary_extra['lifecycleValidationWarning'] = lifecycle_warning
+        summary = self._write_summary(run_dir, run, extra=summary_extra or None)
         return {
             'ok': run['state'] == 'SUCCEEDED',
             'exitCode': terminal_status_code(run['state']),
@@ -400,8 +552,10 @@ def handler_factory(engine: OrchestratorEngine, token: str):
             prefix = '/v1/orchestrator/runs/'
             if path.startswith(prefix) and path.endswith('/summary'):
                 run_id = path[len(prefix):-len('/summary')].strip('/')
-                if not run_id or '/' in run_id:
-                    return json_response(self, 404, err('NOT_FOUND', 'route not found', req_id))
+                try:
+                    run_id = validate_identifier(run_id, 'runId')
+                except ValueError as ex:
+                    return json_response(self, 400, err('VALIDATION_ERROR', str(ex), req_id))
                 summary = engine.get_summary(run_id)
                 if not summary:
                     return json_response(self, 404, err('NOT_FOUND', 'run summary not found', req_id))

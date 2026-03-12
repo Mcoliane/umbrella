@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from services.memory.auth import check_auth
+from services.id_utils import validate_identifier
 
 
 def now_iso() -> str:
@@ -56,6 +57,7 @@ class ApprovalStore:
         self.runner = self.root / 'scripts' / 'control-plane' / 'run-umbrella-control-plane'
 
     def approval_path(self, key: str) -> Path:
+        validate_identifier(key, 'approvalKey')
         return self.approvals_dir / f'{key_to_filename(key)}.json'
 
     def get(self, key: str) -> dict | None:
@@ -73,6 +75,9 @@ class ApprovalStore:
         return data
 
     def resume_journal_path(self, run_id: str, approval_key: str, idempotency_key: str) -> Path:
+        run_id = validate_identifier(run_id, 'runId')
+        approval_key = validate_identifier(approval_key, 'approvalKey')
+        idempotency_key = validate_identifier(idempotency_key, 'idempotencyKey')
         token = f'{key_to_filename(run_id)}__{key_to_filename(approval_key)}__{key_to_filename(idempotency_key)}'
         return self.resume_journal_dir / f'{token}.json'
 
@@ -101,6 +106,9 @@ class ApprovalStore:
         return entry
 
     def list_resume_journal(self, run_id: str, approval_key: str = '') -> list[dict]:
+        run_id = validate_identifier(run_id, 'runId')
+        if approval_key.strip():
+            approval_key = validate_identifier(approval_key, 'approvalKey')
         prefix = f'{key_to_filename(run_id)}__'
         rows: list[dict] = []
         for p in sorted(self.resume_journal_dir.glob(f'{prefix}*.json')):
@@ -118,6 +126,11 @@ class ApprovalStore:
         return rows
 
     def request(self, key: str, run_id: str = '', step_id: str = '', note: str = '') -> dict:
+        key = validate_identifier(key, 'approvalKey')
+        if run_id.strip():
+            run_id = validate_identifier(run_id, 'runId')
+        if step_id.strip():
+            step_id = validate_identifier(step_id, 'stepId')
         current = self.get(key) or {}
         data = {
             'approvalKey': key,
@@ -134,6 +147,7 @@ class ApprovalStore:
         return self.put(key, data)
 
     def decide(self, key: str, status: str, by: str, note: str = '') -> dict:
+        key = validate_identifier(key, 'approvalKey')
         current = self.get(key) or {'approvalKey': key, 'requestedAt': now_iso()}
         current['status'] = status
         current['updatedAt'] = now_iso()
@@ -154,6 +168,17 @@ class ApprovalStore:
                 'runId': '',
                 'state': 'PENDING',
                 'source': 'approval',
+            }
+
+        try:
+            run_id = validate_identifier(run_id, 'runId')
+        except ValueError:
+            return {
+                'approvalKey': approval_key,
+                'runId': run_id,
+                'state': 'BLOCKED',
+                'source': 'approval',
+                'terminalReason': 'invalid_run_id',
             }
 
         runs_root = self.root / 'control-plane' / 'observability' / 'runs' / run_id
@@ -216,6 +241,8 @@ class ApprovalStore:
         mesh_token: str = '',
         reconcile_cmd: str = '',
     ) -> dict:
+        run_id = validate_identifier(run_id, 'runId')
+        approval_key = validate_identifier(approval_key, 'approvalKey')
         ap = self.get(approval_key)
         if not ap:
             return {
@@ -235,6 +262,7 @@ class ApprovalStore:
 
         idem = idempotency_key.strip()
         if idem:
+            idem = validate_identifier(idem, 'idempotencyKey')
             journal = self.get_resume_journal(run_id, approval_key, idem)
             if journal and isinstance(journal.get('response'), dict):
                 replay = dict(journal['response'])
@@ -328,8 +356,10 @@ def handler_factory(store: ApprovalStore, token: str):
             run_status_prefix = '/v1/approval/'
             if path.startswith(run_status_prefix) and path.endswith('/run-status'):
                 key = path[len(run_status_prefix):-len('/run-status')]
-                if not key or '/' in key:
-                    return json_response(self, 404, err('NOT_FOUND', 'route not found', req_id))
+                try:
+                    key = validate_identifier(key, 'approvalKey')
+                except ValueError as ex:
+                    return json_response(self, 400, err('VALIDATION_ERROR', str(ex), req_id))
                 status = store.get_run_status(key)
                 if not status:
                     return json_response(self, 404, err('NOT_FOUND', 'approval not found', req_id))
@@ -340,6 +370,12 @@ def handler_factory(store: ApprovalStore, token: str):
                 approval_key = str((query.get('approvalKey') or [''])[0]).strip()
                 if not run_id:
                     return json_response(self, 400, err('VALIDATION_ERROR', 'runId query parameter is required', req_id))
+                try:
+                    run_id = validate_identifier(run_id, 'runId')
+                    if approval_key:
+                        approval_key = validate_identifier(approval_key, 'approvalKey')
+                except ValueError as ex:
+                    return json_response(self, 400, err('VALIDATION_ERROR', str(ex), req_id))
                 entries = store.list_resume_journal(run_id=run_id, approval_key=approval_key)
                 return json_response(self, 200, {'ok': True, 'count': len(entries), 'entries': entries})
 
@@ -349,7 +385,12 @@ def handler_factory(store: ApprovalStore, token: str):
                 parts = rest.split('/')
                 if len(parts) != 3 or not all(parts):
                     return json_response(self, 404, err('NOT_FOUND', 'route not found', req_id))
-                run_id, approval_key, idempotency_key = parts
+                try:
+                    run_id = validate_identifier(parts[0], 'runId')
+                    approval_key = validate_identifier(parts[1], 'approvalKey')
+                    idempotency_key = validate_identifier(parts[2], 'idempotencyKey')
+                except ValueError as ex:
+                    return json_response(self, 400, err('VALIDATION_ERROR', str(ex), req_id))
                 entry = store.get_resume_journal(run_id, approval_key, idempotency_key)
                 if not entry:
                     return json_response(self, 404, err('NOT_FOUND', 'resume journal not found', req_id))
@@ -360,8 +401,10 @@ def handler_factory(store: ApprovalStore, token: str):
             prefix = '/v1/approval/'
             if path.startswith(prefix) and path.count('/') >= 3:
                 key = path[len(prefix):]
-                if '/' in key:
-                    return json_response(self, 404, err('NOT_FOUND', 'route not found', req_id))
+                try:
+                    key = validate_identifier(key, 'approvalKey')
+                except ValueError as ex:
+                    return json_response(self, 400, err('VALIDATION_ERROR', str(ex), req_id))
                 ap = store.get(key)
                 if not ap:
                     return json_response(self, 404, err('NOT_FOUND', 'approval not found', req_id))
@@ -410,7 +453,11 @@ def handler_factory(store: ApprovalStore, token: str):
             parts = rest.split('/')
             if len(parts) != 2:
                 return json_response(self, 404, err('NOT_FOUND', 'route not found', req_id))
-            key, action = parts[0], parts[1]
+            try:
+                key = validate_identifier(parts[0], 'approvalKey')
+            except ValueError as ex:
+                return json_response(self, 400, err('VALIDATION_ERROR', str(ex), req_id))
+            action = parts[1]
 
             if action == 'request':
                 out = store.request(

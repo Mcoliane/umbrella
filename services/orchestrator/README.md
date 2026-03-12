@@ -16,5 +16,12 @@ python3 services/orchestrator/app.py --host 127.0.0.1 --port 8797
 
 `/v1/orchestrator/runs/start` accepts service URLs and run metadata and executes one run to terminal state.
 
+Run summaries persist structured failure details when available, including:
+- `failureCategory`
+- `failureSource`
+- `failureMessage`
+- `failedStepId`
+- `blockedStepId`
+
 Resume protection:
 - `resumeBlocked=true` is rejected unless `caller` is `approval-service`.

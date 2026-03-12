@@ -10,7 +10,7 @@ This file tracks implementation closure from PARTIAL/FULL-ish to FULL, with conc
 | Orchestration | FULL-ish | FULL | `test-service-mesh-runner.sh`, `test-approval-authority-runner.sh` |
 | Reliability | PARTIAL | FULL | `test-approval-resume-idempotency.sh`, `test-approval-run-status.sh`, `test-run-transition-guard.sh` |
 | Memory | PARTIAL | FULL | `test-memory-core-shared-e2e.sh`, `test-memory-boundary-promote-hydrate.sh`, `test-memory-boundary-queue-dlq.sh`, `test-memory-boundary-policy-hotpath.sh`, `test-umbrellactl-smoke.sh` |
-| Drift-Guard | FULL | FULL | `scripts/control-plane/drift-lint`, `test-policy-multi-agent-gates.sh` |
+| Policy-Governance | FULL | FULL | `scripts/control-plane/drift-lint`, `test-policy-multi-agent-gates.sh`, `test-policy-runtime-registry-split.sh` |
 | Operator Loop | PARTIAL | FULL | `test-umbrellactl-smoke.sh`, `test-approval-run-status.sh` |
 | Capability-Parity | FULL | FULL | `scripts/control-plane/capability-parity-gate`, `test-policy-multi-agent-gates.sh`, `test-bootstrap-register-agent.sh` |
 
@@ -26,3 +26,4 @@ This file tracks implementation closure from PARTIAL/FULL-ish to FULL, with conc
 1. Every pattern reports `FULL` in `verify-patterns`.
 2. Contract gate passes.
 3. `docs/pattern-evidence.md` includes latest run references and timestamps.
+4. Policy docs reflect the split between static policy seed and runtime agent registry.

@@ -2,6 +2,7 @@ openapi: 3.1.0
 info:
   title: Umbrella Policy Service API
   version: 1.0.0
+  description: Static policy rules are loaded from `control-plane/policy/multi-agent-policy.json`; runtime agent registrations are persisted separately under `control-plane/observability/policy/agent-registry.json`.
 servers:
   - url: http://127.0.0.1:8791
 paths:
@@ -10,11 +11,6 @@ paths:
       summary: Service health
       responses:
         '200': { description: OK }
-  /v1/policy/check-command:
-    post:
-      summary: Evaluate command against no-cutover policy
-      responses:
-        '200': { description: Decision }
   /v1/policy/preflight/drift-lint:
     post:
       summary: Run drift lint preflight

@@ -49,3 +49,7 @@ umbrella-manage shutdown
 - Approval-gated orchestration and resume support
 - Automatic short-term memory via memory-core APIs and CLI helpers
 - Explicit long-term node memory APIs/tools for structured knowledge
+
+## Node memory note
+
+`umbrella-manage bringup` starts the default control-plane mesh, which includes `memory-core` but does not automatically start the durable node-memory service (`services/memory`). The node-memory APIs and tools are part of the architecture, but they must be started separately when you want the long-term knowledge plane available.

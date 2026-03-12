@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 import urllib.request
+import urllib.error
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from services.memory.auth import check_auth
@@ -60,6 +61,23 @@ def err(code: str, message: str, request_id: str) -> dict:
     return {'error': {'code': code, 'message': message, 'request_id': request_id}}
 
 
+def dependency_failure(source: str, reason: str, message: str, *, status: str = 'FAILED', category: str = 'dependency', exit_code: int = 1) -> dict:
+    return {
+        'ok': False,
+        'exitCode': exit_code,
+        'failureCategory': category,
+        'failureSource': source,
+        'failureReason': reason,
+        'result': {
+            'status': status,
+            'kind': source,
+            'error': message,
+        },
+        'stderr': message,
+        'command': [source],
+    }
+
+
 class ExecutionEngine:
     def __init__(self, umbrella_root: Path, memory_core_url: str, policy_url: str, mesh_token: str):
         self.root = umbrella_root
@@ -98,13 +116,28 @@ class ExecutionEngine:
         cmd = [str(self.adapter), '--umbrella-root', str(self.root)] + args
         proc = subprocess.run(cmd, cwd=str(self.root), capture_output=True, text=True)
         payload = parse_payload(proc.stdout)
-        return {
+        out = {
             'ok': proc.returncode == 0,
             'exitCode': proc.returncode,
             'result': payload if isinstance(payload, dict) else {'stdout': (proc.stdout or '')[-4000:]},
             'stderr': (proc.stderr or '')[-4000:],
             'command': cmd,
         }
+        if not out['ok']:
+            result = out['result'] if isinstance(out.get('result'), dict) else {}
+            if bool(result.get('timedOut', False)) or int(out.get('exitCode', 1)) == 124:
+                out['failureCategory'] = 'runtime'
+                out['failureSource'] = 'adapter'
+                out['failureReason'] = 'timeout'
+            elif 'error' in result:
+                out['failureCategory'] = 'validation'
+                out['failureSource'] = 'adapter'
+                out['failureReason'] = 'execution_validation_failed'
+            else:
+                out['failureCategory'] = 'runtime'
+                out['failureSource'] = 'adapter'
+                out['failureReason'] = 'execution_runtime_failed'
+        return out
 
     def submit_step_spec(self, run_id: str, step_id: str, step_spec: dict) -> dict:
         action = str(step_spec.get('action', '')).strip()
@@ -121,11 +154,24 @@ class ExecutionEngine:
         metadata['boundaryContext'] = boundary_context
         policy_step['metadata'] = metadata
         if action:
-            auth = self._authorize_step(step_spec=policy_step)
+            try:
+                auth = self._authorize_step(step_spec=policy_step)
+            except urllib.error.URLError as ex:
+                return dependency_failure('policy', 'dependency_unavailable', str(ex))
+            except urllib.error.HTTPError as ex:
+                body = ''
+                try:
+                    body = ex.read().decode('utf-8')
+                except Exception:
+                    body = ''
+                return dependency_failure('policy', 'dependency_request_failed', f'HTTP {ex.code}: {body or ex.reason}')
             if not bool(auth.get('allowed', False)):
                 return {
                     'ok': False,
                     'exitCode': 1,
+                    'failureCategory': 'policy',
+                    'failureSource': 'policy',
+                    'failureReason': 'execution_policy_denied',
                     'result': {'status': 'FAILED', 'kind': 'policy', 'policyDecision': auth},
                     'stderr': str(auth.get('reason', 'policy_denied')),
                     'command': ['policy', 'authorize-step'],
@@ -134,15 +180,27 @@ class ExecutionEngine:
         if action == 'memoryWrite':
             namespace = str(step_spec.get('namespace', '')).strip()
             key = str(step_spec.get('key', '')).strip()
-            out = self._post_memory(
-                '/v1/memory-core/put',
-                {
-                    'namespace': namespace,
-                    'key': key,
-                    'value': step_spec.get('value'),
-                    'metadata': step_spec.get('metadata') if isinstance(step_spec.get('metadata'), dict) else {},
-                },
-            )
+            try:
+                out = self._post_memory(
+                    '/v1/memory-core/put',
+                    {
+                        'namespace': namespace,
+                        'key': key,
+                        'value': step_spec.get('value'),
+                        'metadata': step_spec.get('metadata') if isinstance(step_spec.get('metadata'), dict) else {},
+                    },
+                )
+            except urllib.error.URLError as ex:
+                return dependency_failure('memory-core', 'dependency_unavailable', str(ex))
+            except urllib.error.HTTPError as ex:
+                body = ''
+                try:
+                    body = ex.read().decode('utf-8')
+                except Exception:
+                    body = ''
+                reason = 'execution_validation_failed' if ex.code == 400 else 'dependency_request_failed'
+                category = 'validation' if ex.code == 400 else 'dependency'
+                return dependency_failure('memory-core', reason, f'HTTP {ex.code}: {body or ex.reason}', category=category)
             return {
                 'ok': bool(out.get('ok', False)),
                 'exitCode': 0 if bool(out.get('ok', False)) else 1,
@@ -158,7 +216,19 @@ class ExecutionEngine:
         if action == 'memoryRead':
             namespace = str(step_spec.get('namespace', '')).strip()
             key = str(step_spec.get('key', '')).strip()
-            out = self._post_memory('/v1/memory-core/get', {'namespace': namespace, 'key': key})
+            try:
+                out = self._post_memory('/v1/memory-core/get', {'namespace': namespace, 'key': key})
+            except urllib.error.URLError as ex:
+                return dependency_failure('memory-core', 'dependency_unavailable', str(ex))
+            except urllib.error.HTTPError as ex:
+                body = ''
+                try:
+                    body = ex.read().decode('utf-8')
+                except Exception:
+                    body = ''
+                reason = 'execution_validation_failed' if ex.code == 400 else 'dependency_request_failed'
+                category = 'validation' if ex.code == 400 else 'dependency'
+                return dependency_failure('memory-core', reason, f'HTTP {ex.code}: {body or ex.reason}', category=category)
             exists = bool(out.get('exists', False))
             expected = step_spec.get('expectValue', None)
             status = 'SUCCESS'
@@ -180,7 +250,19 @@ class ExecutionEngine:
         if action == 'memoryDelete':
             namespace = str(step_spec.get('namespace', '')).strip()
             key = str(step_spec.get('key', '')).strip()
-            out = self._post_memory('/v1/memory-core/delete', {'namespace': namespace, 'key': key})
+            try:
+                out = self._post_memory('/v1/memory-core/delete', {'namespace': namespace, 'key': key})
+            except urllib.error.URLError as ex:
+                return dependency_failure('memory-core', 'dependency_unavailable', str(ex))
+            except urllib.error.HTTPError as ex:
+                body = ''
+                try:
+                    body = ex.read().decode('utf-8')
+                except Exception:
+                    body = ''
+                reason = 'execution_validation_failed' if ex.code == 400 else 'dependency_request_failed'
+                category = 'validation' if ex.code == 400 else 'dependency'
+                return dependency_failure('memory-core', reason, f'HTTP {ex.code}: {body or ex.reason}', category=category)
             ok = bool(out.get('ok', False))
             return {
                 'ok': ok,
@@ -192,7 +274,19 @@ class ExecutionEngine:
 
         if action == 'memoryList':
             namespace = str(step_spec.get('namespace', '')).strip()
-            out = self._post_memory('/v1/memory-core/list', {'namespace': namespace})
+            try:
+                out = self._post_memory('/v1/memory-core/list', {'namespace': namespace})
+            except urllib.error.URLError as ex:
+                return dependency_failure('memory-core', 'dependency_unavailable', str(ex))
+            except urllib.error.HTTPError as ex:
+                body = ''
+                try:
+                    body = ex.read().decode('utf-8')
+                except Exception:
+                    body = ''
+                reason = 'execution_validation_failed' if ex.code == 400 else 'dependency_request_failed'
+                category = 'validation' if ex.code == 400 else 'dependency'
+                return dependency_failure('memory-core', reason, f'HTTP {ex.code}: {body or ex.reason}', category=category)
             ok = bool(out.get('ok', False))
             return {
                 'ok': ok,
