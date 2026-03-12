@@ -8,6 +8,7 @@ __pycache__/
 # Runtime-generated state and secrets
 tmp/
 control-plane/observability/runs/
+control-plane/observability/memory-boundary/
 control-plane/approvals/*.json
 control-plane/approvals/resume-journal/
 control-plane/runtime/bootstrap-secret.txt
