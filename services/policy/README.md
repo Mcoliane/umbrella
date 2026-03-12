@@ -4,6 +4,8 @@ HTTP service for agent capability decisions and preflight checks.
 
 Static policy rules live in [control-plane/policy/multi-agent-policy.json](/Users/coolfriend/Desktop/Emcom_umbrella0.4/control-plane/policy/multi-agent-policy.json). Runtime agent registrations are written separately under [control-plane/observability/policy/agent-registry.json](/Users/coolfriend/Desktop/Emcom_umbrella0.4/control-plane/observability/policy/agent-registry.json), so normal service activity does not dirty the repo-tracked seed policy file.
 
+When `--catalog-url` is configured, policy can also resolve dynamic catalog actions and enforce their declared capability requirements.
+
 ## Run
 
 ```bash

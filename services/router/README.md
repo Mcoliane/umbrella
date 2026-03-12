@@ -2,6 +2,8 @@
 
 HTTP service for runtime routing decisions.
 
+When `--catalog-url` is configured, router will classify matching catalog actions as `plugin-host` runtime before falling back to static prefix rules.
+
 ## Run
 
 ```bash

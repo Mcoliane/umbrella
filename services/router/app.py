@@ -5,6 +5,9 @@ import argparse
 import json
 import sys
 import uuid
+import urllib.error
+import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -51,20 +54,56 @@ def err(code: str, message: str, request_id: str) -> dict:
 
 
 class RouterEngine:
-    def __init__(self, routing_path: Path):
+    def __init__(self, routing_path: Path, catalog_url: str = '', mesh_token: str = ''):
         self.routing_path = routing_path
         self.config = load_json(routing_path, {})
+        self.catalog_url = catalog_url.rstrip('/')
+        self.mesh_token = mesh_token.strip()
+
+    def _headers(self) -> dict:
+        headers = {}
+        if self.mesh_token:
+            headers['Authorization'] = f'Bearer {self.mesh_token}'
+        return headers
+
+    def _catalog_action(self, action_id: str, timeout: int = 15) -> dict | None:
+        if not self.catalog_url:
+            return None
+        req = urllib.request.Request(
+            f'{self.catalog_url}/v1/catalog/actions/{urllib.parse.quote(action_id, safe="")}',
+            method='GET',
+            headers=self._headers(),
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode('utf-8'))
+        except urllib.error.HTTPError as ex:
+            if ex.code == 404:
+                return None
+            raise
 
     def config_payload(self) -> dict:
         return {
             'loadedAt': now_iso(),
             'path': str(self.routing_path),
             'config': self.config,
+            'catalogUrl': self.catalog_url,
         }
 
     def route_step(self, step: dict) -> dict:
         step_id = str(step.get('stepId') or step.get('id') or '').strip()
         action = str(step.get('action', '')).strip()
+
+        catalog_action = self._catalog_action(action)
+        if isinstance(catalog_action, dict):
+            return {
+                'routed': True,
+                'runtime': 'plugin-host',
+                'reason': 'catalog_action',
+                'stepId': step_id,
+                'action': action,
+                'catalogAction': catalog_action,
+            }
 
         rules = self.config.get('rules') or []
         for r in rules:
@@ -173,11 +212,13 @@ def main() -> int:
     ap.add_argument('--port', type=int, default=8795)
     ap.add_argument('--umbrella-root', default=str(Path(__file__).resolve().parents[2]))
     ap.add_argument('--routing', default='control-plane/router/runtime-routing.json')
+    ap.add_argument('--catalog-url', default='')
+    ap.add_argument('--mesh-token', default='')
     ap.add_argument('--token', default='')
     args = ap.parse_args()
 
     root = Path(args.umbrella_root).resolve()
-    engine = RouterEngine(routing_path=(root / args.routing))
+    engine = RouterEngine(routing_path=(root / args.routing), catalog_url=args.catalog_url, mesh_token=args.mesh_token)
     handler = handler_factory(engine=engine, token=args.token.strip())
     httpd = ThreadingHTTPServer((args.host, args.port), handler)
     print(json.dumps({'status': 'listening', 'service': 'router', 'host': args.host, 'port': args.port}, indent=2))

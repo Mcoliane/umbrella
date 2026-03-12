@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "umbrella.catalog.action-invocation.v1",
+  "title": "Umbrella Dynamic Action Invocation",
+  "type": "object",
+  "required": [
+    "action",
+    "inputs",
+    "context"
+  ],
+  "properties": {
+    "sessionId": { "type": "string" },
+    "runId": { "type": "string" },
+    "stepId": { "type": "string" },
+    "agentId": { "type": "string" },
+    "action": { "type": "string", "minLength": 1 },
+    "inputs": { "type": "object" },
+    "context": { "type": "object" },
+    "memoryRefs": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "timeouts": { "type": "object" },
+    "approvalContext": { "type": "object" }
+  },
+  "additionalProperties": true
+}

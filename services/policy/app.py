@@ -6,6 +6,9 @@ import json
 import subprocess
 import sys
 import uuid
+import urllib.error
+import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -130,11 +133,13 @@ class PolicyEngine:
         parity_reconcile_cmd: str,
         multi_agent_policy_path: str,
         agent_registry_path: str,
+        catalog_url: str = '',
     ):
         self.root = umbrella_root
         self.parity_reconcile_cmd = parity_reconcile_cmd
         self.multi_agent_policy_path = (self.root / multi_agent_policy_path).resolve()
         self.agent_registry_path = (self.root / agent_registry_path).resolve()
+        self.catalog_url = catalog_url.rstrip('/')
         self.drift_lint = self.root / 'scripts' / 'control-plane' / 'drift-lint'
         self.parity_gate = self.root / 'scripts' / 'control-plane' / 'capability-parity-gate'
         self.multi_agent_policy_path.parent.mkdir(parents=True, exist_ok=True)
@@ -143,6 +148,21 @@ class PolicyEngine:
             write_json(self.multi_agent_policy_path, DEFAULT_MULTI_AGENT_POLICY)
         if not self.agent_registry_path.exists():
             write_json(self.agent_registry_path, {'agents': {}})
+
+    def _catalog_action(self, action_id: str, timeout: int = 15) -> dict | None:
+        if not self.catalog_url:
+            return None
+        req = urllib.request.Request(
+            f'{self.catalog_url}/v1/catalog/actions/{urllib.parse.quote(action_id, safe="")}',
+            method='GET',
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode('utf-8'))
+        except urllib.error.HTTPError as ex:
+            if ex.code == 404:
+                return None
+            raise
 
     def load_multi_agent_policy_seed(self) -> dict:
         pol = load_json(self.multi_agent_policy_path, DEFAULT_MULTI_AGENT_POLICY)
@@ -202,6 +222,14 @@ class PolicyEngine:
         agents = pol.get('agents') if isinstance(pol.get('agents'), dict) else {}
         required_registration = bool(pol.get('requiredRegistrationForPrivilegedActions', True))
         required_capability = str(claims.get(action, '')).strip()
+        acceptable_capabilities: set[str] = {required_capability} if required_capability else set()
+        catalog_action = self._catalog_action(action)
+        if isinstance(catalog_action, dict):
+            acceptable_capabilities.update(
+                str(c).strip() for c in (catalog_action.get('requiredCapabilities') or []) if str(c).strip()
+            )
+            if not required_capability and acceptable_capabilities:
+                required_capability = sorted(acceptable_capabilities)[0]
         operational_actions = {'memoryWrite', 'memoryRead', 'memoryDelete', 'memoryList'}
         knowledge_actions = {'memory.get', 'memory.put', 'memory.search', 'memory.link', 'memory.import'}
         cross_layer_actions = {'memory.promote', 'memory.hydrate'}
@@ -268,7 +296,7 @@ class PolicyEngine:
                     'agentId': agent_id,
                 }
 
-        if required_capability:
+        if required_capability or acceptable_capabilities:
             if not agent_id:
                 return {
                     'ok': False,
@@ -289,7 +317,9 @@ class PolicyEngine:
                     'agentId': agent_id,
                 }
             caps = set(str(c).strip() for c in (row.get('capabilities') or []))
-            candidate_caps = {required_capability}
+            candidate_caps = set(acceptable_capabilities)
+            if required_capability:
+                candidate_caps.add(required_capability)
             alt_caps = alternates.get(action)
             if isinstance(alt_caps, list):
                 candidate_caps.update(str(c).strip() for c in alt_caps if str(c).strip())
@@ -313,6 +343,7 @@ class PolicyEngine:
             'action': action,
             'agentId': agent_id,
             'requiredCapability': required_capability,
+            'catalogAction': catalog_action or {},
         }
 
     def preflight_drift(self) -> dict:
@@ -430,6 +461,7 @@ def main() -> int:
     ap.add_argument('--parity-reconcile-cmd', default='memory-core-reconcile')
     ap.add_argument('--multi-agent-policy', default='control-plane/policy/multi-agent-policy.json')
     ap.add_argument('--agent-registry', default='control-plane/observability/policy/agent-registry.json')
+    ap.add_argument('--catalog-url', default='')
     ap.add_argument('--token', default='')
     args = ap.parse_args()
 
@@ -440,6 +472,7 @@ def main() -> int:
         parity_reconcile_cmd=args.parity_reconcile_cmd,
         multi_agent_policy_path=args.multi_agent_policy,
         agent_registry_path=args.agent_registry,
+        catalog_url=args.catalog_url,
     )
     handler = handler_factory(engine, token)
     httpd = ThreadingHTTPServer((args.host, args.port), handler)

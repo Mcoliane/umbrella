@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "umbrella.catalog.entry.v1",
+  "title": "Umbrella Catalog Entry",
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "version",
+    "kind",
+    "runtime",
+    "entrypoint",
+    "manifestPath",
+    "status",
+    "enabled",
+    "compatible",
+    "actions",
+    "install"
+  ],
+  "properties": {
+    "id": { "type": "string" },
+    "name": { "type": "string" },
+    "version": { "type": "string" },
+    "kind": { "type": "string" },
+    "runtime": { "type": "string" },
+    "entrypoint": { "type": "string" },
+    "manifestPath": { "type": "string" },
+    "status": { "enum": ["enabled", "disabled", "incompatible"] },
+    "enabled": { "type": "boolean" },
+    "compatible": {
+      "type": "object",
+      "required": ["ok", "umbrellaVersion", "minVersion", "maxVersion"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "umbrellaVersion": { "type": "string" },
+        "minVersion": { "type": "string" },
+        "maxVersion": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "requiredCapabilities"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "requiredCapabilities": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "policyHints": { "type": "object" },
+          "inputSchema": { "type": "object" },
+          "outputSchema": { "type": "object" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "install": {
+      "type": "object",
+      "required": ["lifecycleState", "managed", "updatedAt"],
+      "properties": {
+        "lifecycleState": { "enum": ["discovered", "installed"] },
+        "managed": { "type": "boolean" },
+        "updatedAt": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": true
+}

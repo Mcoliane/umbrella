@@ -11,6 +11,11 @@ control-plane/observability/runs/
 control-plane/observability/memory-boundary/
 control-plane/observability/memory-service/
 control-plane/observability/policy/
+control-plane/observability/catalog/
+control-plane/observability/plugin-host/
+control-plane/observability/session-profiles/
+control-plane/observability/sessions/
+control-plane/extensions/
 control-plane/approvals/*.json
 control-plane/approvals/resume-journal/
 control-plane/runtime/bootstrap-secret.txt

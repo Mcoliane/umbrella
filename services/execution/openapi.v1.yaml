@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Umbrella Execution Service API
   version: 1.0.0
-  description: Execution responses may include structured failure fields such as `failureCategory`, `failureSource`, and `failureReason`.
+  description: Execution responses may include structured failure fields such as `failureCategory`, `failureSource`, and `failureReason`. When catalog and plugin-host integration is configured, dynamic catalog actions can be invoked through the plugin-host.
 servers:
   - url: http://127.0.0.1:8794
 paths:

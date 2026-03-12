@@ -7,3 +7,4 @@
 - No GUI onboarding flow; CLI-first experience.
 - `umbrella-manage bringup` includes `memory-core` in the default mesh, but does not automatically start the node-memory service (`services/memory`).
 - There is no automatic promotion/sync from short-term `memory-core` entries to long-term node memory; agents must write node memory explicitly.
+- The plugin/skills runtime is only partially implemented: catalog, plugin-host, and session services now exist, but packaging/version workflows, stronger isolation, compaction, and sub-agent/session orchestration are not implemented yet.

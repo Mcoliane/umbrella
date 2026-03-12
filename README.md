@@ -2,6 +2,8 @@
 
 Umbrella0.4 is a local multi-service orchestration stack with approval-gated execution, memory-core integration, policy gates, and operator tooling.
 
+The current plugin/skills work is in early rollout: a catalog service now supports manifest-based discovery, validation, and lifecycle state for local skills/plugins, while execution/session binding is still being built.
+
 ## License
 
 This project is licensed under the `Umbrella Testing License` in [LICENSE](LICENSE). Use is limited to express-approved users for testing Emcom Umbrella only.
@@ -58,6 +60,9 @@ Services:
 - memory-core-service
 - orchestrator-service
 - approval-service
+- catalog-service (optional, plugin/skills discovery phase)
+- plugin-host-service (optional, dynamic action invocation phase)
+- session-service (optional, early session runtime phase)
 
 Approval behavior:
 - Orchestrator requests/reads approval state only through approval-service.

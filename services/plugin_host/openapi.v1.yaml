@@ -1,0 +1,16 @@
+openapi: 3.1.0
+info:
+  title: Umbrella Plugin Host Service API
+  version: 1.1.0
+  description: Isolated invocation boundary for catalog-declared actions with compatibility rechecks and manifest-driven execution controls.
+servers:
+  - url: http://127.0.0.1:8785
+paths:
+  /v1/plugin-host/health:
+    get:
+      responses:
+        '200': { description: OK }
+  /v1/plugin-host/invoke:
+    post:
+      responses:
+        '200': { description: Invocation result }

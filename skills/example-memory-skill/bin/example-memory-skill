@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+payload="$(cat)"
+
+python3 - "$payload" <<'PY'
+import json
+import os
+import sys
+
+payload = json.loads(sys.argv[1] or '{}')
+invocation = payload.get('invocation') if isinstance(payload.get('invocation'), dict) else {}
+inputs = invocation.get('inputs') if isinstance(invocation.get('inputs'), dict) else {}
+context = invocation.get('context') if isinstance(invocation.get('context'), dict) else {}
+node_id = str(inputs.get('nodeId', 'unknown')).strip() or 'unknown'
+if node_id.startswith('fail:'):
+    print(json.dumps({'error': f'forced failure for {node_id}'}))
+    raise SystemExit(1)
+attempt_number = int(context.get('attemptNumber', 1) or 1)
+if node_id.startswith('flaky:') and attempt_number < 2:
+    print(json.dumps({'error': f'flaky failure for {node_id} on attempt {attempt_number}'}))
+    raise SystemExit(1)
+if node_id == 'env-check':
+    print(json.dumps({
+        'ok': True,
+        'summary': 'environment check',
+        'env': {
+            'scratchDir': os.environ.get('UMBRELLA_PLUGIN_SCRATCH_DIR', ''),
+            'runId': os.environ.get('UMBRELLA_PLUGIN_RUN_ID', ''),
+            'stepId': os.environ.get('UMBRELLA_PLUGIN_STEP_ID', ''),
+            'secretPresent': bool(os.environ.get('PLUGIN_HOST_SECRET_SHOULD_NOT_LEAK')),
+        },
+    }))
+    raise SystemExit(0)
+if node_id == 'loud-output':
+    print(json.dumps({'ok': True, 'summary': 'X' * 4000}))
+    raise SystemExit(0)
+print(json.dumps({'ok': True, 'summary': f'example summary for {node_id}'}))
+PY

@@ -1,0 +1,1 @@
+# Umbrella catalog service package.

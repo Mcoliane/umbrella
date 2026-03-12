@@ -1,0 +1,68 @@
+openapi: 3.1.0
+info:
+  title: Umbrella Catalog Service API
+  version: 1.1.0
+  description: Discovery and lifecycle management for locally installed or bundle-installed skills/plugins, including managed version rows and checksum verification for bundle installs.
+servers:
+  - url: http://127.0.0.1:8786
+paths:
+  /v1/catalog/health:
+    get:
+      responses:
+        '200': { description: OK }
+  /v1/catalog/items:
+    get:
+      responses:
+        '200': { description: Catalog items }
+  /v1/catalog/items/{id}:
+    get:
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Catalog item }
+        '404': { description: Not found }
+  /v1/catalog/items/{id}/versions:
+    get:
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Installed versions for a managed catalog item }
+        '404': { description: Not found }
+  /v1/catalog/actions:
+    get:
+      responses:
+        '200': { description: Catalog actions }
+  /v1/catalog/refresh:
+    post:
+      responses:
+        '200': { description: Refresh result }
+  /v1/catalog/install-local:
+    post:
+      responses:
+        '200': { description: Install result }
+  /v1/catalog/install-bundle:
+    post:
+      responses:
+        '200': { description: Bundle install result }
+  /v1/catalog/update:
+    post:
+      responses:
+        '200': { description: Managed item updated to a new bundle version }
+  /v1/catalog/uninstall:
+    post:
+      responses:
+        '200': { description: Managed item version removed }
+  /v1/catalog/items/enable:
+    post:
+      responses:
+        '200': { description: Enable result }
+  /v1/catalog/items/disable:
+    post:
+      responses:
+        '200': { description: Disable result }

@@ -11,6 +11,8 @@ python3 services/execution/app.py --host 127.0.0.1 --port 8794
 Optional:
 - `--memory-core-url http://127.0.0.1:8798`
 - `--policy-url http://127.0.0.1:8791`
+- `--catalog-url http://127.0.0.1:8786`
+- `--plugin-host-url http://127.0.0.1:8785`
 - `--mesh-token <token>`
 
 Step actions handled natively by execution-service:
@@ -18,6 +20,8 @@ Step actions handled natively by execution-service:
 - `memoryRead`
 - `memoryDelete`
 - `memoryList`
+
+When `--catalog-url` and `--plugin-host-url` are configured, enabled catalog actions can also be delegated through the plugin-host instead of the legacy runtime adapter.
 
 ## Endpoints
 

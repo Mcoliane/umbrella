@@ -1,0 +1,67 @@
+{
+  "id": "example.memory.skill",
+  "name": "Example Memory Skill",
+  "version": "0.1.0",
+  "apiVersion": "umbrella.catalog.manifest.v1",
+  "kind": "skill",
+  "runtime": "shell",
+  "entrypoint": "bin/example-memory-skill",
+  "defaultEnabled": true,
+  "isolationMode": "process",
+  "compatibility": {
+    "umbrella": {
+      "minVersion": "0.4.0"
+    },
+    "pluginHostRuntimes": [
+      "shell"
+    ],
+    "apiVersions": [
+      "umbrella.catalog.manifest.v1"
+    ],
+    "actionSchemaVersions": [
+      "umbrella.catalog.action.v1"
+    ],
+    "requiresFeatures": []
+  },
+  "executionPolicy": {
+    "envAllowlist": [],
+    "network": "none",
+    "fs": "scratch-only",
+    "maxRuntimeSec": 10,
+    "maxOutputBytes": 512,
+    "maxInputBytes": 2048,
+    "isolationProfile": "shell-restricted"
+  },
+  "sessionHooks": {
+    "suggestedContexts": [
+      "memory",
+      "analysis"
+    ]
+  },
+  "actions": [
+    {
+      "id": "skill.memory.summarize",
+      "title": "Summarize Memory",
+      "description": "Example dynamic action for future session/runtime binding.",
+      "requiredCapabilities": [
+        "knowledge.read"
+      ],
+      "policyHints": {
+        "riskClass": "low",
+        "requiresApproval": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "nodeId": { "type": "string" }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "summary": { "type": "string" }
+        }
+      }
+    }
+  ]
+}

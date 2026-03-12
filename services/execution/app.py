@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 import urllib.request
 import urllib.error
+import urllib.parse
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from services.memory.auth import check_auth
@@ -79,12 +80,22 @@ def dependency_failure(source: str, reason: str, message: str, *, status: str = 
 
 
 class ExecutionEngine:
-    def __init__(self, umbrella_root: Path, memory_core_url: str, policy_url: str, mesh_token: str):
+    def __init__(
+        self,
+        umbrella_root: Path,
+        memory_core_url: str,
+        policy_url: str,
+        mesh_token: str,
+        catalog_url: str = '',
+        plugin_host_url: str = '',
+    ):
         self.root = umbrella_root
         self.adapter = self.root / 'scripts' / 'adapters' / 'removed-runtime-adapter'
         self.memory_core_url = memory_core_url.rstrip('/')
         self.policy_url = policy_url.rstrip('/')
         self.mesh_token = mesh_token.strip()
+        self.catalog_url = catalog_url.rstrip('/')
+        self.plugin_host_url = plugin_host_url.rstrip('/')
 
     def _headers(self) -> dict:
         h = {'Content-Type': 'application/json'}
@@ -102,15 +113,59 @@ class ExecutionEngine:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode('utf-8'))
 
-    def _authorize_step(self, step_spec: dict, timeout: int = 15) -> dict:
+    def _post_json(self, base_url: str, path: str, payload: dict, timeout: int = 30) -> dict:
         req = urllib.request.Request(
-            f'{self.policy_url}/v1/policy/authorize-step',
+            f'{base_url.rstrip("/")}{path}',
             method='POST',
-            data=json.dumps({'stepSpec': step_spec}).encode('utf-8'),
+            data=json.dumps(payload).encode('utf-8'),
             headers=self._headers(),
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode('utf-8'))
+
+    def _get_json(self, base_url: str, path: str, timeout: int = 15) -> dict:
+        req = urllib.request.Request(f'{base_url.rstrip("/")}{path}', method='GET', headers=self._headers())
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode('utf-8'))
+
+    def _authorize_step(self, step_spec: dict, timeout: int = 15) -> dict:
+        return self._post_json(self.policy_url, '/v1/policy/authorize-step', {'stepSpec': step_spec}, timeout=timeout)
+
+    def _catalog_action(self, action_id: str, timeout: int = 15) -> dict | None:
+        if not self.catalog_url:
+            return None
+        try:
+            return self._get_json(self.catalog_url, f'/v1/catalog/actions/{urllib.parse.quote(action_id, safe="")}', timeout=timeout)
+        except urllib.error.HTTPError as ex:
+            if ex.code == 404:
+                return None
+            raise
+
+    def _invoke_plugin_action(self, run_id: str, step_id: str, action_id: str, step_spec: dict) -> dict:
+        if not self.plugin_host_url:
+            return dependency_failure('plugin-host', 'dependency_unavailable', 'plugin-host-url is not configured')
+        invocation = {
+            'runId': run_id,
+            'stepId': step_id,
+            'agentId': str(step_spec.get('agentId') or ((step_spec.get('metadata') or {}).get('agentId', ''))),
+            'action': action_id,
+            'inputs': step_spec.get('inputs') if isinstance(step_spec.get('inputs'), dict) else {},
+            'context': step_spec.get('metadata') if isinstance(step_spec.get('metadata'), dict) else {},
+            'timeouts': {'timeoutSec': int(step_spec.get('timeoutSec', 30))},
+        }
+        try:
+            return self._post_json(self.plugin_host_url, '/v1/plugin-host/invoke', {'actionId': action_id, 'invocation': invocation}, timeout=int(step_spec.get('timeoutSec', 30)) + 5)
+        except urllib.error.URLError as ex:
+            return dependency_failure('plugin-host', 'dependency_unavailable', str(ex))
+        except urllib.error.HTTPError as ex:
+            body = ''
+            try:
+                body = ex.read().decode('utf-8')
+            except Exception:
+                body = ''
+            reason = 'execution_validation_failed' if ex.code == 400 else 'dependency_request_failed'
+            category = 'validation' if ex.code == 400 else 'dependency'
+            return dependency_failure('plugin-host', reason, f'HTTP {ex.code}: {body or ex.reason}', category=category)
 
     def _run(self, args: list[str]) -> dict:
         cmd = [str(self.adapter), '--umbrella-root', str(self.root)] + args
@@ -302,6 +357,22 @@ class ExecutionEngine:
                 'command': ['memory-core', 'list'],
             }
 
+        catalog_action = None
+        if action:
+            try:
+                catalog_action = self._catalog_action(action)
+            except urllib.error.URLError as ex:
+                return dependency_failure('catalog', 'dependency_unavailable', str(ex))
+            except urllib.error.HTTPError as ex:
+                body = ''
+                try:
+                    body = ex.read().decode('utf-8')
+                except Exception:
+                    body = ''
+                return dependency_failure('catalog', 'dependency_request_failed', f'HTTP {ex.code}: {body or ex.reason}')
+        if isinstance(catalog_action, dict):
+            return self._invoke_plugin_action(run_id=run_id, step_id=step_id, action_id=action, step_spec=step_spec)
+
         args = [
             'submit_step_spec',
             '--run-id',
@@ -420,6 +491,8 @@ def main() -> int:
     ap.add_argument('--umbrella-root', default=str(Path(__file__).resolve().parents[2]))
     ap.add_argument('--memory-core-url', default='http://127.0.0.1:8798')
     ap.add_argument('--policy-url', default='http://127.0.0.1:8791')
+    ap.add_argument('--catalog-url', default='')
+    ap.add_argument('--plugin-host-url', default='')
     ap.add_argument('--mesh-token', default='')
     ap.add_argument('--token', default='')
     args = ap.parse_args()
@@ -430,6 +503,8 @@ def main() -> int:
         memory_core_url=args.memory_core_url,
         policy_url=args.policy_url,
         mesh_token=args.mesh_token,
+        catalog_url=args.catalog_url,
+        plugin_host_url=args.plugin_host_url,
     )
     handler = handler_factory(engine=engine, token=args.token.strip())
     httpd = ThreadingHTTPServer((args.host, args.port), handler)

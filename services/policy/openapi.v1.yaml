@@ -3,6 +3,7 @@ info:
   title: Umbrella Policy Service API
   version: 1.0.0
   description: Static policy rules are loaded from `control-plane/policy/multi-agent-policy.json`; runtime agent registrations are persisted separately under `control-plane/observability/policy/agent-registry.json`.
+    When configured with a catalog service, policy can also resolve capability requirements for dynamic catalog actions.
 servers:
   - url: http://127.0.0.1:8791
 paths:

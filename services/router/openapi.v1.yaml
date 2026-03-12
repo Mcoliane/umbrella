@@ -2,6 +2,7 @@ openapi: 3.1.0
 info:
   title: Umbrella Router Service API
   version: 1.0.0
+  description: Route decisions can incorporate dynamic catalog actions when a catalog service is configured.
 servers:
   - url: http://127.0.0.1:8795
 paths:
