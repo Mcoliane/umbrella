@@ -16,8 +16,8 @@ source ~/.local/umbrella0.4/env.sh
 ## Custom prefix
 
 ```bash
-./install.sh --prefix /opt/umbrella0.4
-source /opt/umbrella0.4/env.sh
+./install.sh --prefix ./.umbrella0.4
+source ./.umbrella0.4/env.sh
 ```
 
 ## Skip health check (CI packaging use)

@@ -39,19 +39,19 @@ exit 0
 SH
 chmod +x "$RECON_STUB"
 
-python3 "$ROOT/services/policy/app.py" --host 127.0.0.1 --port "$POLICY_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-policy.out 2>/tmp/umbrella04-policy.err &
+python3 "$ROOT/services/policy/app.py" --host 127.0.0.1 --port "$POLICY_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-policy.out" 2>"$ROOT/tmp/umbrella04-policy.err" &
 P1=$!
-python3 "$ROOT/services/lifecycle/app.py" --host 127.0.0.1 --port "$LIFECYCLE_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-lifecycle.out 2>/tmp/umbrella04-lifecycle.err &
+python3 "$ROOT/services/lifecycle/app.py" --host 127.0.0.1 --port "$LIFECYCLE_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-lifecycle.out" 2>"$ROOT/tmp/umbrella04-lifecycle.err" &
 P2=$!
-python3 "$ROOT/services/router/app.py" --host 127.0.0.1 --port "$ROUTER_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-router.out 2>/tmp/umbrella04-router.err &
+python3 "$ROOT/services/router/app.py" --host 127.0.0.1 --port "$ROUTER_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-router.out" 2>"$ROOT/tmp/umbrella04-router.err" &
 P3=$!
-python3 "$ROOT/services/scheduler/app.py" --host 127.0.0.1 --port "$SCHED_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-scheduler.out 2>/tmp/umbrella04-scheduler.err &
+python3 "$ROOT/services/scheduler/app.py" --host 127.0.0.1 --port "$SCHED_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-scheduler.out" 2>"$ROOT/tmp/umbrella04-scheduler.err" &
 P4=$!
-python3 "$ROOT/services/execution/app.py" --host 127.0.0.1 --port "$EXEC_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-execution.out 2>/tmp/umbrella04-execution.err &
+python3 "$ROOT/services/execution/app.py" --host 127.0.0.1 --port "$EXEC_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-execution.out" 2>"$ROOT/tmp/umbrella04-execution.err" &
 P5=$!
-python3 "$ROOT/services/approval/app.py" --host 127.0.0.1 --port "$APPROVAL_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-approval.out 2>/tmp/umbrella04-approval.err &
+python3 "$ROOT/services/approval/app.py" --host 127.0.0.1 --port "$APPROVAL_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-approval.out" 2>"$ROOT/tmp/umbrella04-approval.err" &
 P6=$!
-python3 "$ROOT/services/orchestrator/app.py" --host 127.0.0.1 --port "$ORCH_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-orchestrator.out 2>/tmp/umbrella04-orchestrator.err &
+python3 "$ROOT/services/orchestrator/app.py" --host 127.0.0.1 --port "$ORCH_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-orchestrator.out" 2>"$ROOT/tmp/umbrella04-orchestrator.err" &
 P7=$!
 
 cleanup(){
@@ -105,7 +105,7 @@ wait_health "$ORCH_URL/v1/orchestrator/health"
   --approval-url "$APPROVAL_URL" \
   --orchestrator-url "$ORCH_URL" \
   --reconcile-cmd "$RECON_STUB" \
-  >/tmp/umbrella04-runner.out
+  >"$ROOT/tmp/umbrella04-runner.out"
 
 ROOT="$ROOT" RUN_ID="$RUN_ID" python3 - <<'PY'
 import json, os

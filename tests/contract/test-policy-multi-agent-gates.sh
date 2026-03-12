@@ -57,21 +57,21 @@ cat > "$PLAN" <<JSON
 }
 JSON
 
-python3 "$ROOT/services/policy/app.py" --host 127.0.0.1 --port "$POLICY_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-pmg-policy.out 2>/tmp/umbrella04-pmg-policy.err &
+python3 "$ROOT/services/policy/app.py" --host 127.0.0.1 --port "$POLICY_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-pmg-policy.out" 2>"$ROOT/tmp/umbrella04-pmg-policy.err" &
 P1=$!
-python3 "$ROOT/services/lifecycle/app.py" --host 127.0.0.1 --port "$LIFECYCLE_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-pmg-lifecycle.out 2>/tmp/umbrella04-pmg-lifecycle.err &
+python3 "$ROOT/services/lifecycle/app.py" --host 127.0.0.1 --port "$LIFECYCLE_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-pmg-lifecycle.out" 2>"$ROOT/tmp/umbrella04-pmg-lifecycle.err" &
 P2=$!
-python3 "$ROOT/services/router/app.py" --host 127.0.0.1 --port "$ROUTER_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-pmg-router.out 2>/tmp/umbrella04-pmg-router.err &
+python3 "$ROOT/services/router/app.py" --host 127.0.0.1 --port "$ROUTER_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-pmg-router.out" 2>"$ROOT/tmp/umbrella04-pmg-router.err" &
 P3=$!
-python3 "$ROOT/services/scheduler/app.py" --host 127.0.0.1 --port "$SCHED_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-pmg-scheduler.out 2>/tmp/umbrella04-pmg-scheduler.err &
+python3 "$ROOT/services/scheduler/app.py" --host 127.0.0.1 --port "$SCHED_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-pmg-scheduler.out" 2>"$ROOT/tmp/umbrella04-pmg-scheduler.err" &
 P4=$!
-python3 "$ROOT/services/memory-core/app.py" --host 127.0.0.1 --port "$MEM_CORE_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-pmg-memorycore.out 2>/tmp/umbrella04-pmg-memorycore.err &
+python3 "$ROOT/services/memory-core/app.py" --host 127.0.0.1 --port "$MEM_CORE_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-pmg-memorycore.out" 2>"$ROOT/tmp/umbrella04-pmg-memorycore.err" &
 P5=$!
-python3 "$ROOT/services/execution/app.py" --host 127.0.0.1 --port "$EXEC_PORT" --umbrella-root "$ROOT" --memory-core-url "$MEM_CORE_URL" --policy-url "$POLICY_URL" >/tmp/umbrella04-pmg-execution.out 2>/tmp/umbrella04-pmg-execution.err &
+python3 "$ROOT/services/execution/app.py" --host 127.0.0.1 --port "$EXEC_PORT" --umbrella-root "$ROOT" --memory-core-url "$MEM_CORE_URL" --policy-url "$POLICY_URL" >"$ROOT/tmp/umbrella04-pmg-execution.out" 2>"$ROOT/tmp/umbrella04-pmg-execution.err" &
 P6=$!
-python3 "$ROOT/services/approval/app.py" --host 127.0.0.1 --port "$APPROVAL_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-pmg-approval.out 2>/tmp/umbrella04-pmg-approval.err &
+python3 "$ROOT/services/approval/app.py" --host 127.0.0.1 --port "$APPROVAL_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-pmg-approval.out" 2>"$ROOT/tmp/umbrella04-pmg-approval.err" &
 P7=$!
-python3 "$ROOT/services/orchestrator/app.py" --host 127.0.0.1 --port "$ORCH_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-pmg-orchestrator.out 2>/tmp/umbrella04-pmg-orchestrator.err &
+python3 "$ROOT/services/orchestrator/app.py" --host 127.0.0.1 --port "$ORCH_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-pmg-orchestrator.out" 2>"$ROOT/tmp/umbrella04-pmg-orchestrator.err" &
 P8=$!
 
 cleanup(){
@@ -127,7 +127,7 @@ set +e
   --execution-url "$EXEC_URL" \
   --approval-url "$APPROVAL_URL" \
   --orchestrator-url "$ORCH_URL" \
-  >/tmp/umbrella04-pmg-run-a.out
+  >"$ROOT/tmp/umbrella04-pmg-run-a.out"
 RCA=$?
 set -e
 if [[ "$RCA" -ne 1 ]]; then
@@ -171,7 +171,7 @@ set +e
   --execution-url "$EXEC_URL" \
   --approval-url "$APPROVAL_URL" \
   --orchestrator-url "$ORCH_URL" \
-  >/tmp/umbrella04-pmg-run-b.out
+  >"$ROOT/tmp/umbrella04-pmg-run-b.out"
 RCB=$?
 set -e
 if [[ "$RCB" -ne 1 ]]; then
@@ -214,7 +214,7 @@ PY
   --execution-url "$EXEC_URL" \
   --approval-url "$APPROVAL_URL" \
   --orchestrator-url "$ORCH_URL" \
-  >/tmp/umbrella04-pmg-run-c.out
+  >"$ROOT/tmp/umbrella04-pmg-run-c.out"
 
 ROOT="$ROOT" RUN_ID="$RUN_C" python3 - <<'PY'
 import json, os

@@ -54,19 +54,19 @@ cat > "$PLAN" <<JSON
 }
 JSON
 
-python3 "$ROOT/services/policy/app.py" --host 127.0.0.1 --port "$POLICY_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-idem-policy.out 2>/tmp/umbrella04-idem-policy.err &
+python3 "$ROOT/services/policy/app.py" --host 127.0.0.1 --port "$POLICY_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-idem-policy.out" 2>"$ROOT/tmp/umbrella04-idem-policy.err" &
 P1=$!
-python3 "$ROOT/services/lifecycle/app.py" --host 127.0.0.1 --port "$LIFECYCLE_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-idem-lifecycle.out 2>/tmp/umbrella04-idem-lifecycle.err &
+python3 "$ROOT/services/lifecycle/app.py" --host 127.0.0.1 --port "$LIFECYCLE_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-idem-lifecycle.out" 2>"$ROOT/tmp/umbrella04-idem-lifecycle.err" &
 P2=$!
-python3 "$ROOT/services/router/app.py" --host 127.0.0.1 --port "$ROUTER_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-idem-router.out 2>/tmp/umbrella04-idem-router.err &
+python3 "$ROOT/services/router/app.py" --host 127.0.0.1 --port "$ROUTER_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-idem-router.out" 2>"$ROOT/tmp/umbrella04-idem-router.err" &
 P3=$!
-python3 "$ROOT/services/scheduler/app.py" --host 127.0.0.1 --port "$SCHED_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-idem-scheduler.out 2>/tmp/umbrella04-idem-scheduler.err &
+python3 "$ROOT/services/scheduler/app.py" --host 127.0.0.1 --port "$SCHED_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-idem-scheduler.out" 2>"$ROOT/tmp/umbrella04-idem-scheduler.err" &
 P4=$!
-python3 "$ROOT/services/execution/app.py" --host 127.0.0.1 --port "$EXEC_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-idem-execution.out 2>/tmp/umbrella04-idem-execution.err &
+python3 "$ROOT/services/execution/app.py" --host 127.0.0.1 --port "$EXEC_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-idem-execution.out" 2>"$ROOT/tmp/umbrella04-idem-execution.err" &
 P5=$!
-python3 "$ROOT/services/approval/app.py" --host 127.0.0.1 --port "$APPROVAL_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-idem-approval.out 2>/tmp/umbrella04-idem-approval.err &
+python3 "$ROOT/services/approval/app.py" --host 127.0.0.1 --port "$APPROVAL_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-idem-approval.out" 2>"$ROOT/tmp/umbrella04-idem-approval.err" &
 P6=$!
-python3 "$ROOT/services/orchestrator/app.py" --host 127.0.0.1 --port "$ORCH_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-idem-orchestrator.out 2>/tmp/umbrella04-idem-orchestrator.err &
+python3 "$ROOT/services/orchestrator/app.py" --host 127.0.0.1 --port "$ORCH_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-idem-orchestrator.out" 2>"$ROOT/tmp/umbrella04-idem-orchestrator.err" &
 P7=$!
 
 cleanup(){
@@ -120,7 +120,7 @@ set +e
   --execution-url "$EXEC_URL" \
   --approval-url "$APPROVAL_URL" \
   --orchestrator-url "$ORCH_URL" \
-  >/tmp/umbrella04-idem-run1.out
+  >"$ROOT/tmp/umbrella04-idem-run1.out"
 RC1=$?
 set -e
 if [[ "$RC1" -ne 3 ]]; then

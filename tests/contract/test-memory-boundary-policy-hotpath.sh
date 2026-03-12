@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+mkdir -p "$ROOT/tmp"
 
 free_port() {
   python3 - <<'PY'
@@ -14,7 +15,7 @@ POLICY_PORT="$(free_port)"
 POLICY_URL="http://127.0.0.1:$POLICY_PORT"
 AGENT_ID="boundary-agent-$(date +%s)"
 
-python3 "$ROOT/services/policy/app.py" --host 127.0.0.1 --port "$POLICY_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-mbp-policy.out 2>/tmp/umbrella04-mbp-policy.err &
+python3 "$ROOT/services/policy/app.py" --host 127.0.0.1 --port "$POLICY_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-mbp-policy.out" 2>"$ROOT/tmp/umbrella04-mbp-policy.err" &
 P1=$!
 
 cleanup() {

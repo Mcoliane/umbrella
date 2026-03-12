@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+mkdir -p "$ROOT/tmp"
 MGR="$ROOT/scripts/control-plane/manage-service-mesh"
 BOOTSTRAP="$ROOT/scripts/bootstrap/register-agent"
 MANIFEST="$ROOT/tmp/bootstrap-service-manifest.json"
@@ -15,7 +16,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$MGR" bringup --umbrella-root "$ROOT" --manifest "$MANIFEST" >/tmp/umbrella04-bootstrap-bringup.out
+"$MGR" bringup --umbrella-root "$ROOT" --manifest "$MANIFEST" >"$ROOT/tmp/umbrella04-bootstrap-bringup.out"
 
 "$BOOTSTRAP" \
   --umbrella-root "$ROOT" \
@@ -24,7 +25,7 @@ trap cleanup EXIT
   --capability memory.write \
   --capability memory.read \
   --out "$OUT" \
-  >/tmp/umbrella04-bootstrap-register.out
+  >"$ROOT/tmp/umbrella04-bootstrap-register.out"
 
 python3 - "$OUT" "$AGENT_ID" <<'PY'
 import json, sys
@@ -67,6 +68,6 @@ assert out.get('allowed') is True and out.get('ok') is True, out
 print('bootstrap policy authorization PASS')
 PY
 
-"$MGR" shutdown --umbrella-root "$ROOT" --manifest "$MANIFEST" >/tmp/umbrella04-bootstrap-shutdown.out
+"$MGR" shutdown --umbrella-root "$ROOT" --manifest "$MANIFEST" >"$ROOT/tmp/umbrella04-bootstrap-shutdown.out"
 
 echo "umbrella0.4 bootstrap register-agent contract PASS"

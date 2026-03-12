@@ -179,9 +179,10 @@ fi
 
 if [[ "$SKIP_HEALTH" != "1" ]]; then
   echo "[install] running health verification (bringup/status/shutdown)"
-  "$APP_DIR/scripts/control-plane/manage-service-mesh" bringup --umbrella-root "$APP_DIR" --manifest "$MANIFEST_PATH" >/tmp/umbrella04-install-bringup.out
-  "$APP_DIR/scripts/control-plane/manage-service-mesh" status --umbrella-root "$APP_DIR" --manifest "$MANIFEST_PATH" >/tmp/umbrella04-install-status.out
-  "$APP_DIR/scripts/control-plane/manage-service-mesh" shutdown --umbrella-root "$APP_DIR" --manifest "$MANIFEST_PATH" >/tmp/umbrella04-install-shutdown.out
+  mkdir -p "$APP_DIR/tmp"
+  "$APP_DIR/scripts/control-plane/manage-service-mesh" bringup --umbrella-root "$APP_DIR" --manifest "$MANIFEST_PATH" >"$APP_DIR/tmp/umbrella04-install-bringup.out"
+  "$APP_DIR/scripts/control-plane/manage-service-mesh" status --umbrella-root "$APP_DIR" --manifest "$MANIFEST_PATH" >"$APP_DIR/tmp/umbrella04-install-status.out"
+  "$APP_DIR/scripts/control-plane/manage-service-mesh" shutdown --umbrella-root "$APP_DIR" --manifest "$MANIFEST_PATH" >"$APP_DIR/tmp/umbrella04-install-shutdown.out"
 fi
 
 echo "[install] complete"

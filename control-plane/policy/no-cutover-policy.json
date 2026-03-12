@@ -4,7 +4,6 @@
   "description": "Prevent accidental live switch-over while validating umbrella abstraction.",
   "forbiddenCommandPatterns": [
     "setup-umbrella-mirror apply --removed-root ~/.removed",
-    "setup-umbrella-mirror apply --removed-root /Users/coolfriend/.removed",
     "scripts/bootstrap/setup-umbrella-mirror apply",
     "removed gateway restart",
     "gateway restart"

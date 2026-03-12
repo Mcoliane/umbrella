@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+mkdir -p "$ROOT/tmp"
 
 free_port() {
   python3 - <<'PY'
@@ -15,9 +16,9 @@ MEM_CORE_PORT="$(free_port)"
 MEM_URL="http://127.0.0.1:$MEM_PORT"
 MEM_CORE_URL="http://127.0.0.1:$MEM_CORE_PORT"
 
-python3 "$ROOT/services/memory/app.py" --host 127.0.0.1 --port "$MEM_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-mbq-memory.out 2>/tmp/umbrella04-mbq-memory.err &
+python3 "$ROOT/services/memory/app.py" --host 127.0.0.1 --port "$MEM_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-mbq-memory.out" 2>"$ROOT/tmp/umbrella04-mbq-memory.err" &
 P1=$!
-python3 "$ROOT/services/memory-core/app.py" --host 127.0.0.1 --port "$MEM_CORE_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-mbq-memorycore.out 2>/tmp/umbrella04-mbq-memorycore.err &
+python3 "$ROOT/services/memory-core/app.py" --host 127.0.0.1 --port "$MEM_CORE_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-mbq-memorycore.out" 2>"$ROOT/tmp/umbrella04-mbq-memorycore.err" &
 P2=$!
 
 cleanup() {

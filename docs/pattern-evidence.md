@@ -8,7 +8,7 @@ Update this file after each full gate run.
 - Contract gate command: `./tests/contract/run-all-contracts.sh`
 - Pattern verifier command: `./scripts/control-plane/verify-patterns --umbrella-root . --require-docs`
 - Pattern verifier result: `PASS` (all 7 patterns reported `FULL`) at `2026-03-11T15:52:18.161407+00:00`
-- Contract log path: `/tmp/umbrella04-contract-gate.out`
+- Contract log path: `tmp/umbrella04-contract-gate.out`
 - Contract execution note: service-process contract scripts require non-sandbox execution to bind local ports; latest non-sandbox log shows passing through `test-service-manager.sh` plus the new `test-run-transition-guard.sh` PASS.
 
 ## Evidence Pointers

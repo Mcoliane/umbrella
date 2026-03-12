@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+mkdir -p "$ROOT/tmp"
 MGR="$ROOT/scripts/control-plane/manage-service-mesh"
 RUNNER="$ROOT/scripts/control-plane/run-umbrella-control-plane"
 PLAN="control-plane/planner/plans/service-mesh-smoke.json"
@@ -16,7 +17,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$MGR" bringup --umbrella-root "$ROOT" --manifest "$MANIFEST" >/tmp/umbrella04-auth-bringup.out
+"$MGR" bringup --umbrella-root "$ROOT" --manifest "$MANIFEST" >"$ROOT/tmp/umbrella04-auth-bringup.out"
 
 python3 - "$MANIFEST" <<'PY'
 import json, sys, urllib.request, urllib.error
@@ -70,7 +71,7 @@ set +e
   --execution-url "$(python3 -c "import json;print(json.load(open('$MANIFEST'))['services']['execution']['url'])")" \
   --approval-url "$(python3 -c "import json;print(json.load(open('$MANIFEST'))['services']['approval']['url'])")" \
   --orchestrator-url "$(python3 -c "import json;print(json.load(open('$MANIFEST'))['services']['orchestrator']['url'])")" \
-  >/tmp/umbrella04-auth-runner-bad.out 2>/tmp/umbrella04-auth-runner-bad.err
+  >"$ROOT/tmp/umbrella04-auth-runner-bad.out" 2>"$ROOT/tmp/umbrella04-auth-runner-bad.err"
 RC_BAD=$?
 set -e
 if [[ "$RC_BAD" -eq 0 ]]; then
@@ -80,7 +81,7 @@ fi
 
 # runner with token should succeed
 # shellcheck disable=SC2086
-"$RUNNER" --umbrella-root "$ROOT" --plan "$PLAN" --run-id "$RUN_GOOD" $ARGS >/tmp/umbrella04-auth-runner-good.out
+"$RUNNER" --umbrella-root "$ROOT" --plan "$PLAN" --run-id "$RUN_GOOD" $ARGS >"$ROOT/tmp/umbrella04-auth-runner-good.out"
 
 ROOT="$ROOT" RUN_ID="$RUN_GOOD" python3 - <<'PY'
 import json, os

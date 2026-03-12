@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+mkdir -p "$ROOT/tmp"
 RUNNER="$ROOT/scripts/control-plane/run-umbrella-control-plane"
 PLAN="control-plane/planner/plans/memory-core-shared-smoke.json"
 RUN_ID="run-memory-core-shared-$(date +%s)"
@@ -31,21 +32,21 @@ APPROVAL_URL="http://127.0.0.1:$APPROVAL_PORT"
 ORCH_URL="http://127.0.0.1:$ORCH_PORT"
 MEM_CORE_URL="http://127.0.0.1:$MEM_CORE_PORT"
 
-python3 "$ROOT/services/policy/app.py" --host 127.0.0.1 --port "$POLICY_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-mc-policy.out 2>/tmp/umbrella04-mc-policy.err &
+python3 "$ROOT/services/policy/app.py" --host 127.0.0.1 --port "$POLICY_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-mc-policy.out" 2>"$ROOT/tmp/umbrella04-mc-policy.err" &
 P1=$!
-python3 "$ROOT/services/lifecycle/app.py" --host 127.0.0.1 --port "$LIFECYCLE_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-mc-lifecycle.out 2>/tmp/umbrella04-mc-lifecycle.err &
+python3 "$ROOT/services/lifecycle/app.py" --host 127.0.0.1 --port "$LIFECYCLE_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-mc-lifecycle.out" 2>"$ROOT/tmp/umbrella04-mc-lifecycle.err" &
 P2=$!
-python3 "$ROOT/services/router/app.py" --host 127.0.0.1 --port "$ROUTER_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-mc-router.out 2>/tmp/umbrella04-mc-router.err &
+python3 "$ROOT/services/router/app.py" --host 127.0.0.1 --port "$ROUTER_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-mc-router.out" 2>"$ROOT/tmp/umbrella04-mc-router.err" &
 P3=$!
-python3 "$ROOT/services/scheduler/app.py" --host 127.0.0.1 --port "$SCHED_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-mc-scheduler.out 2>/tmp/umbrella04-mc-scheduler.err &
+python3 "$ROOT/services/scheduler/app.py" --host 127.0.0.1 --port "$SCHED_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-mc-scheduler.out" 2>"$ROOT/tmp/umbrella04-mc-scheduler.err" &
 P4=$!
-python3 "$ROOT/services/memory-core/app.py" --host 127.0.0.1 --port "$MEM_CORE_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-mc-memorycore.out 2>/tmp/umbrella04-mc-memorycore.err &
+python3 "$ROOT/services/memory-core/app.py" --host 127.0.0.1 --port "$MEM_CORE_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-mc-memorycore.out" 2>"$ROOT/tmp/umbrella04-mc-memorycore.err" &
 P5=$!
-python3 "$ROOT/services/execution/app.py" --host 127.0.0.1 --port "$EXEC_PORT" --umbrella-root "$ROOT" --memory-core-url "$MEM_CORE_URL" --policy-url "$POLICY_URL" >/tmp/umbrella04-mc-execution.out 2>/tmp/umbrella04-mc-execution.err &
+python3 "$ROOT/services/execution/app.py" --host 127.0.0.1 --port "$EXEC_PORT" --umbrella-root "$ROOT" --memory-core-url "$MEM_CORE_URL" --policy-url "$POLICY_URL" >"$ROOT/tmp/umbrella04-mc-execution.out" 2>"$ROOT/tmp/umbrella04-mc-execution.err" &
 P6=$!
-python3 "$ROOT/services/approval/app.py" --host 127.0.0.1 --port "$APPROVAL_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-mc-approval.out 2>/tmp/umbrella04-mc-approval.err &
+python3 "$ROOT/services/approval/app.py" --host 127.0.0.1 --port "$APPROVAL_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-mc-approval.out" 2>"$ROOT/tmp/umbrella04-mc-approval.err" &
 P7=$!
-python3 "$ROOT/services/orchestrator/app.py" --host 127.0.0.1 --port "$ORCH_PORT" --umbrella-root "$ROOT" >/tmp/umbrella04-mc-orchestrator.out 2>/tmp/umbrella04-mc-orchestrator.err &
+python3 "$ROOT/services/orchestrator/app.py" --host 127.0.0.1 --port "$ORCH_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-mc-orchestrator.out" 2>"$ROOT/tmp/umbrella04-mc-orchestrator.err" &
 P8=$!
 
 cleanup(){
@@ -113,7 +114,7 @@ PY
   --execution-url "$EXEC_URL" \
   --approval-url "$APPROVAL_URL" \
   --orchestrator-url "$ORCH_URL" \
-  >/tmp/umbrella04-mc-runner.out
+  >"$ROOT/tmp/umbrella04-mc-runner.out"
 
 ROOT="$ROOT" RUN_ID="$RUN_ID" python3 - <<'PY'
 import json, os
