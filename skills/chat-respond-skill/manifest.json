@@ -1,0 +1,87 @@
+{
+  "id": "umbrella.chat.respond.skill",
+  "name": "Umbrella Chat Respond Skill",
+  "version": "0.1.0",
+  "apiVersion": "umbrella.catalog.manifest.v1",
+  "kind": "skill",
+  "runtime": "python",
+  "entrypoint": "bin/chat-respond-skill.py",
+  "defaultEnabled": true,
+  "isolationMode": "process",
+  "compatibility": {
+    "umbrella": {
+      "minVersion": "0.4.0"
+    },
+    "pluginHostRuntimes": [
+      "python"
+    ],
+    "apiVersions": [
+      "umbrella.catalog.manifest.v1"
+    ],
+    "actionSchemaVersions": [
+      "umbrella.catalog.action.v1"
+    ],
+    "requiresFeatures": []
+  },
+  "executionPolicy": {
+    "envAllowlist": [
+      "UMBRELLA_CHAT_BASE_URL",
+      "UMBRELLA_CHAT_API_KEY",
+      "UMBRELLA_CHAT_MODEL",
+      "UMBRELLA_CHAT_PROVIDER",
+      "UMBRELLA_CHAT_TIMEOUT_SEC"
+    ],
+    "network": "none",
+    "fs": "scratch-only",
+    "maxRuntimeSec": 20,
+    "maxOutputBytes": 4096,
+    "maxInputBytes": 32768,
+    "isolationProfile": "python-restricted"
+  },
+  "sessionHooks": {
+    "suggestedContexts": [
+      "conversation",
+      "orchestration"
+    ]
+  },
+  "actions": [
+    {
+      "id": "skill.chat.respond",
+      "title": "Chat Respond",
+      "description": "Generate a direct conversational reply or a delegation plan for a town agent.",
+      "requiredCapabilities": [],
+      "policyHints": {
+        "riskClass": "low",
+        "approvalMode": "none",
+        "memoryAccess": "session",
+        "networkAccess": "none",
+        "fsAccess": "scratch-only",
+        "processAccess": "restricted-subprocess"
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "message": { "type": "string" },
+          "sessionId": { "type": "string" },
+          "agentId": { "type": "string" },
+          "shopId": { "type": "string" },
+          "conversationHistory": { "type": "array" },
+          "townContext": { "type": "object" },
+          "availableShops": { "type": "array" },
+          "subAgents": { "type": "array" },
+          "runtimeMode": { "type": "string" },
+          "systemPrompt": { "type": "string" },
+          "instructions": { "type": "string" }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "reply": { "type": "string" },
+          "mode": { "type": "string" },
+          "delegationPlan": { "type": "array" }
+        }
+      }
+    }
+  ]
+}

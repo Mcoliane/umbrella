@@ -10,15 +10,23 @@
       "defaultShopName": "Town Hall",
       "shopType": "town-hall",
       "shopProfileId": "",
-      "enabledActionIds": [],
+      "enabledActionIds": [
+        "skill.chat.respond",
+        "skill.memory.summarize"
+      ],
       "capabilityFamilies": [
+        "catalog.skill.invoke",
         "session.turn.invoke",
         "shop.action.invoke",
         "delegation.invoke"
       ],
       "metadata": {
         "runtimePreferred": "umbrella-agent-runtime",
-        "business": "town-hall"
+        "business": "town-hall",
+        "promptTemplate": "control-plane/runtime/prompts/mayor.txt",
+        "conversationStyle": "concise-coordinating",
+        "defaultMode": "direct-first",
+        "delegationPolicy": "delegate-when-specialized"
       }
     },
     "umbrella.originator.v1": {
@@ -30,15 +38,21 @@
       "defaultShopName": "Originator Studio",
       "shopType": "originator-studio",
       "shopProfileId": "",
-      "enabledActionIds": [],
+      "enabledActionIds": [
+        "skill.chat.respond",
+        "skill.memory.summarize"
+      ],
       "capabilityFamilies": [
+        "catalog.skill.invoke",
         "session.turn.invoke",
         "shop.action.invoke",
         "delegation.invoke"
       ],
       "metadata": {
         "runtimePreferred": "umbrella-agent-runtime",
-        "business": "originator-studio"
+        "business": "originator-studio",
+        "promptTemplate": "control-plane/runtime/prompts/originator.txt",
+        "conversationStyle": "concise-operational"
       }
     },
     "umbrella.programming-agent.v1": {
@@ -51,6 +65,7 @@
       "shopType": "development-shop",
       "shopProfileId": "",
       "enabledActionIds": [
+        "skill.chat.respond",
         "skill.memory.summarize",
         "skill.memory.get",
         "skill.memory.search"
@@ -62,7 +77,9 @@
       ],
       "metadata": {
         "runtimePreferred": "umbrella-agent-runtime",
-        "business": "development-shop"
+        "business": "development-shop",
+        "promptTemplate": "control-plane/runtime/prompts/programming-agent.txt",
+        "conversationStyle": "technical"
       }
     }
   }

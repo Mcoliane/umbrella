@@ -14,6 +14,7 @@ assert isinstance(payload.get('services'), list), payload
 assert isinstance(payload.get('sessions'), list), payload
 assert isinstance(payload.get('agentPackages'), list), payload
 assert isinstance(payload.get('runtimeCapabilities'), dict), payload
+assert isinstance(payload.get('platformStack'), dict), payload
 print('platform tui smoke PASS')
 PY
 

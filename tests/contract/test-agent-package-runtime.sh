@@ -96,6 +96,7 @@ assert next((p for p in packages.get('packages', []) if p.get('packageId') == 'u
 package = next((p for p in packages.get('packages', []) if p.get('packageId') == 'umbrella.programming-agent.v1'), None)
 assert package is not None, packages
 assert package.get('runtimeId') == 'umbrella-agent-runtime', package
+assert 'skill.chat.respond' in (package.get('enabledActionIds') or []), package
 assert 'skill.memory.summarize' in (package.get('enabledActionIds') or []), package
 
 registered = post(policy_url + '/v1/policy/agents/register', {
@@ -132,6 +133,7 @@ assert shop.get('name') == 'Development Shop', originated
 assert shop.get('metadata', {}).get('runtimeId') == 'umbrella-agent-runtime', originated
 assert shop.get('metadata', {}).get('business') == 'development-shop', originated
 assert 'catalog.skill.invoke' in (shop.get('metadata', {}).get('capabilityFamilies') or []), originated
+assert 'skill.chat.respond' in (shop.get('enabledActionIds') or []), originated
 assert 'skill.memory.summarize' in (shop.get('enabledActionIds') or []), originated
 
 invoked = post(

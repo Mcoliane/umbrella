@@ -35,6 +35,7 @@ Umbrella currently manages three runtime classes:
 `umbrella-agent-runtime`
 - Umbrella-native agent runtime
 - owns sessions, shops, sub-agents, catalog-managed skills, and plugin-host-backed execution
+- owns server-side conversation through `POST /v1/sessions/{id}/converse`
 
 `removed`
 - supported alternate runtime
@@ -94,6 +95,7 @@ High-level flow:
 
 It currently includes:
 - catalog-managed skills and plugins
+- direct conversational skill routing through `skill.chat.respond`
 - plugin-host execution boundary
 - town/session runtime
 - shop-scoped action governance
@@ -117,6 +119,7 @@ The Umbrella-native session model is town-shaped:
 - sub-agents are runtime instances of those workers/shops inside a session
 
 Sessions support:
+- direct server-side conversation
 - shop creation and governance
 - delegation
 - turn orchestration
@@ -140,6 +143,8 @@ Current built-in packages:
 - `umbrella.mayor.v1`
 - `umbrella.originator.v1`
 - `umbrella.programming-agent.v1`
+
+The civic packages now include `skill.chat.respond`, so a fresh town can answer directly before any worker shop exists.
 
 These live in:
 - [control-plane/runtime/agent-packages.json](control-plane/runtime/agent-packages.json)
@@ -181,6 +186,7 @@ Examples owned by `native`:
 - `memory.hydrate`
 
 Examples owned by `umbrella-agent-runtime`:
+- `skill.chat.respond`
 - `skill.memory.get`
 - `skill.memory.search`
 - `skill.memory.link`
@@ -279,17 +285,41 @@ Quality:
 
 ## Platform TUI
 
-A first working terminal UI now exists at:
+A working terminal UI now exists at:
 - `python3 scripts/umbrella-tui`
 
-Current slice:
-- home dashboard for service and runtime visibility
-- town/session list from live and generated state
-- create/open town session
-- inspect mayor, originator, shops, and message history
-- post a user message to the mayor
+Current direction:
+- `Town Hall` is the default screen
+- the TUI is transcript-first, not dashboard-first
+- platform lifecycle, session selection, and target switching are exposed as commands and hotkeys around the transcript
+- you can talk directly to the mayor or another agent from the main screen
+- the TUI is a thin client over the session service `converse` endpoint
+- mayor conversations can answer directly or orchestrate worker shops and return a mayor summary
 
-This is the first implementation slice, not the final operator console. The build spec is in [docs/platform-tui.md](docs/platform-tui.md).
+Current controls:
+- `Enter` send a message to the current target
+- `/` open slash-command mode
+- `Tab` cycle the current target
+- `s` choose a session
+- `n` create a new town
+- `S` start the full runtime stack
+- `C` start the core stack
+- `X` stop the stack
+
+Current command set:
+- `/help`
+- `/status`
+- `/new [title]`
+- `/sessions`
+- `/session <id>`
+- `/agent <id>`
+- `/shops`
+- `/workers`
+- `/refresh`
+- `/start [full|core]`
+- `/stop`
+
+This is still an early operator console, but it is now shaped around actual conversation with the town instead of a static dashboard. The build spec is in [docs/platform-tui.md](docs/platform-tui.md).
 
 ## Main Docs
 

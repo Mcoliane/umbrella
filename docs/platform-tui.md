@@ -17,6 +17,24 @@ That is enough for contracts and engineering work, but it is not the right front
 
 The TUI should be the operator console and the first usable front end for the Umbrella-native runtime.
 
+## Current Direction
+
+The first dashboard-heavy TUI slice was the wrong shape.
+
+The platform TUI is now being rebuilt around the actual Removed interaction model:
+- one primary transcript
+- one primary composer
+- thin status/footer controls
+- slash commands for operator actions
+- session and target selection as lightweight prompts, not the main screen
+
+That means `Town Hall` is the default surface, not `Home`.
+
+The current implementation now talks to the session service through a real server-side conversation endpoint:
+- `POST /v1/sessions/{id}/converse`
+- the TUI no longer owns mayor/originator conversation policy itself
+- the mayor can reply directly in a fresh town and can still delegate to workers when they exist
+
 ## Product Position
 
 This TUI is not just a thin wrapper around existing CLI commands.
@@ -98,30 +116,9 @@ python3 scripts/umbrella-tui --session-id session-123
 
 ## Core Information Architecture
 
-The TUI should have six top-level views.
+The TUI should be chat-first, with secondary operator surfaces around it.
 
-### 1. Home
-
-Purpose:
-- answer “is the platform up?”
-
-Show:
-- service mesh health
-- runtime availability
-- active sessions count
-- active runs count
-- approval queue count
-- quick actions
-
-Quick actions:
-- `Start Town`
-- `Open Town`
-- `View Runs`
-- `View Approvals`
-- `View Services`
-- `View Memory`
-
-### 2. Town Hall
+### 1. Town Hall
 
 Purpose:
 - converse with the mayor and inspect the current town
@@ -129,9 +126,9 @@ Purpose:
 This is the primary screen.
 
 Layout:
-- left pane: session and town navigator
-- center pane: conversation transcript with mayor
-- right pane: town state
+- center pane: conversation transcript
+- bottom input/composer interaction
+- right pane: town state, agents, shops, and service/runtime summary
 
 Right pane should show:
 - mayor package and shop
@@ -141,8 +138,10 @@ Right pane should show:
 - available actions in selected shop
 - heartbeat and liveness state
 
-Bottom input bar:
-- free-form message to the mayor
+Primary interaction:
+- `Enter` to send a message to the current target
+- `/` to open slash-command mode
+- `Tab` to cycle targets
 
 Actions:
 - send message
@@ -152,10 +151,10 @@ Actions:
 - compact conversation
 
 Important note:
-- the mayor conversation path should not stay just “append a message to session history”
-- the TUI should translate a conversation action into a turn workflow when needed
+- the TUI should stay thin here
+- conversation routing now belongs in the session service, which decides direct reply vs orchestration
 
-### 3. Turns
+### 2. Turns
 
 Purpose:
 - make delegation and orchestration understandable
@@ -178,7 +177,7 @@ For each delegation:
 
 This is where the operator sees the town actually working.
 
-### 4. Shops
+### 3. Shops
 
 Purpose:
 - manage the town’s businesses
@@ -200,7 +199,7 @@ Actions:
 
 This view should let the operator understand each shop as an operational environment, not just as a label.
 
-### 5. Runs
+### 4. Runs
 
 Purpose:
 - expose the older control-plane run model
@@ -218,7 +217,7 @@ Actions:
 - open run step details
 - jump to approval if blocked
 
-### 6. Services
+### 5. Services
 
 Purpose:
 - operator diagnostics
@@ -247,6 +246,23 @@ Actions:
 - refresh health
 - tail relevant log file path
 - copy endpoint URL
+
+## Slash Commands
+
+The chat surface should expose operator actions through commands instead of pushing users into dashboard navigation first.
+
+Current command set:
+- `/help`
+- `/status`
+- `/new [title]`
+- `/sessions`
+- `/session <id>`
+- `/agent <id>`
+- `/shops`
+- `/workers`
+- `/refresh`
+- `/start [full|core]`
+- `/stop`
 
 ## Dedicated Mayor Conversation Model
 
@@ -550,8 +566,11 @@ If that feels good, the rest of the TUI will have a solid foundation.
 Implemented now:
 - `scripts/umbrella-tui`
 - stdlib curses-based shell under `services/tui/`
+- full-stack lifecycle launcher:
+  - `scripts/control-plane/manage-platform-stack`
 - Home view:
   - service health
+  - platform start/stop controls
   - session list
   - runtime classes
   - agent package list
@@ -560,7 +579,8 @@ Implemented now:
   - shop list
   - message transcript
   - create town
-  - post a user message to the mayor
+  - talk to the mayor or another agent/shop
+  - mayor path can orchestrate worker shops and return the reconciliation summary as the reply
 
 Not implemented yet:
 - dedicated turn creation and orchestration controls

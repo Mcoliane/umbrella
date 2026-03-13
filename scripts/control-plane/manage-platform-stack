@@ -1,0 +1,355 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  manage-platform-stack bringup [--umbrella-root PATH] [--manifest PATH] [--profile core|full] [--token TOKEN]
+  manage-platform-stack status  [--umbrella-root PATH] [--manifest PATH]
+  manage-platform-stack shutdown [--umbrella-root PATH] [--manifest PATH]
+EOF
+}
+
+cmd="${1:-}"
+if [[ -z "$cmd" ]]; then
+  usage
+  exit 2
+fi
+shift || true
+
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+MANIFEST=""
+PROFILE="full"
+MESH_TOKEN=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --umbrella-root)
+      ROOT="$2"
+      shift 2
+      ;;
+    --manifest)
+      MANIFEST="$2"
+      shift 2
+      ;;
+    --profile)
+      PROFILE="$2"
+      shift 2
+      ;;
+    --token)
+      MESH_TOKEN="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1"
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+ROOT="$(cd "$ROOT" && pwd)"
+if [[ -z "$MANIFEST" ]]; then
+  MANIFEST="$ROOT/control-plane/runtime/platform-manifest.json"
+fi
+RUNTIME_DIR="$(dirname "$MANIFEST")"
+LOG_DIR="$RUNTIME_DIR/logs"
+TOKEN_PATH="$RUNTIME_DIR/platform-token.txt"
+mkdir -p "$RUNTIME_DIR" "$LOG_DIR"
+
+case "$PROFILE" in
+  core|full) ;;
+  *)
+    echo "invalid profile: $PROFILE"
+    exit 2
+    ;;
+esac
+
+free_port() {
+  python3 - <<'PY'
+import socket
+s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()
+PY
+}
+
+spawn_service() {
+  local out_log="$1"
+  local err_log="$2"
+  shift 2
+  nohup "$@" >"$out_log" 2>"$err_log" </dev/null &
+  echo $!
+}
+
+wait_health() {
+  local url="$1"
+  local token="${2:-}"
+  local attempts=60
+  local i=1
+  while [[ "$i" -le "$attempts" ]]; do
+    if python3 - "$url" "$token" <<'PY'
+import json, sys, urllib.request
+url=sys.argv[1]
+token=sys.argv[2]
+try:
+    headers={}
+    if token:
+        headers['Authorization']=f'Bearer {token}'
+    req=urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=1.5) as r:
+        data=json.loads(r.read().decode('utf-8'))
+    raise SystemExit(0 if data.get('status') == 'ok' else 1)
+except Exception:
+    raise SystemExit(1)
+PY
+    then
+      return 0
+    fi
+    sleep 0.2
+    i=$((i+1))
+  done
+  return 1
+}
+
+build_manifest() {
+  python3 - "$MANIFEST" "$ROOT" "$LOG_DIR" "$TOKEN_PATH" "$PROFILE" "$@" <<'PY'
+import json, sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+manifest, root, log_dir, token_path, profile, *rows = sys.argv[1:]
+services = {}
+for row in rows:
+    name, port, pid, health = row.split("|", 3)
+    services[name] = {
+        "port": int(port),
+        "pid": int(pid),
+        "health": health,
+        "url": f"http://127.0.0.1:{int(port)}",
+        "logOut": str(Path(log_dir) / f"{name}.out"),
+        "logErr": str(Path(log_dir) / f"{name}.err"),
+    }
+
+manifest_obj = {
+    "version": "umbrella.platform-manifest.v1",
+    "createdAt": datetime.now(timezone.utc).isoformat(),
+    "umbrellaRoot": root,
+    "profile": profile,
+    "auth": {"tokenPath": token_path},
+    "services": services,
+}
+Path(manifest).write_text(json.dumps(manifest_obj, indent=2) + "\n", encoding="utf-8")
+print(json.dumps(manifest_obj, indent=2))
+PY
+}
+
+status_impl() {
+  if [[ ! -f "$MANIFEST" ]]; then
+    echo "{\"ok\":false,\"reason\":\"manifest_not_found\",\"manifest\":\"$MANIFEST\"}"
+    return 1
+  fi
+  python3 - "$MANIFEST" <<'PY'
+import json, os, sys, urllib.request
+from pathlib import Path
+m = json.loads(Path(sys.argv[1]).read_text())
+auth = m.get('auth') if isinstance(m.get('auth'), dict) else {}
+token = ''
+tp = str(auth.get('tokenPath', '')).strip()
+if tp:
+    p = Path(tp)
+    if p.exists():
+        token = p.read_text(encoding='utf-8').strip()
+rows = []
+ok = True
+for name, s in m.get('services', {}).items():
+    pid = int(s.get('pid', 0))
+    alive = False
+    if pid > 0:
+        try:
+            os.kill(pid, 0)
+            alive = True
+        except Exception:
+            alive = False
+    health_ok = False
+    if alive:
+        url = (s.get('url', '').rstrip('/') + s.get('health', '')).strip()
+        try:
+            headers = {}
+            if token and name in {'policy','lifecycle','router','scheduler','memory-core','execution','approval','orchestrator'}:
+                headers['Authorization'] = f'Bearer {token}'
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=1.5) as r:
+                data = json.loads(r.read().decode('utf-8'))
+            health_ok = data.get('status') == 'ok'
+        except Exception:
+            health_ok = False
+    rows.append({
+        'service': name,
+        'pid': pid,
+        'alive': alive,
+        'healthOk': health_ok,
+        'url': s.get('url', ''),
+    })
+    if not (alive and health_ok):
+        ok = False
+print(json.dumps({'ok': ok, 'manifest': str(Path(sys.argv[1])), 'profile': m.get('profile', ''), 'services': rows}, indent=2))
+raise SystemExit(0 if ok else 1)
+PY
+}
+
+shutdown_impl() {
+  if [[ ! -f "$MANIFEST" ]]; then
+    echo "{\"ok\":true,\"stopped\":[],\"manifest\":\"$MANIFEST\",\"note\":\"manifest_not_found\"}"
+    return 0
+  fi
+  local pids
+  pids="$(python3 - "$MANIFEST" <<'PY'
+import json, sys
+from pathlib import Path
+m=json.loads(Path(sys.argv[1]).read_text())
+print(' '.join(str(s.get('pid', 0)) for s in m.get('services', {}).values() if int(s.get('pid', 0)) > 0))
+PY
+)"
+  if [[ -n "$pids" ]]; then
+    kill $pids >/dev/null 2>&1 || true
+    sleep 0.5
+    for pid in $pids; do
+      if kill -0 "$pid" >/dev/null 2>&1; then
+        kill -9 "$pid" >/dev/null 2>&1 || true
+      fi
+    done
+  fi
+  python3 - "$MANIFEST" <<'PY'
+import json, sys
+from datetime import datetime, timezone
+from pathlib import Path
+p=Path(sys.argv[1])
+obj=json.loads(p.read_text())
+obj['stoppedAt']=datetime.now(timezone.utc).isoformat()
+for s in obj.get('services', {}).values():
+    s['pid']=0
+p.write_text(json.dumps(obj, indent=2) + '\n', encoding='utf-8')
+print(json.dumps({'ok': True, 'manifest': str(p), 'stoppedAt': obj['stoppedAt']}, indent=2))
+PY
+}
+
+bringup_impl() {
+  if [[ -f "$MANIFEST" ]]; then
+    set +e
+    status_impl >/dev/null 2>&1
+    local rc=$?
+    set -e
+    if [[ "$rc" -eq 0 ]]; then
+      echo "platform stack already running; manifest: $MANIFEST"
+      python3 - "$MANIFEST" <<'PY'
+import json, sys
+from pathlib import Path
+print(json.dumps(json.loads(Path(sys.argv[1]).read_text()), indent=2))
+PY
+      return 0
+    fi
+  fi
+
+  if [[ -z "$MESH_TOKEN" ]]; then
+    if [[ -f "$TOKEN_PATH" ]]; then
+      MESH_TOKEN="$(tr -d '\n\r' < "$TOKEN_PATH")"
+    fi
+  fi
+  if [[ -z "$MESH_TOKEN" ]]; then
+    MESH_TOKEN="$(python3 - <<'PY'
+import secrets
+print(secrets.token_hex(24))
+PY
+)"
+  fi
+  printf '%s\n' "$MESH_TOKEN" > "$TOKEN_PATH"
+
+  POLICY_PORT="${POLICY_PORT:-$(free_port)}"
+  LIFECYCLE_PORT="${LIFECYCLE_PORT:-$(free_port)}"
+  ROUTER_PORT="${ROUTER_PORT:-$(free_port)}"
+  SCHEDULER_PORT="${SCHEDULER_PORT:-$(free_port)}"
+  MEMORY_CORE_PORT="${MEMORY_CORE_PORT:-$(free_port)}"
+  EXECUTION_PORT="${EXECUTION_PORT:-$(free_port)}"
+  APPROVAL_PORT="${APPROVAL_PORT:-$(free_port)}"
+  ORCHESTRATOR_PORT="${ORCHESTRATOR_PORT:-$(free_port)}"
+  CATALOG_PORT="${CATALOG_PORT:-$(free_port)}"
+  PLUGIN_HOST_PORT="${PLUGIN_HOST_PORT:-$(free_port)}"
+  SESSION_PORT="${SESSION_PORT:-$(free_port)}"
+
+  POLICY_URL="http://127.0.0.1:$POLICY_PORT"
+  LIFECYCLE_URL="http://127.0.0.1:$LIFECYCLE_PORT"
+  ROUTER_URL="http://127.0.0.1:$ROUTER_PORT"
+  SCHEDULER_URL="http://127.0.0.1:$SCHEDULER_PORT"
+  MEMORY_CORE_URL="http://127.0.0.1:$MEMORY_CORE_PORT"
+  EXECUTION_URL="http://127.0.0.1:$EXECUTION_PORT"
+  APPROVAL_URL="http://127.0.0.1:$APPROVAL_PORT"
+  ORCHESTRATOR_URL="http://127.0.0.1:$ORCHESTRATOR_PORT"
+  CATALOG_URL="http://127.0.0.1:$CATALOG_PORT"
+  PLUGIN_HOST_URL="http://127.0.0.1:$PLUGIN_HOST_PORT"
+  SESSION_URL="http://127.0.0.1:$SESSION_PORT"
+
+  declare -a SERVICES=()
+
+  P1="$(spawn_service "$LOG_DIR/policy.out" "$LOG_DIR/policy.err" python3 "$ROOT/services/policy/app.py" --host 127.0.0.1 --port "$POLICY_PORT" --umbrella-root "$ROOT" --catalog-url "$CATALOG_URL" --token "$MESH_TOKEN")"
+  SERVICES+=("policy|$POLICY_PORT|$P1|/v1/policy/health")
+  P2="$(spawn_service "$LOG_DIR/lifecycle.out" "$LOG_DIR/lifecycle.err" python3 "$ROOT/services/lifecycle/app.py" --host 127.0.0.1 --port "$LIFECYCLE_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN")"
+  SERVICES+=("lifecycle|$LIFECYCLE_PORT|$P2|/v1/lifecycle/health")
+  P3="$(spawn_service "$LOG_DIR/router.out" "$LOG_DIR/router.err" python3 "$ROOT/services/router/app.py" --host 127.0.0.1 --port "$ROUTER_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN")"
+  SERVICES+=("router|$ROUTER_PORT|$P3|/v1/router/health")
+  P4="$(spawn_service "$LOG_DIR/scheduler.out" "$LOG_DIR/scheduler.err" python3 "$ROOT/services/scheduler/app.py" --host 127.0.0.1 --port "$SCHEDULER_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN")"
+  SERVICES+=("scheduler|$SCHEDULER_PORT|$P4|/v1/scheduler/health")
+  P5="$(spawn_service "$LOG_DIR/memory-core.out" "$LOG_DIR/memory-core.err" python3 "$ROOT/services/memory-core/app.py" --host 127.0.0.1 --port "$MEMORY_CORE_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN")"
+  SERVICES+=("memory-core|$MEMORY_CORE_PORT|$P5|/v1/memory-core/health")
+  P9="$(spawn_service "$LOG_DIR/catalog.out" "$LOG_DIR/catalog.err" python3 "$ROOT/services/catalog/app.py" --host 127.0.0.1 --port "$CATALOG_PORT" --umbrella-root "$ROOT")"
+  SERVICES+=("catalog|$CATALOG_PORT|$P9|/v1/catalog/health")
+  P10="$(spawn_service "$LOG_DIR/plugin-host.out" "$LOG_DIR/plugin-host.err" python3 "$ROOT/services/plugin_host/app.py" --host 127.0.0.1 --port "$PLUGIN_HOST_PORT" --umbrella-root "$ROOT" --catalog-url "$CATALOG_URL")"
+  SERVICES+=("plugin-host|$PLUGIN_HOST_PORT|$P10|/v1/plugin-host/health")
+  P6="$(spawn_service "$LOG_DIR/execution.out" "$LOG_DIR/execution.err" python3 "$ROOT/services/execution/app.py" --host 127.0.0.1 --port "$EXECUTION_PORT" --umbrella-root "$ROOT" --memory-core-url "$MEMORY_CORE_URL" --policy-url "$POLICY_URL" --catalog-url "$CATALOG_URL" --plugin-host-url "$PLUGIN_HOST_URL" --mesh-token "$MESH_TOKEN" --token "$MESH_TOKEN")"
+  SERVICES+=("execution|$EXECUTION_PORT|$P6|/v1/execution/health")
+  P7="$(spawn_service "$LOG_DIR/approval.out" "$LOG_DIR/approval.err" python3 "$ROOT/services/approval/app.py" --host 127.0.0.1 --port "$APPROVAL_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN")"
+  SERVICES+=("approval|$APPROVAL_PORT|$P7|/v1/approval/health")
+  P8="$(spawn_service "$LOG_DIR/orchestrator.out" "$LOG_DIR/orchestrator.err" python3 "$ROOT/services/orchestrator/app.py" --host 127.0.0.1 --port "$ORCHESTRATOR_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN")"
+  SERVICES+=("orchestrator|$ORCHESTRATOR_PORT|$P8|/v1/orchestrator/health")
+
+  if [[ "$PROFILE" == "full" ]]; then
+    P11="$(spawn_service "$LOG_DIR/session.out" "$LOG_DIR/session.err" python3 "$ROOT/services/session/app.py" --host 127.0.0.1 --port "$SESSION_PORT" --umbrella-root "$ROOT" --catalog-url "$CATALOG_URL" --execution-url "$EXECUTION_URL")"
+    SERVICES+=("session|$SESSION_PORT|$P11|/v1/session/health")
+  fi
+
+  build_manifest "${SERVICES[@]}" >/dev/null
+
+  wait_health "$POLICY_URL/v1/policy/health" "$MESH_TOKEN"
+  wait_health "$LIFECYCLE_URL/v1/lifecycle/health" "$MESH_TOKEN"
+  wait_health "$ROUTER_URL/v1/router/health" "$MESH_TOKEN"
+  wait_health "$SCHEDULER_URL/v1/scheduler/health" "$MESH_TOKEN"
+  wait_health "$MEMORY_CORE_URL/v1/memory-core/health" "$MESH_TOKEN"
+  wait_health "$CATALOG_URL/v1/catalog/health"
+  wait_health "$PLUGIN_HOST_URL/v1/plugin-host/health"
+  wait_health "$EXECUTION_URL/v1/execution/health" "$MESH_TOKEN"
+  wait_health "$APPROVAL_URL/v1/approval/health" "$MESH_TOKEN"
+  wait_health "$ORCHESTRATOR_URL/v1/orchestrator/health" "$MESH_TOKEN"
+  if [[ "$PROFILE" == "full" ]]; then
+    wait_health "$SESSION_URL/v1/session/health"
+  fi
+
+  status_impl
+}
+
+case "$cmd" in
+  bringup)
+    bringup_impl
+    ;;
+  status)
+    status_impl
+    ;;
+  shutdown)
+    shutdown_impl
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

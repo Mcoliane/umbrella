@@ -11,6 +11,11 @@ This session model treats the first-contact agent as the mayor of the town:
 - reusable `shop profiles` let the originator stamp out standard shops with stable defaults
 - source-controlled `agent packages` let the originator stamp out full runtime-tuned workers with default role, shop, skills, runtime identity, and capability-family metadata
 - the mayor can open turns, fan work out by `shopId`, `shopProfileId`, or agent `role`, and reconcile results into a mayor summary
+- conversation is handled server-side through `POST /v1/sessions/{id}/converse`
+- the mayor is dual-mode:
+  - direct conversation through `skill.chat.respond`
+  - orchestration when a worker shop should handle the request
+- the originator is directly conversational too and can explain staffing/package decisions
 - orchestration plans can declare `dependsOn` and `inputBindings` so later shops can consume earlier shop outputs
 - dependency graphs can declare `onDependencyFailure` with `skip`, `fail-fast`, or `continue`
 - turn orchestration metadata can set default `onDependencyFailure` and `retryBudget`, with per-step overrides
@@ -50,6 +55,7 @@ python3 services/session/app.py --host 127.0.0.1 --port 8784 --catalog-url http:
 - `POST /v1/sessions/{id}/delegations`
 - `POST /v1/sessions/{id}/orchestrate-turn`
 - `POST /v1/sessions/{id}/messages`
+- `POST /v1/sessions/{id}/converse`
 - `POST /v1/sessions/{id}/invoke-action`
 - `POST /v1/sessions/{id}/compact`
 
@@ -89,5 +95,6 @@ python3 services/session/app.py --host 127.0.0.1 --port 8784 --catalog-url http:
 - the foundational civic packages are:
   - `umbrella.mayor.v1`
   - `umbrella.originator.v1`
+- those civic packages now include `skill.chat.respond` so a fresh town can answer conversationally before any worker shop exists
 - worker packages such as `umbrella.programming-agent.v1` sit underneath them
 - package-based originations can omit most worker/shop fields and let the package fill them in

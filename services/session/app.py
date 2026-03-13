@@ -52,6 +52,13 @@ def write_json(path: Path, obj: dict):
     path.write_text(json.dumps(obj, indent=2) + '\n', encoding='utf-8')
 
 
+def compact_text(value: str, limit: int = 280) -> str:
+    text = str(value or '').strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + '...'
+
+
 def json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict):
     body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
     handler.send_response(status)
@@ -568,7 +575,7 @@ class SessionEngine:
             shop_id = str(delegation.get('shopId', '')).strip() or 'shop'
             invocation = invocation_by_id.get(delegation_id, {})
             plugin_result = ((((invocation.get('result') or {}).get('result') or {}).get('pluginResult')) or {})
-            summary = str(plugin_result.get('summary', '')).strip()
+            summary = str(plugin_result.get('summary', '')).strip() or str(plugin_result.get('reply', '')).strip()
             if summary:
                 snippets.append(f'{shop_id}: {summary}')
         status = f'{len(completed)} completed'
@@ -783,6 +790,196 @@ class SessionEngine:
             out[shop_id] = [catalog_actions[action_id] for action_id in enabled_ids if action_id in catalog_actions]
         return out
 
+    def _append_message_row(self, session: dict, role: str, content: str, metadata: dict | None = None) -> dict:
+        message = {
+            'messageId': f'msg-{uuid.uuid4().hex[:12]}',
+            'role': role,
+            'content': str(content or ''),
+            'metadata': metadata or {},
+            'createdAt': now_iso(),
+        }
+        session['messages'].append(message)
+        return message
+
+    def _prompt_text(self, path_hint: str) -> str:
+        rel = str(path_hint or '').strip()
+        if not rel:
+            return ''
+        path = (self.root / rel).resolve()
+        if not path.exists():
+            return ''
+        try:
+            return path.read_text(encoding='utf-8').strip()
+        except Exception:
+            return ''
+
+    def _conversation_history(self, session: dict, limit: int = 12) -> list[dict]:
+        messages = session.get('messages') if isinstance(session.get('messages'), list) else []
+        rows: list[dict] = []
+        for message in messages[-limit:]:
+            if not isinstance(message, dict):
+                continue
+            rows.append(
+                {
+                    'role': str(message.get('role', '')).strip(),
+                    'content': str(message.get('content', '')).strip(),
+                    'metadata': message.get('metadata') if isinstance(message.get('metadata'), dict) else {},
+                }
+            )
+        return rows
+
+    def _available_worker_shops(self, session: dict) -> list[dict]:
+        shops = session.get('shops') if isinstance(session.get('shops'), dict) else {}
+        out: list[dict] = []
+        for shop_id, shop in shops.items():
+            if not isinstance(shop, dict):
+                continue
+            shop_type = str(shop.get('shopType', '')).strip()
+            if shop_type in {'town-hall', 'originator-studio'}:
+                continue
+            actions = self._effective_shop_action_ids(shop, self._catalog_action_map())
+            preferred = 'skill.chat.respond' if 'skill.chat.respond' in actions else ('skill.memory.summarize' if 'skill.memory.summarize' in actions else (actions[0] if actions else ''))
+            out.append(
+                {
+                    'shopId': str(shop_id).strip(),
+                    'name': str(shop.get('name', '')).strip() or str(shop_id).strip(),
+                    'shopType': shop_type,
+                    'ownerAgentId': str(shop.get('ownerAgentId', '')).strip(),
+                    'preferredConversationAction': preferred,
+                    'enabledActionIds': actions,
+                }
+            )
+        return out
+
+    def _resolve_conversation_target(self, session: dict, target: str) -> tuple[str, str, dict, dict]:
+        target = str(target or '').strip() or str(session.get('mayorAgentId', 'mayor')).strip() or 'mayor'
+        agents = self._agent_map(session)
+        shops = session.get('shops') if isinstance(session.get('shops'), dict) else {}
+
+        def resolve_shop_for_agent(resolved_agent_id: str, *, fallback_role: str = '') -> tuple[str, dict | None]:
+            resolved_agent = agents.get(resolved_agent_id) if resolved_agent_id else None
+            candidate_shop_id = str((resolved_agent or {}).get('shopId', '')).strip()
+            if candidate_shop_id and isinstance(shops.get(candidate_shop_id), dict):
+                return candidate_shop_id, shops[candidate_shop_id]
+            for current_shop_id, current_shop in shops.items():
+                if not isinstance(current_shop, dict):
+                    continue
+                if str(current_shop.get('ownerAgentId', '')).strip() == resolved_agent_id:
+                    return str(current_shop_id).strip(), current_shop
+            if fallback_role:
+                for current_agent_id, current_agent in agents.items():
+                    if str(current_agent.get('role', '')).strip() != fallback_role:
+                        continue
+                    return resolve_shop_for_agent(current_agent_id)
+            return '', None
+
+        shop = None
+        shop_id = ''
+        agent = None
+        agent_id = ''
+        if target in shops and isinstance(shops.get(target), dict):
+            shop_id = target
+            shop = shops[target]
+            agent_id = str(shop.get('ownerAgentId', '')).strip()
+            agent = agents.get(agent_id) if agent_id else None
+        elif target in agents:
+            agent_id = target
+            agent = agents[agent_id]
+            shop_id, shop = resolve_shop_for_agent(agent_id)
+        elif target in {'mayor', 'originator'}:
+            fallback_role = 'mayor' if target == 'mayor' else 'originator'
+            for current_agent_id, current_agent in agents.items():
+                if str(current_agent.get('role', '')).strip() == fallback_role:
+                    agent_id = current_agent_id
+                    agent = current_agent
+                    break
+            if not agent_id and target == 'mayor':
+                agent_id = str(session.get('mayorAgentId', '')).strip()
+                agent = agents.get(agent_id) if agent_id else None
+            shop_id, shop = resolve_shop_for_agent(agent_id, fallback_role=fallback_role)
+        else:
+            for current_agent_id, current_agent in agents.items():
+                if str(current_agent.get('role', '')).strip() == target:
+                    agent_id = current_agent_id
+                    agent = current_agent
+                    shop_id, shop = resolve_shop_for_agent(agent_id, fallback_role=target)
+                    break
+        if not shop_id or not isinstance(shop, dict) or not isinstance(agent, dict):
+            raise ValueError(f'target not found: {target}')
+        return agent_id, shop_id, agent, shop
+
+    def _conversation_action_id(self, session: dict, shop_id: str) -> str:
+        shop = (session.get('shops') or {}).get(shop_id)
+        if not isinstance(shop, dict):
+            raise ValueError('shop not found')
+        actions = self._effective_shop_action_ids(shop, self._catalog_action_map())
+        if 'skill.chat.respond' in actions:
+            return 'skill.chat.respond'
+        if 'skill.memory.summarize' in actions:
+            return 'skill.memory.summarize'
+        raise ValueError('no conversational action is enabled in target shop')
+
+    def _converse_direct(
+        self,
+        session_id: str,
+        *,
+        session: dict,
+        target: str,
+        agent_id: str,
+        shop_id: str,
+        runtime_mode: str,
+        content: str,
+        system_prompt: str,
+        instructions: str,
+        extra_inputs: dict | None = None,
+        invocation_metadata: dict | None = None,
+    ) -> dict:
+        action_id = self._conversation_action_id(session, shop_id)
+        inputs = {
+            'sessionId': session_id,
+            'agentId': agent_id,
+            'shopId': shop_id,
+            'message': content,
+            'conversationHistory': self._conversation_history(session),
+            'townContext': {
+                'sessionId': session_id,
+                'title': str(session.get('title', '')).strip(),
+                'mayorAgentId': str(session.get('mayorAgentId', '')).strip(),
+                'workerShopCount': len(self._available_worker_shops(session)),
+            },
+            'availableShops': self._available_worker_shops(session),
+            'subAgents': session.get('subAgents') if isinstance(session.get('subAgents'), list) else [],
+            'runtimeMode': runtime_mode,
+            'systemPrompt': system_prompt,
+            'instructions': instructions,
+        }
+        if isinstance(extra_inputs, dict):
+            inputs.update(extra_inputs)
+        result = self.invoke_action(
+            session_id=session_id,
+            action_id=action_id,
+            inputs=inputs,
+            metadata={
+                'timeoutSec': 20,
+                'role': str((self._agent_map(session).get(agent_id) or {}).get('role', '')).strip(),
+                **(invocation_metadata if isinstance(invocation_metadata, dict) else {}),
+            },
+            shop_id=shop_id,
+        )
+        invocation = result.get('invocation') if isinstance(result.get('invocation'), dict) else {}
+        plugin_result = ((((invocation.get('result') or {}).get('result') or {}).get('pluginResult')) or {})
+        reply = str(plugin_result.get('reply', '')).strip() or str(plugin_result.get('summary', '')).strip()
+        mode = str(plugin_result.get('mode', 'direct')).strip() or 'direct'
+        return {
+            'ok': bool(result.get('ok', False)),
+            'actionId': action_id,
+            'reply': reply,
+            'mode': mode,
+            'delegationPlan': plugin_result.get('delegationPlan') if isinstance(plugin_result.get('delegationPlan'), list) else [],
+            'invocation': invocation,
+            'pluginResult': plugin_result,
+        }
+
     def create_session(self, agent_id: str, title: str, metadata: dict | None = None) -> dict:
         agent_id = validate_identifier(agent_id, 'agentId')
         session_id = validate_identifier(f'session-{uuid.uuid4().hex[:12]}', 'sessionId')
@@ -954,16 +1151,174 @@ class SessionEngine:
         role = str(role or '').strip()
         if role not in {'system', 'user', 'assistant', 'tool'}:
             raise ValueError('role must be one of system, user, assistant, tool')
-        message = {
-            'messageId': f'msg-{uuid.uuid4().hex[:12]}',
-            'role': role,
-            'content': str(content or ''),
-            'metadata': metadata or {},
-            'createdAt': now_iso(),
-        }
-        session['messages'].append(message)
+        message = self._append_message_row(session, role, content, metadata)
         self.store.save(session)
         return {'ok': True, 'session': self._session_payload(session), 'message': message}
+
+    def converse(
+        self,
+        session_id: str,
+        *,
+        target: str,
+        content: str,
+        mode: str = '',
+        allow_delegation: bool = True,
+        conversation_mode_hint: str = '',
+    ) -> dict:
+        session_id = validate_identifier(session_id, 'sessionId')
+        session = self.store.get(session_id)
+        if not session:
+            raise ValueError('session not found')
+        self._assert_session_available(session)
+        content = str(content or '').strip()
+        if not content:
+            raise ValueError('content is required')
+        agent_id, shop_id, agent, shop = self._resolve_conversation_target(session, target)
+        role = str(agent.get('role', '')).strip() or 'worker'
+        prompt_text = self._prompt_text(str((shop.get('metadata') or {}).get('promptTemplate', '')))
+        self._append_message_row(
+            session,
+            'user',
+            content,
+            {
+                'target': str(target or '').strip() or agent_id,
+                'targetAgentId': agent_id,
+                'targetShopId': shop_id,
+                'conversationModeHint': str(conversation_mode_hint or '').strip(),
+            },
+        )
+        self.store.save(session)
+        session = self.store.get(session_id) or session
+
+        if role == 'mayor':
+            direct = self._converse_direct(
+                session_id,
+                session=session,
+                target=target,
+                agent_id=agent_id,
+                shop_id=shop_id,
+                runtime_mode=mode or 'direct-first',
+                content=content,
+                system_prompt=prompt_text,
+                instructions='Answer directly when possible. Delegate only when specialized worker work is needed.',
+            )
+            if not direct.get('ok', False):
+                return {'ok': False, 'target': target, 'agentId': agent_id, 'shopId': shop_id, 'error': {'message': 'mayor conversation action failed'}, 'invocation': direct.get('invocation')}
+            mode_resolved = str(direct.get('mode', 'direct')).strip() or 'direct'
+            delegation_plan = direct.get('delegationPlan') if isinstance(direct.get('delegationPlan'), list) else []
+            worker_shops = self._available_worker_shops(session)
+            if mode_resolved == 'delegate' and allow_delegation and worker_shops and delegation_plan:
+                turn_out = self.create_turn(session_id=session_id, objective=content, requested_by='user', metadata={'source': 'session-converse', 'target': 'mayor'})
+                turn = turn_out.get('turn') if isinstance(turn_out.get('turn'), dict) else {}
+                turn_id = str(turn.get('turnId', '')).strip()
+                plan: list[dict] = []
+                for idx, row in enumerate(delegation_plan, start=1):
+                    if not isinstance(row, dict):
+                        continue
+                    target_shop_id = str(row.get('shopId', '')).strip() or worker_shops[0]['shopId']
+                    plan.append(
+                        {
+                            'planStepId': validate_identifier(str(row.get('planStepId', '')).strip() or f'conversation-step-{idx}', 'planStepId'),
+                            'shopId': target_shop_id,
+                            'actionId': str(row.get('actionId', '')).strip() or worker_shops[0]['preferredConversationAction'],
+                            'inputs': row.get('inputs') if isinstance(row.get('inputs'), dict) else {'message': content},
+                            'metadata': {'source': 'session-converse-mayor'},
+                        }
+                    )
+                orchestrated = self.orchestrate_turn(session_id=session_id, turn_id=turn_id, plan=plan, metadata={'source': 'session-converse', 'allowDelegation': True})
+                reconciliation = orchestrated.get('reconciliation') if isinstance(orchestrated.get('reconciliation'), dict) else {}
+                reply = str(reconciliation.get('summary', '')).strip() or compact_text(str(direct.get('reply', '')).strip() or 'The delegated work is complete.')
+                session = self.store.get(session_id) or session
+                message = self._append_message_row(
+                    session,
+                    'assistant',
+                    reply,
+                    {
+                        'targetAgentId': agent_id,
+                        'targetShopId': shop_id,
+                        'modeResolved': 'delegate',
+                        'turnId': turn_id,
+                        'delegationIds': [str(row.get('delegationId', '')).strip() for row in (orchestrated.get('delegations') or []) if isinstance(row, dict)],
+                    },
+                )
+                self.store.save(session)
+                return {
+                    'ok': True,
+                    'target': agent_id,
+                    'agentId': agent_id,
+                    'shopId': shop_id,
+                    'modeResolved': 'delegate',
+                    'reply': reply,
+                    'turnId': turn_id,
+                    'delegations': orchestrated.get('delegations') if isinstance(orchestrated.get('delegations'), list) else [],
+                    'reconciliation': reconciliation,
+                    'message': message,
+                    'runtimeResolved': 'umbrella-agent-runtime',
+                }
+            reply = str(direct.get('reply', '')).strip() or 'I’m ready to help.'
+            session = self.store.get(session_id) or session
+            message = self._append_message_row(
+                session,
+                'assistant',
+                reply,
+                {
+                    'targetAgentId': agent_id,
+                    'targetShopId': shop_id,
+                    'modeResolved': 'direct',
+                    'actionId': direct.get('actionId', ''),
+                },
+            )
+            self.store.save(session)
+            return {
+                'ok': True,
+                'target': agent_id,
+                'agentId': agent_id,
+                'shopId': shop_id,
+                'modeResolved': 'direct',
+                'reply': reply,
+                'invocation': direct.get('invocation'),
+                'message': message,
+                'runtimeResolved': 'umbrella-agent-runtime',
+            }
+
+        direct = self._converse_direct(
+            session_id,
+            session=session,
+            target=target,
+            agent_id=agent_id,
+            shop_id=shop_id,
+            runtime_mode=mode or 'direct',
+            content=content,
+            system_prompt=prompt_text,
+            instructions='Respond directly and concisely.',
+        )
+        if not direct.get('ok', False):
+            return {'ok': False, 'target': target, 'agentId': agent_id, 'shopId': shop_id, 'error': {'message': 'conversation action failed'}, 'invocation': direct.get('invocation')}
+        reply = str(direct.get('reply', '')).strip() or 'Acknowledged.'
+        session = self.store.get(session_id) or session
+        message = self._append_message_row(
+            session,
+            'assistant',
+            reply,
+            {
+                'targetAgentId': agent_id,
+                'targetShopId': shop_id,
+                'modeResolved': str(direct.get('mode', 'direct')).strip() or 'direct',
+                'actionId': direct.get('actionId', ''),
+            },
+        )
+        self.store.save(session)
+        return {
+            'ok': True,
+            'target': agent_id,
+            'agentId': agent_id,
+            'shopId': shop_id,
+            'modeResolved': str(direct.get('mode', 'direct')).strip() or 'direct',
+            'reply': reply,
+            'invocation': direct.get('invocation'),
+            'message': message,
+            'runtimeResolved': 'umbrella-agent-runtime',
+        }
 
     def heartbeat_session(self, session_id: str, *, seen_by: str = 'system') -> dict:
         session_id = validate_identifier(session_id, 'sessionId')
@@ -2000,6 +2355,17 @@ def handler_factory(engine: SessionEngine, token: str):
                         role=str(body.get('role', '')),
                         content=str(body.get('content', '')),
                         metadata=body.get('metadata') if isinstance(body.get('metadata'), dict) else {},
+                    )
+                    return json_response(self, 200, out)
+                if path.endswith('/converse') and path.startswith('/v1/sessions/'):
+                    session_id = path[len('/v1/sessions/') : -len('/converse')].strip('/')
+                    out = engine.converse(
+                        session_id=session_id,
+                        target=str(body.get('target', '')),
+                        content=str(body.get('content', '')),
+                        mode=str(body.get('mode', '')),
+                        allow_delegation=bool(body.get('allowDelegation', True)),
+                        conversation_mode_hint=str(body.get('conversationModeHint', '')),
                     )
                     return json_response(self, 200, out)
                 if path.endswith('/invoke-action') and path.startswith('/v1/sessions/'):

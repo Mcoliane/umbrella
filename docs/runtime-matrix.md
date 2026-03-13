@@ -29,6 +29,7 @@ Umbrella is runtime-agnostic at the control-plane layer. It does not require eve
   - `skill.memory.get`
   - `skill.memory.search`
   - `skill.memory.link`
+  - `skill.chat.respond`
   - session/shop/sub-agent invocations
 
 `removed`
@@ -113,6 +114,7 @@ Not required for `umbrella-agent-runtime` completeness:
 
 Umbrella Agent Runtime is considered complete enough when it supports:
 - catalog-managed skills
+- conversational civic agents through `skill.chat.respond`
 - session/shop/sub-agent execution
 - delegation and turn orchestration
 - plugin-host-backed isolated skill execution
