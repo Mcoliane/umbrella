@@ -27,11 +27,7 @@ class MemoryStore:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute('PRAGMA journal_mode=WAL')
-        self.conn.execute('PRAGMA foreign_keys=ON')
-        self.conn.execute('PRAGMA busy_timeout=5000')
+        self._local = threading.local()
         self.boundary_root = self.db_path.parent.parent / 'memory-boundary'
         self.promotion_queue_dir = self.boundary_root / 'promotion-queue'
         self.promotion_dlq_dir = self.boundary_root / 'promotion-dlq'
@@ -39,6 +35,22 @@ class MemoryStore:
         self.promotion_queue_dir.mkdir(parents=True, exist_ok=True)
         self.promotion_dlq_dir.mkdir(parents=True, exist_ok=True)
         self.promotion_processed_dir.mkdir(parents=True, exist_ok=True)
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('PRAGMA foreign_keys=ON')
+        conn.execute('PRAGMA busy_timeout=5000')
+        return conn
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        conn = getattr(self._local, 'conn', None)
+        if conn is None:
+            conn = self._connect()
+            self._local.conn = conn
+        return conn
 
     def init_db(self, migration_sql: str):
         with self._lock:

@@ -70,7 +70,7 @@ wait_health "$PLUGIN_HOST_URL/v1/plugin-host/health"
 wait_health "$EXEC_URL/v1/execution/health"
 
 PLUGIN_HOST_SECRET_SHOULD_NOT_LEAK="top-secret" python3 - "$EXEC_URL" "$PLUGIN_HOST_URL" "$ROOT" "$CATALOG_URL" <<'PY'
-import hashlib, json, os, sys, urllib.error, urllib.request, zipfile
+import hashlib, json, os, shutil, sys, urllib.error, urllib.request, zipfile
 from pathlib import Path
 
 exec_url, plugin_host_url, root, catalog_url = sys.argv[1], sys.argv[2], Path(sys.argv[3]), sys.argv[4]
@@ -243,6 +243,92 @@ try:
 except urllib.error.HTTPError as exc:
     incompatible_out = json.loads(exc.read().decode('utf-8'))
 assert 'incompatible' in (((incompatible_out.get('error') or {}).get('message')) or ''), incompatible_out
+
+container_plugin_dir = root / 'tmp' / 'plugin-host-container-plugin'
+container_plugin_dir.mkdir(parents=True, exist_ok=True)
+(container_plugin_dir / 'bin').mkdir(exist_ok=True)
+container_script = container_plugin_dir / 'bin' / 'container-entry'
+container_script.write_text('#!/bin/sh\ncat >/dev/null\necho "{\\"ok\\":true,\\"source\\":\\"container\\"}"\n', encoding='utf-8')
+container_manifest = container_plugin_dir / 'manifest.json'
+container_manifest.write_text(json.dumps({
+    'id': 'contract.container.plugin',
+    'name': 'Container Plugin',
+    'version': '0.1.0',
+    'apiVersion': 'umbrella.catalog.manifest.v1',
+    'kind': 'plugin',
+    'runtime': 'container',
+    'entrypoint': 'bin/container-entry',
+    'defaultEnabled': True,
+    'compatibility': {
+        'umbrella': {'minVersion': '0.4.0'},
+        'pluginHostRuntimes': ['container'],
+        'apiVersions': ['umbrella.catalog.manifest.v1'],
+        'actionSchemaVersions': ['umbrella.catalog.action.v1'],
+    },
+    'container': {
+        'image': 'busybox:latest',
+        'command': ['sh', '/plugin/bin/container-entry'],
+    },
+    'executionPolicy': {
+        'envAllowlist': [],
+        'network': 'none',
+        'fs': 'scratch-only',
+        'maxRuntimeSec': 5,
+        'maxOutputBytes': 512,
+        'maxInputBytes': 1024,
+        'isolationProfile': 'container-restricted'
+    },
+    'actions': [{'id': 'plugin.container.echo', 'title': 'Container Echo', 'requiredCapabilities': []}],
+}, indent=2) + '\n', encoding='utf-8')
+install_container_req = urllib.request.Request(
+    catalog_url + '/v1/catalog/install-local',
+    method='POST',
+    data=json.dumps({'manifestPath': str(container_manifest)}).encode('utf-8'),
+    headers={'Content-Type': 'application/json'},
+)
+with urllib.request.urlopen(install_container_req, timeout=20) as resp:
+    install_container_out = json.loads(resp.read().decode('utf-8'))
+assert install_container_out.get('item', {}).get('runtime') == 'container', install_container_out
+
+with urllib.request.urlopen(plugin_host_url + '/v1/plugin-host/health', timeout=20) as resp:
+    host_health = json.loads(resp.read().decode('utf-8'))
+container_runtime = host_health.get('containerRuntime')
+
+container_req = urllib.request.Request(
+    plugin_host_url + '/v1/plugin-host/invoke',
+    method='POST',
+    data=json.dumps({
+        'actionId': 'plugin.container.echo',
+        'invocation': {
+            'runId': 'container-run',
+            'stepId': 'container-step',
+            'agentId': 'programming-agent',
+            'action': 'plugin.container.echo',
+            'inputs': {},
+            'timeouts': {'timeoutSec': 5},
+        },
+    }).encode('utf-8'),
+    headers={'Content-Type': 'application/json'},
+)
+if container_runtime == 'unavailable':
+    try:
+        with urllib.request.urlopen(container_req, timeout=20) as resp:
+            container_out = json.loads(resp.read().decode('utf-8'))
+        raise AssertionError(container_out)
+    except urllib.error.HTTPError as exc:
+        container_out = json.loads(exc.read().decode('utf-8'))
+    assert 'container runtime not available' in (((container_out.get('error') or {}).get('message')) or ''), container_out
+else:
+    with urllib.request.urlopen(container_req, timeout=20) as resp:
+        container_out = json.loads(resp.read().decode('utf-8'))
+    if container_out.get('ok') is True:
+        plugin_result = ((container_out.get('result') or {}).get('pluginResult')) or {}
+        assert plugin_result.get('source') == 'container', container_out
+        assert container_out.get('command', [None])[0] == container_runtime, container_out
+    else:
+        assert container_out.get('failureReason') == 'execution_runtime_failed', container_out
+        err_text = ((container_out.get('stderr') or '') + ' ' + ' '.join(container_out.get('command', []))).lower()
+        assert container_runtime in err_text, container_out
 print('plugin host execution PASS')
 PY
 

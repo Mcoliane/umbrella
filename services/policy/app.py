@@ -158,14 +158,22 @@ DEFAULT_MULTI_AGENT_POLICY = {
         },
     },
     'actionPolicyOverrides': {
-        'memory.promote': {
+        'skill.memory.link': {
             'riskClass': 'high',
             'approvalMode': 'required',
+            'memoryAccess': 'durable-memory',
+            'identityScope': {'shopIds': ['town-hall']},
+            'delegationAllowed': False,
+            'subAgentAllowed': False,
+        },
+        'memory.promote': {
+            'riskClass': 'high',
+            'approvalMode': 'conditional',
             'memoryAccess': 'durable-memory',
         },
         'memory.hydrate': {
             'riskClass': 'high',
-            'approvalMode': 'required',
+            'approvalMode': 'conditional',
             'memoryAccess': 'durable-memory',
         },
     },

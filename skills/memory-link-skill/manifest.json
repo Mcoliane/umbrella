@@ -1,0 +1,91 @@
+{
+  "id": "memory.link.skill",
+  "name": "Memory Link Skill",
+  "version": "0.1.0",
+  "apiVersion": "umbrella.catalog.manifest.v1",
+  "kind": "skill",
+  "runtime": "python",
+  "entrypoint": "bin/memory-link-skill",
+  "defaultEnabled": false,
+  "isolationMode": "process",
+  "compatibility": {
+    "umbrella": {
+      "minVersion": "0.4.0"
+    },
+    "pluginHostRuntimes": [
+      "python"
+    ],
+    "apiVersions": [
+      "umbrella.catalog.manifest.v1"
+    ],
+    "actionSchemaVersions": [
+      "umbrella.catalog.action.v1"
+    ],
+    "requiresFeatures": []
+  },
+  "executionPolicy": {
+    "envAllowlist": [
+      "UMBRELLA_MEMORY_BASE_URL",
+      "UMBRELLA_MEMORY_TOKEN"
+    ],
+    "network": "none",
+    "fs": "scratch-only",
+    "maxRuntimeSec": 10,
+    "maxOutputBytes": 4096,
+    "maxInputBytes": 16384,
+    "isolationProfile": "python-restricted"
+  },
+  "sessionHooks": {
+    "suggestedContexts": [
+      "memory",
+      "knowledge",
+      "graph-curation"
+    ]
+  },
+  "actions": [
+    {
+      "id": "skill.memory.link",
+      "title": "Link Memory Nodes",
+      "description": "Create or update a durable knowledge edge through the existing memory-link tool.",
+      "requiredCapabilities": [
+        "knowledge.write"
+      ],
+      "policyHints": {
+        "riskClass": "high",
+        "approvalMode": "required",
+        "memoryAccess": "durable-memory",
+        "fsAccess": "scratch-only",
+        "networkAccess": "none",
+        "processAccess": "restricted-subprocess",
+        "delegationAllowed": false,
+        "subAgentAllowed": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fromNodeId": { "type": "string" },
+          "toNodeId": { "type": "string" },
+          "relation": { "type": "string" },
+          "weight": { "type": "number" },
+          "baseUrl": { "type": "string" }
+        },
+        "required": [
+          "fromNodeId",
+          "toNodeId",
+          "relation"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "fromNodeId": { "type": "string" },
+          "toNodeId": { "type": "string" },
+          "relation": { "type": "string" },
+          "weight": { "type": "number" },
+          "edge": { "type": "object" },
+          "summary": { "type": "string" }
+        }
+      }
+    }
+  ]
+}

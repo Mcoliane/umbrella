@@ -8,6 +8,7 @@ This is the first phase of a plugin/skills runtime:
 - maintain local and managed install state with explicit lifecycle rows
 - install bundle artifacts into `control-plane/extensions/`
 - verify bundle checksums before a managed install becomes usable
+- optionally verify detached bundle signatures against trusted public keys
 - track installed versions for managed catalog items
 - expose a central action catalog for future policy/router/session integration
 
@@ -16,6 +17,22 @@ This is the first phase of a plugin/skills runtime:
 ```bash
 python3 services/catalog/app.py --host 127.0.0.1 --port 8786
 ```
+
+Optional signature enforcement:
+
+```bash
+python3 services/catalog/app.py \
+  --signature-mode require-signature \
+  --trusted-key-dir control-plane/policy/trusted-signing-keys
+```
+
+Bundle signature format:
+- `SIGNATURE.json`
+  - `keyId`
+  - `algorithm` (`sha256-rsa`)
+  - `signedFile` (`CHECKSUMS.json`)
+- `SIGNATURE`
+  - detached OpenSSL signature over `CHECKSUMS.json`
 
 ## Endpoints
 

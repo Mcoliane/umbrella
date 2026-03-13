@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import urllib.request
+from pathlib import Path
+
+
+def direct_link(base_url: str, from_node_id: str, to_node_id: str, relation: str, weight: float, token: str) -> dict:
+    payload = {
+        'from_node_id': from_node_id,
+        'to_node_id': to_node_id,
+        'relation': relation,
+        'weight': weight,
+    }
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}/v1/edges/upsert",
+        method='POST',
+        data=json.dumps(payload).encode('utf-8'),
+        headers={'Content-Type': 'application/json'},
+    )
+    if token:
+        req.add_header('Authorization', f'Bearer {token}')
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.loads(resp.read().decode('utf-8'))
+
+
+def fail(message: str) -> int:
+    print(json.dumps({'error': message}))
+    return 1
+
+
+def main() -> int:
+    payload = json.loads(sys.stdin.read() or '{}')
+    invocation = payload.get('invocation') if isinstance(payload.get('invocation'), dict) else {}
+    inputs = invocation.get('inputs') if isinstance(invocation.get('inputs'), dict) else {}
+    context = invocation.get('context') if isinstance(invocation.get('context'), dict) else {}
+
+    from_node_id = str(inputs.get('fromNodeId', '')).strip()
+    to_node_id = str(inputs.get('toNodeId', '')).strip()
+    relation = str(inputs.get('relation', '')).strip()
+    if not from_node_id or not to_node_id or not relation:
+        return fail('fromNodeId, toNodeId, relation are required')
+    if from_node_id == to_node_id:
+        return fail('self-links are not allowed')
+    if len(relation) > 80:
+        return fail('relation is too long')
+    try:
+        weight = float(inputs.get('weight', 1.0))
+    except Exception:
+        return fail('weight must be numeric')
+    if weight <= 0 or weight > 100:
+        return fail('weight must be between 0 and 100')
+
+    base_url = (
+        str(inputs.get('baseUrl', '')).strip()
+        or str(context.get('memoryBaseUrl', '')).strip()
+        or os.environ.get('UMBRELLA_MEMORY_BASE_URL', 'http://127.0.0.1:8787')
+    )
+    token = str(context.get('memoryToken', '')).strip() or os.environ.get('UMBRELLA_MEMORY_TOKEN', '')
+
+    repo_root = Path(__file__).resolve().parents[3]
+    tool_path = repo_root / 'scripts' / 'tools' / 'memory-link'
+    if tool_path.exists():
+        cmd = [
+            sys.executable,
+            str(tool_path),
+            '--base-url',
+            base_url,
+            '--from-node-id',
+            from_node_id,
+            '--to-node-id',
+            to_node_id,
+            '--relation',
+            relation,
+            '--weight',
+            str(weight),
+        ]
+        if token:
+            cmd.extend(['--token', token])
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        if proc.returncode != 0:
+            return fail((proc.stderr or proc.stdout or '').strip() or 'memory-link failed')
+        edge = json.loads(proc.stdout or '{}')
+    else:
+        edge = direct_link(
+            base_url=base_url,
+            from_node_id=from_node_id,
+            to_node_id=to_node_id,
+            relation=relation,
+            weight=weight,
+            token=token,
+        )
+
+    print(
+        json.dumps(
+            {
+                'ok': True,
+                'fromNodeId': from_node_id,
+                'toNodeId': to_node_id,
+                'relation': relation,
+                'weight': float(edge.get('weight', weight)),
+                'edge': edge,
+                'summary': f'memory.link upserted {from_node_id} -[{relation}]-> {to_node_id}',
+            }
+        )
+    )
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

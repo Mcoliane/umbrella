@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import subprocess
 import shutil
 import sys
 import tarfile
@@ -20,8 +21,9 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from services.memory.auth import check_auth
 
 
-SUPPORTED_PLUGIN_HOST_RUNTIMES = {'shell', 'python', 'http'}
+SUPPORTED_PLUGIN_HOST_RUNTIMES = {'shell', 'python', 'http', 'container'}
 SUPPORTED_ACTION_SCHEMA_VERSIONS = {'umbrella.catalog.action.v1'}
+SUPPORTED_SIGNATURE_MODES = {'permissive', 'require-checksum', 'require-signature'}
 
 
 def now_iso() -> str:
@@ -87,11 +89,29 @@ def safe_relpath(relpath: str) -> str:
 
 
 class CatalogEngine:
-    def __init__(self, umbrella_root: Path, registry_path: str, scan_roots: list[str], extensions_root: str):
+    def __init__(
+        self,
+        umbrella_root: Path,
+        registry_path: str,
+        scan_roots: list[str],
+        extensions_root: str,
+        signature_mode: str = 'permissive',
+        trusted_key_dir: str = '',
+    ):
         self.root = umbrella_root
         self.registry_path = (self.root / registry_path).resolve()
         self.scan_roots = [(self.root / rel).resolve() for rel in scan_roots]
         self.extensions_root = (self.root / extensions_root).resolve()
+        self.signature_mode = str(signature_mode or 'permissive').strip() or 'permissive'
+        if self.signature_mode not in SUPPORTED_SIGNATURE_MODES:
+            raise ValueError(f'signatureMode must be one of {", ".join(sorted(SUPPORTED_SIGNATURE_MODES))}')
+        trusted_key_dir = str(trusted_key_dir or '').strip()
+        if trusted_key_dir:
+            key_path = Path(trusted_key_dir)
+            self.trusted_key_dir = (self.root / key_path).resolve() if not key_path.is_absolute() else key_path.resolve()
+            self.trusted_key_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            self.trusted_key_dir = None
         self.umbrella_version = (self.root / 'VERSION').read_text(encoding='utf-8').strip() if (self.root / 'VERSION').exists() else '0.0.0'
         self.registry_path.parent.mkdir(parents=True, exist_ok=True)
         self.extensions_root.mkdir(parents=True, exist_ok=True)
@@ -259,8 +279,68 @@ class CatalogEngine:
             'verifiedAt': now_iso(),
             'files': verified,
             'signatureVerified': False,
-            'signatureStatus': 'not-configured',
+            'signatureStatus': 'not-present',
         }
+
+    def _verify_signature(self, install_root: Path, checksums: dict) -> dict:
+        result = dict(checksums if isinstance(checksums, dict) else {})
+        signature_meta_path = install_root / 'SIGNATURE.json'
+        signature_path = install_root / 'SIGNATURE'
+        if not signature_meta_path.exists() or not signature_path.exists():
+            if self.signature_mode == 'require-signature':
+                raise ValueError('SIGNATURE.json and SIGNATURE are required for bundle installs in require-signature mode')
+            result['signatureVerified'] = False
+            result['signatureStatus'] = 'not-present'
+            return result
+
+        payload = load_json(signature_meta_path, {})
+        if not isinstance(payload, dict):
+            raise ValueError('SIGNATURE.json must be a JSON object')
+        key_id = str(payload.get('keyId', '')).strip()
+        if not key_id:
+            raise ValueError('SIGNATURE.json must contain keyId')
+        algorithm = str(payload.get('algorithm', 'sha256-rsa')).strip() or 'sha256-rsa'
+        if algorithm != 'sha256-rsa':
+            raise ValueError('SIGNATURE.json algorithm must be sha256-rsa')
+        signed_file_rel = safe_relpath(str(payload.get('signedFile', 'CHECKSUMS.json')).strip() or 'CHECKSUMS.json')
+        signed_file = (install_root / signed_file_rel).resolve()
+        try:
+            signed_file.relative_to(install_root.resolve())
+        except ValueError as ex:
+            raise ValueError('signed file escapes install root') from ex
+        if not signed_file.exists():
+            raise ValueError('signed file not found for signature verification')
+        if self.trusted_key_dir is None:
+            if self.signature_mode == 'require-signature':
+                raise ValueError('trustedKeyDir is required for require-signature mode')
+            result['signatureVerified'] = False
+            result['signatureStatus'] = 'not-configured'
+            result['signatureKeyId'] = key_id
+            return result
+        key_path = (self.trusted_key_dir / f'{key_id}.pem').resolve()
+        if not key_path.exists():
+            if self.signature_mode == 'require-signature':
+                raise ValueError(f'trusted signing key not found: {key_id}')
+            result['signatureVerified'] = False
+            result['signatureStatus'] = 'untrusted-key'
+            result['signatureKeyId'] = key_id
+            return result
+        proc = subprocess.run(
+            ['openssl', 'dgst', '-sha256', '-verify', str(key_path), '-signature', str(signature_path), str(signed_file)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if proc.returncode != 0:
+            message = (proc.stderr or proc.stdout or '').strip() or 'signature verification failed'
+            raise ValueError(message)
+        result['signatureVerified'] = True
+        result['signatureStatus'] = 'verified'
+        result['signatureKeyId'] = key_id
+        result['signatureAlgorithm'] = algorithm
+        result['signedFile'] = signed_file_rel
+        result['signatureVerifiedAt'] = now_iso()
+        return result
 
     def _extract_bundle(self, bundle_path: Path, install_root: Path):
         suffixes = bundle_path.suffixes
@@ -340,6 +420,7 @@ class CatalogEngine:
             'sessionHooks': manifest.get('sessionHooks') if isinstance(manifest.get('sessionHooks'), dict) else {},
             'isolationMode': str(manifest.get('isolationMode', 'process')).strip() or 'process',
             'executionPolicy': manifest.get('executionPolicy') if isinstance(manifest.get('executionPolicy'), dict) else {},
+            'container': manifest.get('container') if isinstance(manifest.get('container'), dict) else {},
             'install': {
                 'lifecycleState': lifecycle_state,
                 'managed': source == 'managed',
@@ -353,6 +434,7 @@ class CatalogEngine:
                 'checksums': install_row.get('checksums') if isinstance(install_row.get('checksums'), dict) else {},
                 'signatureVerified': bool(install_row.get('signatureVerified', False)),
                 'signatureStatus': str(install_row.get('signatureStatus', 'not-configured')).strip() or 'not-configured',
+                'signatureKeyId': str(install_row.get('signatureKeyId', '')).strip(),
             },
         }
 
@@ -373,6 +455,7 @@ class CatalogEngine:
                     'healthStatus': str(row.get('healthStatus', '')).strip(),
                     'checksumVerified': bool(row.get('checksumVerified', False)),
                     'signatureVerified': bool(row.get('signatureVerified', False)),
+                    'signatureKeyId': str(row.get('signatureKeyId', '')).strip(),
                 }
             )
         return rows
@@ -582,6 +665,7 @@ class CatalogEngine:
             'checksums': checksums if isinstance(checksums, dict) else {},
             'signatureVerified': bool((checksums or {}).get('signatureVerified', False)),
             'signatureStatus': str((checksums or {}).get('signatureStatus', 'not-configured')).strip() or 'not-configured',
+            'signatureKeyId': str((checksums or {}).get('signatureKeyId', '')).strip(),
         }
         installs[item_id] = item_versions
         reg['managedInstalls'] = installs
@@ -647,6 +731,7 @@ class CatalogEngine:
             if errors:
                 raise ValueError('; '.join(errors))
             checksums = self._verify_checksums(extract_root)
+            checksums = self._verify_signature(extract_root, checksums)
             item_id = str(manifest.get('id', '')).strip()
             version = str(manifest.get('version', '')).strip()
             install_root = self.extensions_root / item_id / version
@@ -814,6 +899,8 @@ def main() -> int:
     ap.add_argument('--registry', default='control-plane/observability/catalog/registry.json')
     ap.add_argument('--extensions-root', default='control-plane/extensions')
     ap.add_argument('--scan-root', action='append', default=['skills', 'plugins'])
+    ap.add_argument('--signature-mode', default='permissive')
+    ap.add_argument('--trusted-key-dir', default='')
     ap.add_argument('--token', default='')
     args = ap.parse_args()
 
@@ -823,6 +910,8 @@ def main() -> int:
         registry_path=args.registry,
         scan_roots=args.scan_root,
         extensions_root=args.extensions_root,
+        signature_mode=args.signature_mode,
+        trusted_key_dir=args.trusted_key_dir,
     )
     handler = handler_factory(engine=engine, token=args.token.strip())
     httpd = ThreadingHTTPServer((args.host, args.port), handler)

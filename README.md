@@ -1,8 +1,8 @@
 # Umbrella0.4
 
-Umbrella0.4 is a local multi-service orchestration stack with approval-gated execution, memory-core integration, policy gates, and operator tooling.
+Umbrella0.4 is a local multi-service control plane and agent runtime with approval-gated execution, policy enforcement, operator tooling, and a split memory model for hot operational state and durable knowledge.
 
-The current plugin/skills work is in early rollout: a catalog service now supports manifest-based discovery, validation, and lifecycle state for local skills/plugins, while execution/session binding is still being built.
+The plugin/skills runtime is now part of the stack: catalog manages skill/plugin discovery and lifecycle, plugin-host executes dynamic actions behind a controlled boundary, and session provides the town/shop runtime for mayor, originator, worker shops, and sub-agents.
 
 ## License
 
@@ -58,15 +58,23 @@ Services:
 - scheduler-service
 - execution-service
 - memory-core-service
+- memory-service
 - orchestrator-service
 - approval-service
-- catalog-service (optional, plugin/skills discovery phase)
-- plugin-host-service (optional, dynamic action invocation phase)
-- session-service (optional, early session runtime phase)
+- catalog-service
+- plugin-host-service
+- session-service
 
 Approval behavior:
 - Orchestrator requests/reads approval state only through approval-service.
 - Resume is executed through `POST /v1/approval/resume`.
+
+Session/runtime model:
+- mayor agent owns `town-hall`
+- originator agent owns `originator-studio`
+- worker agents own shops with shop-scoped governed actions
+- turns can fan out across shops, use dependency graphs, retries, and reconciliation
+- sub-agents are runtime instances of worker shops inside a session
 
 ## Quality Gates
 

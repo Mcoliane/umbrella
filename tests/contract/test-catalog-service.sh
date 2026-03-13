@@ -14,13 +14,15 @@ PY
 CATALOG_PORT="$(free_port)"
 CATALOG_URL="http://127.0.0.1:$CATALOG_PORT"
 REGISTRY_PATH="$ROOT/tmp/catalog-test-registry.json"
+TRUSTED_KEY_DIR="$ROOT/tmp/catalog-trusted-keys"
 
 rm -f "$REGISTRY_PATH"
+rm -rf "$TRUSTED_KEY_DIR"
 rm -rf "$ROOT/control-plane/extensions/contract.bundle.plugin"
 rm -rf "$ROOT/tmp/catalog-local-plugin" "$ROOT/tmp/catalog-bundle-plugin" "$ROOT/tmp/catalog-bundle-plugin-v2" "$ROOT/tmp/catalog-bundle-plugin-bad"
 rm -f "$ROOT/tmp/catalog-bundle-plugin.zip" "$ROOT/tmp/catalog-bundle-plugin-v2.zip" "$ROOT/tmp/catalog-bundle-plugin-bad.zip"
 
-python3 "$ROOT/services/catalog/app.py" --host 127.0.0.1 --port "$CATALOG_PORT" --umbrella-root "$ROOT" --registry "$REGISTRY_PATH" >"$ROOT/tmp/umbrella04-catalog.out" 2>"$ROOT/tmp/umbrella04-catalog.err" &
+python3 "$ROOT/services/catalog/app.py" --host 127.0.0.1 --port "$CATALOG_PORT" --umbrella-root "$ROOT" --registry "$REGISTRY_PATH" --signature-mode require-signature --trusted-key-dir "$TRUSTED_KEY_DIR" >"$ROOT/tmp/umbrella04-catalog.out" 2>"$ROOT/tmp/umbrella04-catalog.err" &
 P1=$!
 
 cleanup() {
@@ -55,12 +57,43 @@ PY
 
 wait_health "$CATALOG_URL/v1/catalog/health"
 
-ROOT="$ROOT" CATALOG_URL="$CATALOG_URL" python3 - <<'PY'
-import hashlib, json, os, urllib.error, urllib.request, zipfile
+ROOT="$ROOT" CATALOG_URL="$CATALOG_URL" TRUSTED_KEY_DIR="$TRUSTED_KEY_DIR" python3 - <<'PY'
+import hashlib, json, os, subprocess, urllib.error, urllib.request, zipfile
 from pathlib import Path
 
 root = Path(os.environ['ROOT'])
 catalog_url = os.environ['CATALOG_URL']
+trusted_key_dir = Path(os.environ['TRUSTED_KEY_DIR'])
+trusted_key_dir.mkdir(parents=True, exist_ok=True)
+
+private_key = trusted_key_dir / 'catalog-test-private.pem'
+public_key = trusted_key_dir / 'catalog-test-signer.pem'
+subprocess.run(
+    ['openssl', 'genrsa', '-out', str(private_key), '2048'],
+    check=True,
+    capture_output=True,
+    text=True,
+)
+subprocess.run(
+    ['openssl', 'rsa', '-in', str(private_key), '-pubout', '-out', str(public_key)],
+    check=True,
+    capture_output=True,
+    text=True,
+)
+
+def sign_bundle(bundle_dir: Path):
+    signature_meta = {
+        'keyId': 'catalog-test-signer',
+        'algorithm': 'sha256-rsa',
+        'signedFile': 'CHECKSUMS.json',
+    }
+    (bundle_dir / 'SIGNATURE.json').write_text(json.dumps(signature_meta, indent=2) + '\n', encoding='utf-8')
+    subprocess.run(
+        ['openssl', 'dgst', '-sha256', '-sign', str(private_key), '-out', str(bundle_dir / 'SIGNATURE'), str(bundle_dir / 'CHECKSUMS.json')],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 with urllib.request.urlopen(catalog_url + '/v1/catalog/items', timeout=20) as resp:
     items = json.loads(resp.read().decode('utf-8'))
@@ -143,11 +176,14 @@ checksums = {
     }
 }
 (bundle_dir / 'CHECKSUMS.json').write_text(json.dumps(checksums, indent=2) + '\n', encoding='utf-8')
+sign_bundle(bundle_dir)
 bundle_zip = root / 'tmp' / 'catalog-bundle-plugin.zip'
 with zipfile.ZipFile(bundle_zip, 'w') as archive:
     archive.write(bundle_manifest, 'manifest.json')
     archive.write(bundle_script, 'bin/bundle-echo')
     archive.write(bundle_dir / 'CHECKSUMS.json', 'CHECKSUMS.json')
+    archive.write(bundle_dir / 'SIGNATURE.json', 'SIGNATURE.json')
+    archive.write(bundle_dir / 'SIGNATURE', 'SIGNATURE')
 
 bundle_install_req = urllib.request.Request(
     catalog_url + '/v1/catalog/install-bundle',
@@ -160,6 +196,8 @@ with urllib.request.urlopen(bundle_install_req, timeout=20) as resp:
 assert bundle_installed.get('item', {}).get('id') == 'contract.bundle.plugin', bundle_installed
 assert bundle_installed.get('item', {}).get('install', {}).get('lifecycleState') == 'validated', bundle_installed
 assert bundle_installed.get('item', {}).get('install', {}).get('checksumVerified') is True, bundle_installed
+assert bundle_installed.get('item', {}).get('install', {}).get('signatureVerified') is True, bundle_installed
+assert bundle_installed.get('item', {}).get('install', {}).get('signatureStatus') == 'verified', bundle_installed
 assert bundle_installed.get('item', {}).get('install', {}).get('sourceType') == 'bundle', bundle_installed
 
 versions_req = urllib.request.Request(catalog_url + '/v1/catalog/items/contract.bundle.plugin/versions', method='GET')
@@ -197,11 +235,14 @@ updated_checksums = {
     }
 }
 (updated_bundle_dir / 'CHECKSUMS.json').write_text(json.dumps(updated_checksums, indent=2) + '\n', encoding='utf-8')
+sign_bundle(updated_bundle_dir)
 updated_bundle_zip = root / 'tmp' / 'catalog-bundle-plugin-v2.zip'
 with zipfile.ZipFile(updated_bundle_zip, 'w') as archive:
     archive.write(updated_manifest, 'manifest.json')
     archive.write(updated_script, 'bin/bundle-echo')
     archive.write(updated_bundle_dir / 'CHECKSUMS.json', 'CHECKSUMS.json')
+    archive.write(updated_bundle_dir / 'SIGNATURE.json', 'SIGNATURE.json')
+    archive.write(updated_bundle_dir / 'SIGNATURE', 'SIGNATURE')
 
 update_req = urllib.request.Request(
     catalog_url + '/v1/catalog/update',
@@ -244,6 +285,47 @@ try:
 except urllib.error.HTTPError as exc:
     tampered_out = json.loads(exc.read().decode('utf-8'))
 assert 'checksum mismatch' in (((tampered_out.get('error') or {}).get('message')) or ''), tampered_out
+
+invalid_sig_dir = root / 'tmp' / 'catalog-bundle-plugin-invalid-signature'
+invalid_sig_dir.mkdir(parents=True, exist_ok=True)
+(invalid_sig_dir / 'bin').mkdir(exist_ok=True)
+invalid_sig_script = invalid_sig_dir / 'bin' / 'bundle-echo'
+invalid_sig_script.write_text('#!/usr/bin/env bash\nset -euo pipefail\necho "{\\"ok\\":true,\\"source\\":\\"invalid-signature\\"}"\n', encoding='utf-8')
+invalid_sig_manifest = invalid_sig_dir / 'manifest.json'
+invalid_sig_manifest.write_text(updated_manifest.read_text(encoding='utf-8').replace('1.1.0', '1.3.0'), encoding='utf-8')
+invalid_sig_checksums = {
+    'files': {
+        'manifest.json': hashlib.sha256(invalid_sig_manifest.read_bytes()).hexdigest(),
+        'bin/bundle-echo': hashlib.sha256(invalid_sig_script.read_bytes()).hexdigest(),
+    }
+}
+(invalid_sig_dir / 'CHECKSUMS.json').write_text(json.dumps(invalid_sig_checksums, indent=2) + '\n', encoding='utf-8')
+(invalid_sig_dir / 'SIGNATURE.json').write_text(json.dumps({
+    'keyId': 'catalog-test-signer',
+    'algorithm': 'sha256-rsa',
+    'signedFile': 'CHECKSUMS.json',
+}, indent=2) + '\n', encoding='utf-8')
+(invalid_sig_dir / 'SIGNATURE').write_bytes(b'invalid-signature')
+invalid_sig_zip = root / 'tmp' / 'catalog-bundle-plugin-invalid-signature.zip'
+with zipfile.ZipFile(invalid_sig_zip, 'w') as archive:
+    archive.write(invalid_sig_manifest, 'manifest.json')
+    archive.write(invalid_sig_script, 'bin/bundle-echo')
+    archive.write(invalid_sig_dir / 'CHECKSUMS.json', 'CHECKSUMS.json')
+    archive.write(invalid_sig_dir / 'SIGNATURE.json', 'SIGNATURE.json')
+    archive.write(invalid_sig_dir / 'SIGNATURE', 'SIGNATURE')
+invalid_sig_req = urllib.request.Request(
+    catalog_url + '/v1/catalog/install-bundle',
+    method='POST',
+    data=json.dumps({'bundlePath': str(invalid_sig_zip)}).encode('utf-8'),
+    headers={'Content-Type': 'application/json'},
+)
+try:
+    with urllib.request.urlopen(invalid_sig_req, timeout=20) as resp:
+        invalid_sig_out = json.loads(resp.read().decode('utf-8'))
+    raise AssertionError(invalid_sig_out)
+except urllib.error.HTTPError as exc:
+    invalid_sig_out = json.loads(exc.read().decode('utf-8'))
+assert 'verification failure' in ((((invalid_sig_out.get('error') or {}).get('message')) or '').lower()), invalid_sig_out
 
 uninstall_req = urllib.request.Request(
     catalog_url + '/v1/catalog/uninstall',

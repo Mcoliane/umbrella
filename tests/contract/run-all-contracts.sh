@@ -17,6 +17,7 @@ TESTS=(
   "$ROOT/tests/contract/test-session-runtime.sh"
   "$ROOT/tests/contract/test-memory-get-skill.sh"
   "$ROOT/tests/contract/test-memory-search-skill.sh"
+  "$ROOT/tests/contract/test-memory-link-skill.sh"
   "$ROOT/tests/contract/test-policy-runtime-registry-split.sh"
   "$ROOT/tests/contract/test-failure-reporting.sh"
   "$ROOT/tests/contract/test-memory-core-concurrency.sh"

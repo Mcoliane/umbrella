@@ -209,6 +209,34 @@ class SessionEngine:
     def _catalog_action_map(self) -> dict[str, dict]:
         return {str(a.get('id', '')).strip(): a for a in self._catalog_actions() if str(a.get('id', '')).strip()}
 
+    def _catalog_item(self, item_id: str) -> dict | None:
+        item_id = str(item_id or '').strip()
+        if not item_id or not self.catalog_url:
+            return None
+        payload = self._get_json(self.catalog_url, f'/v1/catalog/items/{urllib.parse.quote(item_id, safe="")}')
+        return payload if isinstance(payload, dict) else None
+
+    def _resolved_timeout_sec(self, action_id: str, metadata: dict | None = None) -> int:
+        raw_timeout = (metadata or {}).get('timeoutSec', None)
+        if raw_timeout is not None:
+            try:
+                return max(1, int(raw_timeout))
+            except Exception as ex:
+                raise ValueError('timeoutSec must be an integer') from ex
+
+        timeout_sec = 30
+        action = self._catalog_action_map().get(str(action_id or '').strip())
+        plugin_id = str((action or {}).get('pluginId', '')).strip()
+        if plugin_id:
+            item = self._catalog_item(plugin_id)
+            execution_policy = item.get('executionPolicy') if isinstance((item or {}).get('executionPolicy'), dict) else {}
+            try:
+                max_runtime_sec = int(execution_policy.get('maxRuntimeSec', timeout_sec) or timeout_sec)
+            except Exception:
+                max_runtime_sec = timeout_sec
+            timeout_sec = max(1, min(timeout_sec, max_runtime_sec))
+        return timeout_sec
+
     def _build_action_governance(
         self,
         action_ids: list[str] | None,
@@ -1203,7 +1231,7 @@ class SessionEngine:
             'stepId': step_id,
             'action': action_id,
             'inputs': inputs if isinstance(inputs, dict) else {},
-            'timeoutSec': int((metadata or {}).get('timeoutSec', 30)),
+            'timeoutSec': self._resolved_timeout_sec(action_id, metadata),
             'metadata': {
                 **(metadata if isinstance(metadata, dict) else {}),
                 'agentId': executing_agent_id,

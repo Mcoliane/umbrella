@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import uuid
@@ -23,7 +24,7 @@ DEFAULT_OUTPUT_BYTES = 4096
 DEFAULT_TIMEOUT_SEC = 30
 ALLOWED_FS_POLICIES = {'scratch-only', 'install-root'}
 ALLOWED_NETWORK_POLICIES = {'none'}
-ALLOWED_ISOLATION_PROFILES = {'process-default', 'shell-restricted', 'python-restricted', 'http-outbound'}
+ALLOWED_ISOLATION_PROFILES = {'process-default', 'shell-restricted', 'python-restricted', 'http-outbound', 'container-default', 'container-restricted'}
 
 
 def now_iso() -> str:
@@ -81,12 +82,23 @@ def truncate_text(text: str, limit: int) -> str:
 
 
 class PluginHostEngine:
-    def __init__(self, umbrella_root: Path, catalog_url: str, mesh_token: str):
+    def __init__(self, umbrella_root: Path, catalog_url: str, mesh_token: str, container_runtime: str):
         self.root = umbrella_root
         self.catalog_url = catalog_url.rstrip('/')
         self.mesh_token = mesh_token.strip()
+        self.container_runtime_preference = str(container_runtime or 'auto').strip() or 'auto'
         self.scratch_root = self.root / 'control-plane' / 'observability' / 'plugin-host' / 'scratch'
         self.scratch_root.mkdir(parents=True, exist_ok=True)
+
+    def resolve_container_runtime(self) -> str:
+        if self.container_runtime_preference == 'none':
+            return ''
+        if self.container_runtime_preference in {'docker', 'podman'}:
+            return self.container_runtime_preference if shutil.which(self.container_runtime_preference) else ''
+        for candidate in ('docker', 'podman'):
+            if shutil.which(candidate):
+                return candidate
+        return ''
 
     def _headers(self) -> dict:
         headers = {'Content-Type': 'application/json'}
@@ -211,6 +223,39 @@ class PluginHostEngine:
             cmd = [str(entrypoint)]
         elif runtime == 'python':
             cmd = ['python3', str(entrypoint)]
+        elif runtime == 'container':
+            container = item.get('container') if isinstance(item.get('container'), dict) else {}
+            image = str(container.get('image', '')).strip()
+            if not image:
+                raise ValueError('container runtime requires plugin.container.image')
+            runner = self.resolve_container_runtime()
+            if not runner:
+                raise ValueError('container runtime not available; configure docker or podman to enable runtime=container plugins')
+            mount_mode = 'rw' if policy['fs'] == 'install-root' else 'ro'
+            cmd = [
+                runner,
+                'run',
+                '--rm',
+                '-i',
+                '--network',
+                'none',
+                '-v',
+                f'{install_root}:/plugin:{mount_mode}',
+                '-v',
+                f'{scratch_dir}:/scratch:rw',
+                '-w',
+                '/plugin',
+            ]
+            if policy['fs'] == 'scratch-only' or policy['isolationProfile'] == 'container-restricted':
+                cmd.append('--read-only')
+            for key, value in env.items():
+                cmd.extend(['-e', f'{key}={value}'])
+            container_command = container.get('command')
+            if isinstance(container_command, list) and container_command:
+                container_args = [str(part) for part in container_command if str(part)]
+            else:
+                container_args = [f'/plugin/{entrypoint.as_posix()}']
+            cmd.extend([image, *container_args])
         else:
             raise ValueError(f'unsupported plugin runtime: {runtime}')
 
@@ -282,8 +327,18 @@ def handler_factory(engine: PluginHostEngine, token: str):
                 return
             path = urlparse(self.path).path
             if path == '/v1/plugin-host/health':
-                return json_response(self, 200, {'status': 'ok', 'service': 'plugin-host', 'checkedAt': now_iso()})
-            return json_response(self, 404, err('NOT_FOUND', 'route not found', req_id))
+                return json_response(
+                    self,
+                    200,
+                    {
+                        'status': 'ok',
+                        'service': 'plugin-host',
+                        'checkedAt': now_iso(),
+                        'containerRuntime': engine.resolve_container_runtime() or 'unavailable',
+                        'containerRuntimePreference': engine.container_runtime_preference,
+                    },
+                )
+                return json_response(self, 404, err('NOT_FOUND', 'route not found', req_id))
 
         def do_POST(self):
             req_id = self._request_id()
@@ -325,12 +380,18 @@ def main() -> int:
     ap.add_argument('--port', type=int, default=8785)
     ap.add_argument('--umbrella-root', default=str(Path(__file__).resolve().parents[2]))
     ap.add_argument('--catalog-url', default='http://127.0.0.1:8786')
+    ap.add_argument('--container-runtime', default='auto')
     ap.add_argument('--mesh-token', default='')
     ap.add_argument('--token', default='')
     args = ap.parse_args()
 
     root = Path(args.umbrella_root).resolve()
-    engine = PluginHostEngine(umbrella_root=root, catalog_url=args.catalog_url, mesh_token=args.mesh_token)
+    engine = PluginHostEngine(
+        umbrella_root=root,
+        catalog_url=args.catalog_url,
+        mesh_token=args.mesh_token,
+        container_runtime=args.container_runtime,
+    )
     handler = handler_factory(engine=engine, token=args.token.strip())
     httpd = ThreadingHTTPServer((args.host, args.port), handler)
     print(json.dumps({'status': 'listening', 'service': 'plugin-host', 'host': args.host, 'port': args.port}, indent=2))

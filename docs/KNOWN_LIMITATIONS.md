@@ -7,4 +7,6 @@
 - No GUI onboarding flow; CLI-first experience.
 - `umbrella-manage bringup` includes `memory-core` in the default mesh, but does not automatically start the node-memory service (`services/memory`).
 - There is no automatic promotion/sync from short-term `memory-core` entries to long-term node memory; agents must write node memory explicitly.
-- The plugin/skills runtime is only partially implemented: catalog, plugin-host, and session services now exist, but packaging/version workflows, stronger isolation, compaction, and sub-agent/session orchestration are not implemented yet.
+- The plugin/skills runtime is implemented, but stronger isolation is still host-dependent: process isolation is enforced directly, while container isolation is optional and requires local `docker` or `podman`.
+- Approval for dynamic actions is policy-aware, but first-class human approval UX is still centered on run/step approval flows rather than a dedicated interactive skill-approval surface.
+- Shop profiles and runtime session state are persisted under generated observability paths; they are not yet promoted into a more formal operator-managed configuration model.
