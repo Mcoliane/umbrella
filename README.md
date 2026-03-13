@@ -79,6 +79,10 @@ Session/runtime model:
 - mayor agent owns `town-hall`
 - originator agent owns `originator-studio`
 - worker agents own shops with shop-scoped governed actions
+- source-controlled agent packages can stamp out runtime-tuned workers such as the built-in programming agent
+- the civic agents are packaged too:
+  - `umbrella.mayor.v1`
+  - `umbrella.originator.v1`
 - turns can fan out across shops, use dependency graphs, retries, and reconciliation
 - sub-agents are runtime instances of worker shops inside a session
 

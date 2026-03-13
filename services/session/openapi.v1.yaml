@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Umbrella Session Service API
   version: 1.9.0
-  description: First-class town/session state with a mayor-led town hall, an originator studio for agent/shop creation, reusable shop profiles, governed shop action rosters, session, agent, and sub-agent heartbeat/liveness, first-class sub-agent assignments, and dependency-aware turn orchestration targeted by shop, profile, or role with turn-level dependency policy and retry defaults. Invocation and delegation records include runtime metadata such as `runtimeRequested`, `runtimeResolved`, and `runtimeReason`, and compatibility action ids can resolve into enabled `skill.*` actions while preserving `resolvedActionId` in the session ledger.
+  description: First-class town/session state with a mayor-led town hall, an originator studio for agent/shop creation, reusable shop profiles, source-controlled agent packages, governed shop action rosters, session, agent, and sub-agent heartbeat/liveness, first-class sub-agent assignments, and dependency-aware turn orchestration targeted by shop, profile, or role with turn-level dependency policy and retry defaults. Invocation and delegation records include runtime metadata such as `runtimeRequested`, `runtimeResolved`, and `runtimeReason`, and compatibility action ids can resolve into enabled `skill.*` actions while preserving `resolvedActionId` in the session ledger.
 servers:
   - url: http://127.0.0.1:8784
 paths:
@@ -27,6 +27,19 @@ paths:
       responses:
         '200': { description: Shop profile }
         '404': { description: Not found }
+  /v1/agent-packages:
+    get:
+      responses:
+        '200': { description: Agent packages }
+  /v1/agent-packages/{id}:
+    get:
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Agent package }
   /v1/sessions:
     post:
       responses:

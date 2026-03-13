@@ -144,6 +144,10 @@ assert session.get('heartbeatTtlSec') == 300, session
 assert 'town-hall' in (session.get('shops') or {}), session
 assert 'originator-studio' in (session.get('shops') or {}), session
 assert any(agent.get('role') == 'originator' for agent in session.get('agents', [])), session
+assert any(agent.get('agentPackageId') == 'umbrella.mayor.v1' for agent in session.get('agents', [])), session
+assert any(agent.get('agentPackageId') == 'umbrella.originator.v1' for agent in session.get('agents', [])), session
+assert session.get('shops', {}).get('town-hall', {}).get('agentPackageId') == 'umbrella.mayor.v1', session
+assert session.get('shops', {}).get('originator-studio', {}).get('agentPackageId') == 'umbrella.originator.v1', session
 assert any(a.get('id') == 'skill.memory.summarize' for a in session.get('availableActions', [])), session
 assert session.get('shops', {}).get('town-hall', {}).get('heartbeatStatus') == 'healthy', session
 

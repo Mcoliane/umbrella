@@ -174,6 +174,19 @@ class ShopProfileStore:
         write_json(self.path, payload)
 
 
+class AgentPackageStore:
+    def __init__(self, root: Path):
+        self.path = root / 'control-plane' / 'runtime' / 'agent-packages.json'
+
+    def load(self) -> dict:
+        data = load_json(self.path, {'packages': {}, 'updatedAt': now_iso()})
+        if not isinstance(data, dict):
+            data = {'packages': {}, 'updatedAt': now_iso()}
+        if not isinstance(data.get('packages'), dict):
+            data['packages'] = {}
+        return data
+
+
 class SessionEngine:
     def __init__(self, umbrella_root: Path, catalog_url: str, execution_url: str, mesh_token: str, heartbeat_ttl_sec: int):
         self.root = umbrella_root
@@ -183,6 +196,7 @@ class SessionEngine:
         self.heartbeat_ttl_sec = max(1, int(heartbeat_ttl_sec))
         self.store = SessionStore(umbrella_root)
         self.profile_store = ShopProfileStore(umbrella_root)
+        self.package_store = AgentPackageStore(umbrella_root)
 
     def _headers(self) -> dict:
         headers = {'Content-Type': 'application/json'}
@@ -306,6 +320,66 @@ class SessionEngine:
             'metadata': profile.get('metadata') if isinstance(profile.get('metadata'), dict) else {},
             'createdAt': str(profile.get('createdAt', '')).strip(),
             'updatedAt': str(profile.get('updatedAt', '')).strip(),
+        }
+
+    def _package_payload(self, package: dict) -> dict:
+        return {
+            'packageId': str(package.get('packageId', '')).strip(),
+            'name': str(package.get('name', '')).strip(),
+            'runtimeId': str(package.get('runtimeId', '')).strip(),
+            'role': str(package.get('role', 'worker')).strip() or 'worker',
+            'defaultTitle': str(package.get('defaultTitle', 'Worker')).strip() or 'Worker',
+            'defaultShopName': str(package.get('defaultShopName', '')).strip(),
+            'shopType': str(package.get('shopType', 'business')).strip() or 'business',
+            'shopProfileId': str(package.get('shopProfileId', '')).strip(),
+            'enabledActionIds': [str(x).strip() for x in (package.get('enabledActionIds') or []) if str(x).strip()],
+            'capabilityFamilies': [str(x).strip() for x in (package.get('capabilityFamilies') or []) if str(x).strip()],
+            'metadata': package.get('metadata') if isinstance(package.get('metadata'), dict) else {},
+        }
+
+    def list_agent_packages(self) -> dict:
+        payload = self.package_store.load()
+        packages = payload.get('packages') if isinstance(payload.get('packages'), dict) else {}
+        return {'packages': [self._package_payload(packages[key]) for key in sorted(packages.keys()) if isinstance(packages.get(key), dict)]}
+
+    def get_agent_package(self, package_id: str) -> dict | None:
+        package_id = validate_identifier(package_id, 'packageId')
+        payload = self.package_store.load()
+        packages = payload.get('packages') if isinstance(payload.get('packages'), dict) else {}
+        package = packages.get(package_id)
+        if not isinstance(package, dict):
+            return None
+        return self._package_payload(package)
+
+    def _resolve_agent_package(self, package_id: str) -> dict | None:
+        if not str(package_id or '').strip():
+            return None
+        package = self.get_agent_package(package_id)
+        if not package:
+            raise ValueError('agent package not found')
+        return package
+
+    def _agent_package_defaults(
+        self,
+        package: dict | None,
+        *,
+        fallback_role: str,
+        fallback_title: str,
+        fallback_shop_name: str,
+        fallback_shop_type: str,
+    ) -> dict:
+        package = package or {}
+        metadata = package.get('metadata') if isinstance(package.get('metadata'), dict) else {}
+        return {
+            'packageId': str(package.get('packageId', '')).strip(),
+            'role': str(package.get('role', fallback_role)).strip() or fallback_role,
+            'title': str(package.get('defaultTitle', fallback_title)).strip() or fallback_title,
+            'shopName': str(package.get('defaultShopName', fallback_shop_name)).strip() or fallback_shop_name,
+            'shopType': str(package.get('shopType', fallback_shop_type)).strip() or fallback_shop_type,
+            'enabledActionIds': [str(x).strip() for x in (package.get('enabledActionIds') or []) if str(x).strip()],
+            'runtimeId': str(package.get('runtimeId', '')).strip(),
+            'capabilityFamilies': [str(x).strip() for x in (package.get('capabilityFamilies') or []) if str(x).strip()],
+            'metadata': metadata,
         }
 
     def list_shop_profiles(self) -> dict:
@@ -719,6 +793,22 @@ class SessionEngine:
             raise ValueError('heartbeatTtlSec must be an integer') from ex
         if heartbeat_ttl_sec < 1:
             raise ValueError('heartbeatTtlSec must be positive')
+        mayor_package = self._resolve_agent_package(str(metadata.get('mayorAgentPackageId', 'umbrella.mayor.v1')).strip() or 'umbrella.mayor.v1')
+        originator_package = self._resolve_agent_package(str(metadata.get('originatorAgentPackageId', 'umbrella.originator.v1')).strip() or 'umbrella.originator.v1')
+        mayor_defaults = self._agent_package_defaults(
+            mayor_package,
+            fallback_role='mayor',
+            fallback_title='Mayor',
+            fallback_shop_name='Town Hall',
+            fallback_shop_type='town-hall',
+        )
+        originator_defaults = self._agent_package_defaults(
+            originator_package,
+            fallback_role='originator',
+            fallback_title='Originator',
+            fallback_shop_name='Originator Studio',
+            fallback_shop_type='originator-studio',
+        )
         originator_agent_id = validate_identifier(str(metadata.get('originatorAgentId', 'originator')).strip() or 'originator', 'agentId')
         originator_shop_id = validate_identifier(str(metadata.get('originatorShopId', 'originator-studio')).strip() or 'originator-studio', 'shopId')
         session = self.store.create(
@@ -729,12 +819,20 @@ class SessionEngine:
             heartbeat_ttl_sec=heartbeat_ttl_sec,
         )
         created_at = now_iso()
+        session['agents'][0].update(
+            {
+                'role': mayor_defaults['role'],
+                'title': str(metadata.get('mayorTitle', mayor_defaults['title'])).strip() or mayor_defaults['title'],
+                'agentPackageId': mayor_defaults['packageId'],
+            }
+        )
         session['agents'].append(
             {
                 'agentId': originator_agent_id,
-                'role': 'originator',
-                'title': str(metadata.get('originatorTitle', 'Originator')).strip() or 'Originator',
+                'role': originator_defaults['role'],
+                'title': str(metadata.get('originatorTitle', originator_defaults['title'])).strip() or originator_defaults['title'],
                 'shopId': originator_shop_id,
+                'agentPackageId': originator_defaults['packageId'],
                 'createdAt': created_at,
                 'lastHeartbeatAt': created_at,
                 'lastSeenBy': 'system',
@@ -744,23 +842,61 @@ class SessionEngine:
         town_hall_shop_id = self._town_hall_shop_id(session)
         town_hall_shop = shops.get(town_hall_shop_id) if isinstance(shops.get(town_hall_shop_id), dict) else None
         if town_hall_shop is not None:
+            mayor_enabled_action_ids = [
+                str(x).strip()
+                for x in (
+                    metadata.get('enabledActionIds') if isinstance(metadata.get('enabledActionIds'), list) else mayor_defaults['enabledActionIds']
+                )
+                if str(x).strip()
+            ]
+            mayor_shop_metadata = metadata.get('shopMetadata') if isinstance(metadata.get('shopMetadata'), dict) else {}
+            town_hall_shop.update(
+                {
+                    'name': str(metadata.get('townHallName', mayor_defaults['shopName'])).strip() or mayor_defaults['shopName'],
+                    'shopType': mayor_defaults['shopType'],
+                    'agentPackageId': mayor_defaults['packageId'],
+                    'enabledActionIds': mayor_enabled_action_ids,
+                    'metadata': {
+                        **mayor_defaults['metadata'],
+                        **mayor_shop_metadata,
+                        'runtimeId': mayor_defaults['runtimeId'],
+                        'capabilityFamilies': mayor_defaults['capabilityFamilies'],
+                    },
+                }
+            )
             town_hall_shop['actionGovernance'] = self._build_action_governance(
-                town_hall_shop.get('enabledActionIds') if isinstance(town_hall_shop.get('enabledActionIds'), list) else [],
+                mayor_enabled_action_ids,
                 agent_id,
                 source='town-bootstrap',
             )
         shops[originator_shop_id] = {
             'shopId': originator_shop_id,
-            'name': str(metadata.get('originatorShopName', 'Originator Studio')).strip() or 'Originator Studio',
+            'name': str(metadata.get('originatorShopName', originator_defaults['shopName'])).strip() or originator_defaults['shopName'],
             'ownerAgentId': originator_agent_id,
-            'shopType': 'originator-studio',
-            'enabledActionIds': [str(x).strip() for x in (metadata.get('originatorEnabledActionIds') or []) if str(x).strip()],
+            'shopType': originator_defaults['shopType'],
+            'agentPackageId': originator_defaults['packageId'],
+            'enabledActionIds': [
+                str(x).strip()
+                for x in (
+                    metadata.get('originatorEnabledActionIds')
+                    if isinstance(metadata.get('originatorEnabledActionIds'), list)
+                    else originator_defaults['enabledActionIds']
+                )
+                if str(x).strip()
+            ],
             'actionGovernance': self._build_action_governance(
-                metadata.get('originatorEnabledActionIds') if isinstance(metadata.get('originatorEnabledActionIds'), list) else [],
+                metadata.get('originatorEnabledActionIds')
+                if isinstance(metadata.get('originatorEnabledActionIds'), list)
+                else originator_defaults['enabledActionIds'],
                 originator_agent_id,
                 source='originator-bootstrap',
             ),
-            'metadata': metadata.get('originatorShopMetadata') if isinstance(metadata.get('originatorShopMetadata'), dict) else {},
+            'metadata': {
+                **originator_defaults['metadata'],
+                **(metadata.get('originatorShopMetadata') if isinstance(metadata.get('originatorShopMetadata'), dict) else {}),
+                'runtimeId': originator_defaults['runtimeId'],
+                'capabilityFamilies': originator_defaults['capabilityFamilies'],
+            },
             'createdAt': created_at,
             'lastHeartbeatAt': created_at,
             'lastSeenBy': 'system',
@@ -1057,6 +1193,7 @@ class SessionEngine:
         title: str,
         shop_id: str,
         shop_name: str,
+        agent_package_id: str = '',
         shop_profile_id: str = '',
         enabled_action_ids: list[str] | None = None,
         metadata: dict | None = None,
@@ -1070,26 +1207,39 @@ class SessionEngine:
         creator_id = self._ensure_authorized_creator(session, creator_id)
         agent_id = validate_identifier(agent_id, 'agentId')
         shop_id = validate_identifier(shop_id, 'shopId')
-        profile = self._resolve_shop_profile(shop_profile_id)
+        package = self._resolve_agent_package(agent_package_id)
+        package_profile_id = str(package.get('shopProfileId', '')).strip() if package else ''
+        resolved_profile_id = str(shop_profile_id or '').strip() or package_profile_id
+        profile = self._resolve_shop_profile(resolved_profile_id)
         agents = session.get('agents') if isinstance(session.get('agents'), list) else []
         if any(isinstance(agent, dict) and agent.get('agentId') == agent_id for agent in agents):
             raise ValueError('agent already registered in session')
         shops = session.get('shops') if isinstance(session.get('shops'), dict) else {}
         if shop_id in shops:
             raise ValueError('shop already exists in session')
-        resolved_role = str(role or '').strip() or 'worker'
-        resolved_title = str(title or '').strip() or (str(profile.get('defaultTitle', '')).strip() if profile else '') or 'Worker'
-        resolved_shop_name = str(shop_name or '').strip() or (str(profile.get('defaultShopName', '')).strip() if profile else '') or shop_id
+        package_role = str(package.get('role', '')).strip() if package else ''
+        package_title = str(package.get('defaultTitle', '')).strip() if package else ''
+        package_shop_name = str(package.get('defaultShopName', '')).strip() if package else ''
+        package_enabled_action_ids = package.get('enabledActionIds') if isinstance(package, dict) and isinstance(package.get('enabledActionIds'), list) else []
+        package_metadata = package.get('metadata') if isinstance(package, dict) and isinstance(package.get('metadata'), dict) else {}
+        resolved_role = str(role or '').strip() or package_role or 'worker'
+        resolved_title = str(title or '').strip() or package_title or (str(profile.get('defaultTitle', '')).strip() if profile else '') or 'Worker'
+        resolved_shop_name = str(shop_name or '').strip() or package_shop_name or (str(profile.get('defaultShopName', '')).strip() if profile else '') or shop_id
         profile_enabled_action_ids = profile.get('enabledActionIds') if isinstance(profile, dict) and isinstance(profile.get('enabledActionIds'), list) else []
-        resolved_enabled_action_ids = [str(x).strip() for x in (enabled_action_ids if enabled_action_ids is not None else profile_enabled_action_ids) or [] if str(x).strip()]
+        resolved_enabled_action_ids = [
+            str(x).strip()
+            for x in (enabled_action_ids if enabled_action_ids is not None else (package_enabled_action_ids or profile_enabled_action_ids)) or []
+            if str(x).strip()
+        ]
         profile_metadata = profile.get('metadata') if isinstance(profile, dict) and isinstance(profile.get('metadata'), dict) else {}
-        resolved_metadata = {**profile_metadata, **(metadata or {})}
-        resolved_shop_type = (str(profile.get('shopType', '')).strip() if profile else '') or 'business'
+        resolved_metadata = {**profile_metadata, **package_metadata, **(metadata or {})}
+        resolved_shop_type = (str(profile.get('shopType', '')).strip() if profile else '') or (str(package.get('shopType', '')).strip() if package else '') or 'business'
         worker = {
             'agentId': agent_id,
             'role': resolved_role,
             'title': resolved_title,
             'shopId': shop_id,
+            'agentPackageId': str(package.get('packageId', '')).strip() if package else '',
             'shopProfileId': str(profile.get('profileId', '')).strip() if profile else '',
             'createdByAgentId': creator_id,
             'createdAt': now_iso(),
@@ -1101,6 +1251,7 @@ class SessionEngine:
             'name': resolved_shop_name,
             'ownerAgentId': agent_id,
             'shopType': resolved_shop_type,
+            'agentPackageId': str(package.get('packageId', '')).strip() if package else '',
             'shopProfileId': str(profile.get('profileId', '')).strip() if profile else '',
             'enabledActionIds': resolved_enabled_action_ids,
             'actionGovernance': self._build_action_governance(
@@ -1108,7 +1259,12 @@ class SessionEngine:
                 creator_id,
                 source='shop-profile-origination' if profile else 'shop-origination',
             ),
-            'metadata': {**resolved_metadata, 'createdByAgentId': creator_id},
+            'metadata': {
+                **resolved_metadata,
+                'createdByAgentId': creator_id,
+                'runtimeId': str(package.get('runtimeId', '')).strip() if package else '',
+                'capabilityFamilies': package.get('capabilityFamilies') if isinstance(package, dict) and isinstance(package.get('capabilityFamilies'), list) else [],
+            },
             'createdAt': now_iso(),
             'lastHeartbeatAt': now_iso(),
             'lastSeenBy': creator_id,
@@ -1129,6 +1285,7 @@ class SessionEngine:
         title: str,
         shop_id: str,
         shop_name: str,
+        agent_package_id: str = '',
         shop_profile_id: str = '',
         enabled_action_ids: list[str] | None = None,
         metadata: dict | None = None,
@@ -1141,6 +1298,7 @@ class SessionEngine:
             title=title,
             shop_id=shop_id,
             shop_name=shop_name,
+            agent_package_id=agent_package_id,
             shop_profile_id=shop_profile_id,
             enabled_action_ids=enabled_action_ids,
             metadata=metadata,
@@ -1603,6 +1761,17 @@ def handler_factory(engine: SessionEngine, token: str):
                 return json_response(self, 200, {'status': 'ok', 'service': 'session', 'checkedAt': now_iso()})
             if path == '/v1/shop-profiles':
                 return json_response(self, 200, engine.list_shop_profiles())
+            if path == '/v1/agent-packages':
+                return json_response(self, 200, engine.list_agent_packages())
+            if path.startswith('/v1/agent-packages/'):
+                package_id = unquote(path[len('/v1/agent-packages/') :].strip('/'))
+                try:
+                    package = engine.get_agent_package(package_id)
+                except ValueError as ex:
+                    return json_response(self, 400, err('VALIDATION_ERROR', str(ex), req_id))
+                if not package:
+                    return json_response(self, 404, err('NOT_FOUND', 'agent package not found', req_id))
+                return json_response(self, 200, package)
             if path.startswith('/v1/shop-profiles/'):
                 profile_id = unquote(path[len('/v1/shop-profiles/') :].strip('/'))
                 try:
@@ -1734,6 +1903,7 @@ def handler_factory(engine: SessionEngine, token: str):
                         title=str(body.get('title', '')),
                         shop_id=str(body.get('shopId', '')),
                         shop_name=str(body.get('shopName', '')),
+                        agent_package_id=str(body.get('agentPackageId', '')),
                         shop_profile_id=str(body.get('shopProfileId', '')),
                         enabled_action_ids=body.get('enabledActionIds') if ('enabledActionIds' in body and isinstance(body.get('enabledActionIds'), list)) else None,
                         metadata=body.get('metadata') if isinstance(body.get('metadata'), dict) else {},
@@ -1749,6 +1919,7 @@ def handler_factory(engine: SessionEngine, token: str):
                         title=str(body.get('title', '')),
                         shop_id=str(body.get('shopId', '')),
                         shop_name=str(body.get('shopName', '')),
+                        agent_package_id=str(body.get('agentPackageId', '')),
                         shop_profile_id=str(body.get('shopProfileId', '')),
                         enabled_action_ids=body.get('enabledActionIds') if ('enabledActionIds' in body and isinstance(body.get('enabledActionIds'), list)) else None,
                         metadata=body.get('metadata') if isinstance(body.get('metadata'), dict) else {},

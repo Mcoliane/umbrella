@@ -1,0 +1,69 @@
+{
+  "id": "umbrella.agent-packages.v1",
+  "packages": {
+    "umbrella.mayor.v1": {
+      "packageId": "umbrella.mayor.v1",
+      "name": "Mayor",
+      "runtimeId": "umbrella-agent-runtime",
+      "role": "mayor",
+      "defaultTitle": "Mayor",
+      "defaultShopName": "Town Hall",
+      "shopType": "town-hall",
+      "shopProfileId": "",
+      "enabledActionIds": [],
+      "capabilityFamilies": [
+        "session.turn.invoke",
+        "shop.action.invoke",
+        "delegation.invoke"
+      ],
+      "metadata": {
+        "runtimePreferred": "umbrella-agent-runtime",
+        "business": "town-hall"
+      }
+    },
+    "umbrella.originator.v1": {
+      "packageId": "umbrella.originator.v1",
+      "name": "Originator",
+      "runtimeId": "umbrella-agent-runtime",
+      "role": "originator",
+      "defaultTitle": "Originator",
+      "defaultShopName": "Originator Studio",
+      "shopType": "originator-studio",
+      "shopProfileId": "",
+      "enabledActionIds": [],
+      "capabilityFamilies": [
+        "session.turn.invoke",
+        "shop.action.invoke",
+        "delegation.invoke"
+      ],
+      "metadata": {
+        "runtimePreferred": "umbrella-agent-runtime",
+        "business": "originator-studio"
+      }
+    },
+    "umbrella.programming-agent.v1": {
+      "packageId": "umbrella.programming-agent.v1",
+      "name": "Programming Agent",
+      "runtimeId": "umbrella-agent-runtime",
+      "role": "programmer",
+      "defaultTitle": "Programming Agent",
+      "defaultShopName": "Development Shop",
+      "shopType": "development-shop",
+      "shopProfileId": "",
+      "enabledActionIds": [
+        "skill.memory.summarize",
+        "skill.memory.get",
+        "skill.memory.search"
+      ],
+      "capabilityFamilies": [
+        "catalog.skill.invoke",
+        "shop.action.invoke",
+        "delegation.invoke"
+      ],
+      "metadata": {
+        "runtimePreferred": "umbrella-agent-runtime",
+        "business": "development-shop"
+      }
+    }
+  }
+}

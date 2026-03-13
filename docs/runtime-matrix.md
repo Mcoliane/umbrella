@@ -21,6 +21,10 @@ Umbrella is runtime-agnostic at the control-plane layer. It does not require eve
 `umbrella-agent-runtime`
 - Umbrella-native agent runtime for shops, sessions, sub-agents, and catalog-managed skills
 - implemented through session + catalog + plugin-host
+- source-controlled agent packages can define reusable runtime-tuned workers and shops
+- civic bootstrap roles are packaged too:
+  - `umbrella.mayor.v1`
+  - `umbrella.originator.v1`
 - examples:
   - `skill.memory.get`
   - `skill.memory.search`

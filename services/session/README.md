@@ -9,6 +9,7 @@ This session model treats the first-contact agent as the mayor of the town:
 - `sub-agents` are runtime assignment-bearing instances of those worker shops inside a town session
 - each shop owns its governed actions/skills, including explicit enable/disable state
 - reusable `shop profiles` let the originator stamp out standard shops with stable defaults
+- source-controlled `agent packages` let the originator stamp out full runtime-tuned workers with default role, shop, skills, runtime identity, and capability-family metadata
 - the mayor can open turns, fan work out by `shopId`, `shopProfileId`, or agent `role`, and reconcile results into a mayor summary
 - orchestration plans can declare `dependsOn` and `inputBindings` so later shops can consume earlier shop outputs
 - dependency graphs can declare `onDependencyFailure` with `skip`, `fail-fast`, or `continue`
@@ -30,6 +31,8 @@ python3 services/session/app.py --host 127.0.0.1 --port 8784 --catalog-url http:
 - `GET /v1/shop-profiles`
 - `GET /v1/shop-profiles/{id}`
 - `POST /v1/shop-profiles`
+- `GET /v1/agent-packages`
+- `GET /v1/agent-packages/{id}`
 - `POST /v1/sessions`
 - `GET /v1/sessions/{id}`
 - `POST /v1/sessions/{id}/heartbeat`
@@ -56,6 +59,8 @@ python3 services/session/app.py --host 127.0.0.1 --port 8784 --catalog-url http:
   - `control-plane/observability/sessions/`
 - Shop profiles:
   - `control-plane/observability/session-profiles/`
+- Agent packages:
+  - `control-plane/runtime/agent-packages.json`
 
 ## Liveness
 
@@ -71,3 +76,18 @@ python3 services/session/app.py --host 127.0.0.1 --port 8784 --catalog-url http:
 - a `sub-agent` is a runtime instance backed by one of those existing workers/shops
 - assignments attach objectives to sub-agents and execute through the existing delegation path
 - assignment records persist `resultRefs` for the generated turn, delegation, and invocation
+
+## Agent Packages
+
+- agent packages are source-controlled runtime defaults, not per-session generated state
+- they define:
+  - preferred runtime
+  - role/title defaults
+  - default shop identity
+  - default enabled skills
+  - capability-family metadata for the shop
+- the foundational civic packages are:
+  - `umbrella.mayor.v1`
+  - `umbrella.originator.v1`
+- worker packages such as `umbrella.programming-agent.v1` sit underneath them
+- package-based originations can omit most worker/shop fields and let the package fill them in
