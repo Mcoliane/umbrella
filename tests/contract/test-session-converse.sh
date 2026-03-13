@@ -4,6 +4,39 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 mkdir -p "$ROOT/tmp"
 
+CONFIG_PATH="$ROOT/control-plane/runtime/model-provider.json"
+SECRETS_PATH="$ROOT/control-plane/runtime/model-provider.secrets.json"
+CONFIG_BAK="$ROOT/tmp/session-converse-model-provider.json.bak"
+SECRETS_BAK="$ROOT/tmp/session-converse-model-provider.secrets.bak"
+[[ -f "$CONFIG_PATH" ]] && cp "$CONFIG_PATH" "$CONFIG_BAK" || true
+[[ -f "$SECRETS_PATH" ]] && cp "$SECRETS_PATH" "$SECRETS_BAK" || true
+
+cat >"$CONFIG_PATH" <<'JSON'
+{
+  "version": "umbrella.model-provider.v1",
+  "enabled": false,
+  "provider": {
+    "id": "default",
+    "type": "openai-compatible",
+    "baseUrl": "",
+    "defaultModel": "",
+    "timeoutSec": 20
+  },
+  "agentDefaults": {
+    "umbrella.mayor.v1": {
+      "model": ""
+    },
+    "umbrella.originator.v1": {
+      "model": ""
+    },
+    "umbrella.programming-agent.v1": {
+      "model": ""
+    }
+  }
+}
+JSON
+rm -f "$SECRETS_PATH"
+
 POLICY_PORT="${POLICY_PORT:-18886}"
 CATALOG_PORT="${CATALOG_PORT:-18887}"
 PLUGIN_HOST_PORT="${PLUGIN_HOST_PORT:-18888}"
@@ -29,6 +62,8 @@ P5=$!
 
 cleanup() {
   kill "$P1" "$P2" "$P3" "$P4" "$P5" >/dev/null 2>&1 || true
+  if [[ -f "$CONFIG_BAK" ]]; then cp "$CONFIG_BAK" "$CONFIG_PATH"; fi
+  if [[ -f "$SECRETS_BAK" ]]; then cp "$SECRETS_BAK" "$SECRETS_PATH"; else rm -f "$SECRETS_PATH"; fi
 }
 trap cleanup EXIT
 

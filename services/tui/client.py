@@ -193,6 +193,25 @@ class TuiClient:
         base = self.service_url("session")
         return self._request("GET", f"{base}/v1/agent-packages")["json"]
 
+    def model_provider_status(self) -> dict:
+        base = self.service_url("session")
+        return self._request("GET", f"{base}/v1/runtime/model-provider")["json"]
+
+    def test_model_provider(self) -> dict:
+        base = self.service_url("session")
+        return self._request("POST", f"{base}/v1/runtime/model-provider/test", {})["json"]
+
+    def save_model_provider(self, *, enabled: bool | None = None, provider: dict | None = None, api_key: str | None = None) -> dict:
+        base = self.service_url("session")
+        payload: dict = {}
+        if enabled is not None:
+            payload["enabled"] = bool(enabled)
+        if isinstance(provider, dict):
+            payload["provider"] = provider
+        if api_key is not None:
+            payload["apiKey"] = api_key
+        return self._request("POST", f"{base}/v1/runtime/model-provider", payload)["json"]
+
     def runtime_capabilities(self) -> dict:
         base = self.service_url("router")
         return self._request("GET", f"{base}/v1/router/runtime-capabilities")["json"]
@@ -209,6 +228,7 @@ class TuiClient:
         ]
         sessions = self.list_sessions()
         packages = self.list_agent_packages()
+        model_provider = self.model_provider_status()
         return {
             "services": health_checks,
             "sessions": [
@@ -222,6 +242,7 @@ class TuiClient:
                 for row in sessions
             ],
             "agentPackages": (packages.get("packages") if isinstance(packages, dict) else []) or [],
+            "modelProvider": model_provider if isinstance(model_provider, dict) else {},
             "runtimeCapabilities": self.runtime_capabilities(),
             "platformStack": self.platform_status(),
         }

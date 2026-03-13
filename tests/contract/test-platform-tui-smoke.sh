@@ -13,6 +13,7 @@ payload = json.loads(sys.argv[1])
 assert isinstance(payload.get('services'), list), payload
 assert isinstance(payload.get('sessions'), list), payload
 assert isinstance(payload.get('agentPackages'), list), payload
+assert isinstance(payload.get('modelProvider'), dict), payload
 assert isinstance(payload.get('runtimeCapabilities'), dict), payload
 assert isinstance(payload.get('platformStack'), dict), payload
 print('platform tui smoke PASS')

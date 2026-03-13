@@ -26,7 +26,10 @@
         "promptTemplate": "control-plane/runtime/prompts/mayor.txt",
         "conversationStyle": "concise-coordinating",
         "defaultMode": "direct-first",
-        "delegationPolicy": "delegate-when-specialized"
+        "delegationPolicy": "delegate-when-specialized",
+        "modelPreference": "gpt-4.1",
+        "temperatureDefault": 0.2,
+        "maxTokensDefault": 300
       }
     },
     "umbrella.originator.v1": {
@@ -52,7 +55,10 @@
         "runtimePreferred": "umbrella-agent-runtime",
         "business": "originator-studio",
         "promptTemplate": "control-plane/runtime/prompts/originator.txt",
-        "conversationStyle": "concise-operational"
+        "conversationStyle": "concise-operational",
+        "modelPreference": "gpt-4.1-mini",
+        "temperatureDefault": 0.2,
+        "maxTokensDefault": 300
       }
     },
     "umbrella.programming-agent.v1": {
@@ -79,7 +85,10 @@
         "runtimePreferred": "umbrella-agent-runtime",
         "business": "development-shop",
         "promptTemplate": "control-plane/runtime/prompts/programming-agent.txt",
-        "conversationStyle": "technical"
+        "conversationStyle": "technical",
+        "modelPreference": "gpt-4.1",
+        "temperatureDefault": 0.2,
+        "maxTokensDefault": 400
       }
     }
   }

@@ -115,6 +115,72 @@ class UmbrellaTui:
         self.add_local_event("error", f"Create town failed: {message}")
         self.state.status = f"Create town failed: {message[:90]}"
 
+    def show_model_provider(self):
+        provider = self.state.home.get("modelProvider") if isinstance(self.state.home.get("modelProvider"), dict) else {}
+        provider_meta = provider.get("provider") if isinstance(provider.get("provider"), dict) else {}
+        configured = bool(provider.get("configured", False))
+        enabled = bool(provider.get("enabled", False))
+        model = str(provider_meta.get("defaultModel", "")).strip() or "unset"
+        base_url = str(provider_meta.get("baseUrl", "")).strip() or "unset"
+        key_masked = str(((provider.get("secrets") or {}).get("apiKeyMasked", ""))).strip() or "missing"
+        self.add_local_event(
+            "system",
+            f"Model provider: {'enabled' if enabled else 'disabled'} configured={configured} type={provider_meta.get('type','')} model={model} base={base_url} key={key_masked}",
+        )
+        self.state.status = "Model provider"
+
+    def setup_model_provider(self, screen):
+        current = self.state.home.get("modelProvider") if isinstance(self.state.home.get("modelProvider"), dict) else {}
+        provider_meta = current.get("provider") if isinstance(current.get("provider"), dict) else {}
+        provider_type = self.prompt(screen, "Provider type", default=str(provider_meta.get("type", "openai-compatible")).strip() or "openai-compatible")
+        if provider_type is None:
+            return
+        base_url = self.prompt(screen, "Base URL", default=str(provider_meta.get("baseUrl", "")).strip())
+        if base_url is None:
+            return
+        model = self.prompt(screen, "Default model", default=str(provider_meta.get("defaultModel", "")).strip())
+        if model is None:
+            return
+        timeout_raw = self.prompt(screen, "Timeout seconds", default=str(provider_meta.get("timeoutSec", 20) or 20))
+        if timeout_raw is None:
+            return
+        api_key = self.prompt(screen, "API key (blank keeps existing)", default="")
+        if api_key is None:
+            return
+        try:
+            timeout_sec = int(str(timeout_raw).strip() or "20")
+        except Exception:
+            self.add_local_event("error", "Invalid timeout seconds")
+            self.state.status = "Model setup failed"
+            return
+        out = self.client.save_model_provider(
+            enabled=True,
+            provider={
+                "type": str(provider_type).strip() or "openai-compatible",
+                "baseUrl": str(base_url).strip(),
+                "defaultModel": str(model).strip(),
+                "timeoutSec": timeout_sec,
+            },
+            api_key=None if not str(api_key).strip() else str(api_key).strip(),
+        )
+        self.refresh_home()
+        if out.get("saved"):
+            self.add_local_event("system", "Saved model provider configuration.")
+            self.state.status = "Model provider saved"
+            return
+        self.add_local_event("error", f"Model setup failed: {json.dumps(out, ensure_ascii=False)[:180]}")
+        self.state.status = "Model setup failed"
+
+    def test_model_provider(self):
+        out = self.client.test_model_provider()
+        result = out.get("test") if isinstance(out.get("test"), dict) else {}
+        if result.get("ok"):
+            self.add_local_event("system", f'Model test ok model={result.get("model","")} latencyMs={result.get("latencyMs","")}')
+            self.state.status = "Model test ok"
+            return
+        self.add_local_event("error", f'Model test failed: {result.get("message","not configured")}')
+        self.state.status = "Model test failed"
+
     def prompt(self, screen, label: str, default: str = "") -> str | None:
         curses.echo()
         try:
@@ -218,7 +284,7 @@ class UmbrellaTui:
         if name in {"help", "h", "?"}:
             self.add_local_event(
                 "system",
-                "Commands: /help /status /new [title] /sessions /session <id|n> /agent <id> /shops /workers /refresh /start [full|core] /stop /quit",
+                "Commands: /help /status /new [title] /sessions /session <id|n> /agent <id> /shops /workers /model /model setup /model test /model use <model> /model disable /refresh /start [full|core] /stop /quit",
             )
             self.state.status = "Help"
             return
@@ -271,6 +337,49 @@ class UmbrellaTui:
             ]
             self.add_local_event("system", f'Workers: {", ".join(workers) if workers else "none"}')
             return
+        if name == "model":
+            if not args:
+                self.show_model_provider()
+                return
+            sub = args[0].lower()
+            if sub == "setup":
+                self.setup_model_provider(screen)
+                return
+            if sub == "test":
+                self.test_model_provider()
+                return
+            if sub == "disable":
+                out = self.client.save_model_provider(enabled=False)
+                self.refresh_home()
+                if out.get("saved"):
+                    self.add_local_event("system", "Model provider disabled.")
+                    self.state.status = "Model provider disabled"
+                    return
+                self.add_local_event("error", f"Model disable failed: {json.dumps(out, ensure_ascii=False)[:180]}")
+                self.state.status = "Model disable failed"
+                return
+            if sub == "use" and len(args) > 1:
+                current = self.state.home.get("modelProvider") if isinstance(self.state.home.get("modelProvider"), dict) else {}
+                provider_meta = current.get("provider") if isinstance(current.get("provider"), dict) else {}
+                out = self.client.save_model_provider(
+                    provider={
+                        "type": str(provider_meta.get("type", "openai-compatible")).strip() or "openai-compatible",
+                        "baseUrl": str(provider_meta.get("baseUrl", "")).strip(),
+                        "defaultModel": str(args[1]).strip(),
+                        "timeoutSec": int(provider_meta.get("timeoutSec", 20) or 20),
+                    }
+                )
+                self.refresh_home()
+                if out.get("saved"):
+                    self.add_local_event("system", f"Default model set to {args[1].strip()}.")
+                    self.state.status = "Model updated"
+                    return
+                self.add_local_event("error", f"Model update failed: {json.dumps(out, ensure_ascii=False)[:180]}")
+                self.state.status = "Model update failed"
+                return
+            self.add_local_event("error", f"Unknown model command: {' '.join(args)}")
+            self.state.status = "Unknown model command"
+            return
         if name == "refresh":
             self.refresh_home()
             self.refresh_session()
@@ -303,7 +412,7 @@ class UmbrellaTui:
 
     def draw_footer(self, screen):
         height, width = screen.getmaxyx()
-        footer = "enter message | / command | tab target | s sessions | n new town | S start full | C start core | X stop | q quit"
+        footer = "enter message | / command | tab target | s sessions | n new town | S/F5 full | c/F6 core | x/F7 stop | q quit"
         line = f"{self.state.status} | {footer}"
         screen.attron(curses.A_REVERSE)
         screen.addstr(height - 1, 0, " " * max(1, width - 1))
@@ -362,6 +471,7 @@ class UmbrellaTui:
         session = self.session_payload
         platform = self.state.home.get("platformStack") or {}
         services = self.state.home.get("services") or []
+        model_provider = self.state.home.get("modelProvider") if isinstance(self.state.home.get("modelProvider"), dict) else {}
         line = 2
         screen.addstr(line, x, "Town State", curses.A_BOLD)
         line += 1
@@ -374,6 +484,11 @@ class UmbrellaTui:
             screen.addstr(line, x, "No town selected")
             line += 1
         screen.addstr(line, x, _clip(f'Platform: {"UP" if platform.get("ok") else "DOWN"} {platform.get("profile","")}', sidebar_w))
+        line += 2
+        provider_meta = model_provider.get("provider") if isinstance(model_provider.get("provider"), dict) else {}
+        configured = "configured" if model_provider.get("configured") else "missing"
+        model_name = str(provider_meta.get("defaultModel", "")).strip() or "unset"
+        screen.addstr(line, x, _clip(f"Model: {configured} {model_name}", sidebar_w))
         line += 2
         screen.addstr(line, x, "Agents", curses.A_BOLD)
         line += 1
@@ -418,25 +533,25 @@ class UmbrellaTui:
             self.draw_town(screen)
             screen.refresh()
             key = screen.getch()
-            if key == ord("q"):
+            if key in (ord("q"), ord("Q")):
                 break
-            if key == ord("S"):
+            if key in (ord("S"), curses.KEY_F5):
                 self.start_platform("full")
                 continue
-            if key == ord("C"):
+            if key in (ord("C"), ord("c"), curses.KEY_F6):
                 self.start_platform("core")
                 continue
-            if key == ord("X"):
+            if key in (ord("X"), ord("x"), curses.KEY_F7):
                 self.stop_platform()
                 continue
-            if key == ord("n"):
+            if key in (ord("n"), ord("N")):
                 self.create_session(screen)
                 continue
-            if key == ord("r"):
+            if key in (ord("r"), ord("R")):
                 self.refresh_home()
                 self.refresh_session()
                 continue
-            if key == ord("s"):
+            if key in (ord("s"),):
                 self.choose_session(screen)
                 continue
             if key == 9:

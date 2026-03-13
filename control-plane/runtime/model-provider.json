@@ -1,0 +1,22 @@
+{
+  "version": "umbrella.model-provider.v1",
+  "enabled": false,
+  "provider": {
+    "id": "default",
+    "type": "openai-compatible",
+    "baseUrl": "",
+    "defaultModel": "",
+    "timeoutSec": 20
+  },
+  "agentDefaults": {
+    "umbrella.mayor.v1": {
+      "model": ""
+    },
+    "umbrella.originator.v1": {
+      "model": ""
+    },
+    "umbrella.programming-agent.v1": {
+      "model": ""
+    }
+  }
+}

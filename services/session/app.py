@@ -16,6 +16,7 @@ from urllib.parse import unquote, urlparse
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from services.id_utils import validate_identifier
 from services.memory.auth import check_auth
+from services.runtime_model import load_model_provider, mask_secret, save_model_provider, test_model_provider
 
 LEGACY_ACTION_ALIASES = {
     'memory.get': 'skill.memory.get',
@@ -357,6 +358,58 @@ class SessionEngine:
         if not isinstance(package, dict):
             return None
         return self._package_payload(package)
+
+    def model_provider_status(self) -> dict:
+        provider = load_model_provider(self.root)
+        provider_meta = provider.get('provider') if isinstance(provider.get('provider'), dict) else {}
+        return {
+            'enabled': bool(provider.get('enabled', False)),
+            'configured': bool(str(provider_meta.get('baseUrl', '')).strip() and str(provider_meta.get('defaultModel', '')).strip()),
+            'provider': {
+                'id': str(provider_meta.get('id', '')).strip(),
+                'type': str(provider_meta.get('type', '')).strip(),
+                'baseUrl': str(provider_meta.get('baseUrl', '')).strip(),
+                'defaultModel': str(provider_meta.get('defaultModel', '')).strip(),
+                'timeoutSec': int(provider_meta.get('timeoutSec', 20) or 20),
+            },
+            'agentDefaults': provider.get('agentDefaults') if isinstance(provider.get('agentDefaults'), dict) else {},
+            'secrets': {
+                'apiKeyPresent': bool(str(((provider.get('secrets') or {}).get('apiKey', ''))).strip()),
+                'apiKeyMasked': mask_secret(str(((provider.get('secrets') or {}).get('apiKey', ''))).strip()),
+            },
+            'paths': provider.get('paths') if isinstance(provider.get('paths'), dict) else {},
+        }
+
+    def save_model_provider(self, *, enabled: bool | None = None, provider_payload: dict | None = None, agent_defaults: dict | None = None, api_key: str | None = None) -> dict:
+        current = load_model_provider(self.root)
+        config = {
+            'version': current.get('version', 'umbrella.model-provider.v1'),
+            'enabled': bool(current.get('enabled', False)),
+            'provider': dict(current.get('provider') if isinstance(current.get('provider'), dict) else {}),
+            'agentDefaults': dict(current.get('agentDefaults') if isinstance(current.get('agentDefaults'), dict) else {}),
+        }
+        secrets = {
+            'apiKey': str(((current.get('secrets') or {}).get('apiKey', ''))).strip(),
+        }
+        if enabled is not None:
+            config['enabled'] = bool(enabled)
+        if isinstance(provider_payload, dict):
+            provider_row = config['provider']
+            for key in ('id', 'type', 'baseUrl', 'defaultModel', 'timeoutSec'):
+                if key in provider_payload:
+                    provider_row[key] = provider_payload[key]
+        if isinstance(agent_defaults, dict):
+            config['agentDefaults'] = agent_defaults
+        if api_key is not None:
+            secrets['apiKey'] = str(api_key).strip()
+        provider = save_model_provider(self.root, config=config, secrets=secrets)
+        return self.model_provider_status() | {'saved': True}
+
+    def test_model_provider(self) -> dict:
+        status = self.model_provider_status()
+        provider = load_model_provider(self.root)
+        result = test_model_provider(provider)
+        return status | {'test': result}
 
     def _resolve_agent_package(self, package_id: str) -> dict | None:
         if not str(package_id or '').strip():
@@ -927,6 +980,7 @@ class SessionEngine:
         target: str,
         agent_id: str,
         shop_id: str,
+        shop: dict,
         runtime_mode: str,
         content: str,
         system_prompt: str,
@@ -935,10 +989,16 @@ class SessionEngine:
         invocation_metadata: dict | None = None,
     ) -> dict:
         action_id = self._conversation_action_id(session, shop_id)
+        agent_row = self._agent_map(session).get(agent_id) if isinstance(self._agent_map(session), dict) else None
+        agent_package_id = str((shop.get('agentPackageId', '') or ((agent_row or {}).get('agentPackageId', '')))).strip()
+        agent_package = self.get_agent_package(agent_package_id) if agent_package_id else None
+        package_metadata = agent_package.get('metadata') if isinstance((agent_package or {}).get('metadata'), dict) else {}
         inputs = {
             'sessionId': session_id,
             'agentId': agent_id,
             'shopId': shop_id,
+            'agentPackageId': agent_package_id,
+            'agentPackageMetadata': package_metadata,
             'message': content,
             'conversationHistory': self._conversation_history(session),
             'townContext': {
@@ -975,6 +1035,9 @@ class SessionEngine:
             'actionId': action_id,
             'reply': reply,
             'mode': mode,
+            'providerUsed': bool(plugin_result.get('providerUsed', False)),
+            'modelUsed': str(plugin_result.get('modelUsed', '')).strip(),
+            'fallbackUsed': bool(plugin_result.get('fallbackUsed', False)),
             'delegationPlan': plugin_result.get('delegationPlan') if isinstance(plugin_result.get('delegationPlan'), list) else [],
             'invocation': invocation,
             'pluginResult': plugin_result,
@@ -1197,6 +1260,7 @@ class SessionEngine:
                 target=target,
                 agent_id=agent_id,
                 shop_id=shop_id,
+                shop=shop,
                 runtime_mode=mode or 'direct-first',
                 content=content,
                 system_prompt=prompt_text,
@@ -1239,6 +1303,9 @@ class SessionEngine:
                         'modeResolved': 'delegate',
                         'turnId': turn_id,
                         'delegationIds': [str(row.get('delegationId', '')).strip() for row in (orchestrated.get('delegations') or []) if isinstance(row, dict)],
+                        'providerUsed': bool(direct.get('providerUsed', False)),
+                        'modelUsed': str(direct.get('modelUsed', '')).strip(),
+                        'fallbackUsed': bool(direct.get('fallbackUsed', False)),
                     },
                 )
                 self.store.save(session)
@@ -1254,6 +1321,9 @@ class SessionEngine:
                     'reconciliation': reconciliation,
                     'message': message,
                     'runtimeResolved': 'umbrella-agent-runtime',
+                    'providerUsed': bool(direct.get('providerUsed', False)),
+                    'modelUsed': str(direct.get('modelUsed', '')).strip(),
+                    'fallbackUsed': bool(direct.get('fallbackUsed', False)),
                 }
             reply = str(direct.get('reply', '')).strip() or 'I’m ready to help.'
             session = self.store.get(session_id) or session
@@ -1266,6 +1336,9 @@ class SessionEngine:
                     'targetShopId': shop_id,
                     'modeResolved': 'direct',
                     'actionId': direct.get('actionId', ''),
+                    'providerUsed': bool(direct.get('providerUsed', False)),
+                    'modelUsed': str(direct.get('modelUsed', '')).strip(),
+                    'fallbackUsed': bool(direct.get('fallbackUsed', False)),
                 },
             )
             self.store.save(session)
@@ -1279,6 +1352,9 @@ class SessionEngine:
                 'invocation': direct.get('invocation'),
                 'message': message,
                 'runtimeResolved': 'umbrella-agent-runtime',
+                'providerUsed': bool(direct.get('providerUsed', False)),
+                'modelUsed': str(direct.get('modelUsed', '')).strip(),
+                'fallbackUsed': bool(direct.get('fallbackUsed', False)),
             }
 
         direct = self._converse_direct(
@@ -1287,6 +1363,7 @@ class SessionEngine:
             target=target,
             agent_id=agent_id,
             shop_id=shop_id,
+            shop=shop,
             runtime_mode=mode or 'direct',
             content=content,
             system_prompt=prompt_text,
@@ -1305,6 +1382,9 @@ class SessionEngine:
                 'targetShopId': shop_id,
                 'modeResolved': str(direct.get('mode', 'direct')).strip() or 'direct',
                 'actionId': direct.get('actionId', ''),
+                'providerUsed': bool(direct.get('providerUsed', False)),
+                'modelUsed': str(direct.get('modelUsed', '')).strip(),
+                'fallbackUsed': bool(direct.get('fallbackUsed', False)),
             },
         )
         self.store.save(session)
@@ -1318,6 +1398,9 @@ class SessionEngine:
             'invocation': direct.get('invocation'),
             'message': message,
             'runtimeResolved': 'umbrella-agent-runtime',
+            'providerUsed': bool(direct.get('providerUsed', False)),
+            'modelUsed': str(direct.get('modelUsed', '')).strip(),
+            'fallbackUsed': bool(direct.get('fallbackUsed', False)),
         }
 
     def heartbeat_session(self, session_id: str, *, seen_by: str = 'system') -> dict:
@@ -2114,6 +2197,8 @@ def handler_factory(engine: SessionEngine, token: str):
             path = urlparse(self.path).path
             if path == '/v1/session/health':
                 return json_response(self, 200, {'status': 'ok', 'service': 'session', 'checkedAt': now_iso()})
+            if path == '/v1/runtime/model-provider':
+                return json_response(self, 200, engine.model_provider_status())
             if path == '/v1/shop-profiles':
                 return json_response(self, 200, engine.list_shop_profiles())
             if path == '/v1/agent-packages':
@@ -2173,6 +2258,16 @@ def handler_factory(engine: SessionEngine, token: str):
             path = urlparse(self.path).path
             body = parse_json(self)
             try:
+                if path == '/v1/runtime/model-provider':
+                    out = engine.save_model_provider(
+                        enabled=body.get('enabled') if isinstance(body.get('enabled'), bool) else None,
+                        provider_payload=body.get('provider') if isinstance(body.get('provider'), dict) else None,
+                        agent_defaults=body.get('agentDefaults') if isinstance(body.get('agentDefaults'), dict) else None,
+                        api_key=body.get('apiKey') if 'apiKey' in body else None,
+                    )
+                    return json_response(self, 200, out)
+                if path == '/v1/runtime/model-provider/test':
+                    return json_response(self, 200, engine.test_model_provider())
                 if path == '/v1/shop-profiles':
                     out = engine.save_shop_profile(
                         profile_id=str(body.get('profileId', '')),

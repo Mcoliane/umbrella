@@ -36,6 +36,7 @@ Umbrella currently manages three runtime classes:
 - Umbrella-native agent runtime
 - owns sessions, shops, sub-agents, catalog-managed skills, and plugin-host-backed execution
 - owns server-side conversation through `POST /v1/sessions/{id}/converse`
+- supports OpenAI-compatible model configuration through `control-plane/runtime/model-provider.json`
 
 `removed`
 - supported alternate runtime
@@ -299,6 +300,7 @@ Current direction:
 Current controls:
 - `Enter` send a message to the current target
 - `/` open slash-command mode
+- `/model`, `/model setup`, `/model test`, `/model use <model>`, `/model disable`
 - `Tab` cycle the current target
 - `s` choose a session
 - `n` create a new town
@@ -331,6 +333,7 @@ User/operator docs:
 Architecture docs:
 - [docs/runtime-matrix.md](docs/runtime-matrix.md)
 - [docs/platform-tui.md](docs/platform-tui.md)
+- [docs/model-provider-setup.md](docs/model-provider-setup.md)
 - [docs/memory-boundary-contract.md](docs/memory-boundary-contract.md)
 - [docs/pattern-evidence.md](docs/pattern-evidence.md)
 

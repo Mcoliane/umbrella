@@ -12,6 +12,7 @@ This session model treats the first-contact agent as the mayor of the town:
 - source-controlled `agent packages` let the originator stamp out full runtime-tuned workers with default role, shop, skills, runtime identity, and capability-family metadata
 - the mayor can open turns, fan work out by `shopId`, `shopProfileId`, or agent `role`, and reconcile results into a mayor summary
 - conversation is handled server-side through `POST /v1/sessions/{id}/converse`
+- runtime model-provider status is exposed through `GET /v1/runtime/model-provider`
 - the mayor is dual-mode:
   - direct conversation through `skill.chat.respond`
   - orchestration when a worker shop should handle the request
@@ -56,6 +57,9 @@ python3 services/session/app.py --host 127.0.0.1 --port 8784 --catalog-url http:
 - `POST /v1/sessions/{id}/orchestrate-turn`
 - `POST /v1/sessions/{id}/messages`
 - `POST /v1/sessions/{id}/converse`
+- `GET /v1/runtime/model-provider`
+- `POST /v1/runtime/model-provider`
+- `POST /v1/runtime/model-provider/test`
 - `POST /v1/sessions/{id}/invoke-action`
 - `POST /v1/sessions/{id}/compact`
 

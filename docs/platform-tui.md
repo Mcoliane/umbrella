@@ -32,6 +32,9 @@ That means `Town Hall` is the default surface, not `Home`.
 
 The current implementation now talks to the session service through a real server-side conversation endpoint:
 - `POST /v1/sessions/{id}/converse`
+- `GET /v1/runtime/model-provider`
+- `POST /v1/runtime/model-provider`
+- `POST /v1/runtime/model-provider/test`
 - the TUI no longer owns mayor/originator conversation policy itself
 - the mayor can reply directly in a fresh town and can still delegate to workers when they exist
 
@@ -142,6 +145,9 @@ Primary interaction:
 - `Enter` to send a message to the current target
 - `/` to open slash-command mode
 - `Tab` to cycle targets
+- `/model` to inspect model-provider status
+- `/model setup` to configure a provider
+- `/model test` to test the configured backend
 
 Actions:
 - send message
