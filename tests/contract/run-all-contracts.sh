@@ -18,6 +18,7 @@ TESTS=(
   "$ROOT/tests/contract/test-runtime-capability-enforcement.sh"
   "$ROOT/tests/contract/test-orchestrator-runtime-summary.sh"
   "$ROOT/tests/contract/test-agent-package-runtime.sh"
+  "$ROOT/tests/contract/test-platform-tui-smoke.sh"
   "$ROOT/tests/contract/test-session-runtime.sh"
   "$ROOT/tests/contract/test-memory-get-skill.sh"
   "$ROOT/tests/contract/test-memory-search-skill.sh"

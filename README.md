@@ -271,10 +271,25 @@ CLI:
 - `umbrellactl run --plan control-plane/planner/plans/service-mesh-smoke.json --run-id run-<id>`
 - `umbrellactl run-status --approval-key <key>`
 - `umbrellactl memory put --namespace team --key hello --value '{"v":"world"}'`
+- `python3 scripts/umbrella-tui`
 
 Quality:
 - `./tests/contract/run-all-contracts.sh`
 - `./scripts/control-plane/verify-patterns --umbrella-root . --require-docs`
+
+## Platform TUI
+
+A first working terminal UI now exists at:
+- `python3 scripts/umbrella-tui`
+
+Current slice:
+- home dashboard for service and runtime visibility
+- town/session list from live and generated state
+- create/open town session
+- inspect mayor, originator, shops, and message history
+- post a user message to the mayor
+
+This is the first implementation slice, not the final operator console. The build spec is in [docs/platform-tui.md](docs/platform-tui.md).
 
 ## Main Docs
 
@@ -285,6 +300,7 @@ User/operator docs:
 
 Architecture docs:
 - [docs/runtime-matrix.md](docs/runtime-matrix.md)
+- [docs/platform-tui.md](docs/platform-tui.md)
 - [docs/memory-boundary-contract.md](docs/memory-boundary-contract.md)
 - [docs/pattern-evidence.md](docs/pattern-evidence.md)
 
