@@ -7,6 +7,7 @@ __pycache__/
 
 # Runtime-generated state and secrets
 tmp/
+memory-boundary/
 control-plane/observability/runs/
 control-plane/observability/memory-boundary/
 control-plane/observability/memory-service/
