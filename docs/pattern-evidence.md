@@ -41,6 +41,7 @@ Update this file after each full gate run. If only targeted verification was run
   - catalog lifecycle + bundle install/update + checksum/signature verification: `test-catalog-service.sh`
   - plugin-host execution controls + compatibility enforcement + optional container path: `test-plugin-host-execution.sh`
   - explicit action policy enforcement: `test-policy-catalog-gates.sh`
+  - runtime capability routing/enforcement across `native`, `umbrella-agent-runtime`, and `removed`: `test-runtime-capability-routing.sh`, `test-runtime-capability-enforcement.sh`
   - migrated memory skills: `test-memory-get-skill.sh`, `test-memory-search-skill.sh`, `test-memory-link-skill.sh`
 - Session Runtime:
   - town hall/originator/worker shops/sub-agents/dependency orchestration: `test-session-runtime.sh`

@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Umbrella Session Service API
   version: 1.9.0
-  description: First-class town/session state with a mayor-led town hall, an originator studio for agent/shop creation, reusable shop profiles, governed shop action rosters, session, agent, and sub-agent heartbeat/liveness, first-class sub-agent assignments, and dependency-aware turn orchestration targeted by shop, profile, or role with turn-level dependency policy and retry defaults.
+  description: First-class town/session state with a mayor-led town hall, an originator studio for agent/shop creation, reusable shop profiles, governed shop action rosters, session, agent, and sub-agent heartbeat/liveness, first-class sub-agent assignments, and dependency-aware turn orchestration targeted by shop, profile, or role with turn-level dependency policy and retry defaults. Invocation and delegation records include runtime metadata such as `runtimeRequested`, `runtimeResolved`, and `runtimeReason`, and compatibility action ids can resolve into enabled `skill.*` actions while preserving `resolvedActionId` in the session ledger.
 servers:
   - url: http://127.0.0.1:8784
 paths:

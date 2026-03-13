@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Umbrella Orchestrator Service API
   version: 1.0.0
-  description: Run summaries and start-run responses may include structured terminal failure details such as `failureCategory`, `failureSource`, `failureMessage`, `failedStepId`, and `blockedStepId`.
+  description: Run summaries and start-run responses may include structured terminal failure details such as `failureCategory`, `failureSource`, `failureMessage`, `failedStepId`, and `blockedStepId`, plus runtime telemetry including `runtimeBreakdown`, `runtimeResolved`, `runtimeReason`, `executorRuntime`, `actionFamily`, and `runtimeCapability`.
 servers:
   - url: http://127.0.0.1:8797
 paths:

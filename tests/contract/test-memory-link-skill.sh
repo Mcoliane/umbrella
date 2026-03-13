@@ -209,7 +209,7 @@ assert enabled.get('shop', {}).get('enabledActionIds') == ['skill.memory.link'],
 
 invoked = post(session_url + f'/v1/sessions/{session_id}/invoke-action', {
     'shopId': 'town-hall',
-    'actionId': 'skill.memory.link',
+    'actionId': 'memory.link',
     'inputs': {
         'fromNodeId': 'fact:graph:source',
         'toNodeId': 'fact:graph:target',
@@ -220,6 +220,9 @@ invoked = post(session_url + f'/v1/sessions/{session_id}/invoke-action', {
     'metadata': {'approvalContext': {'approved': True}, 'timeoutSec': 5},
 })
 assert invoked.get('ok') is True, invoked
+assert invoked.get('invocation', {}).get('actionId') == 'memory.link', invoked
+assert invoked.get('invocation', {}).get('resolvedActionId') == 'skill.memory.link', invoked
+assert invoked.get('invocation', {}).get('result', {}).get('resolvedActionId') == 'skill.memory.link', invoked
 plugin_result = ((((invoked.get('invocation') or {}).get('result') or {}).get('result') or {}).get('pluginResult') or {})
 assert plugin_result.get('relation') == 'supports', invoked
 assert plugin_result.get('fromNodeId') == 'fact:graph:source', invoked

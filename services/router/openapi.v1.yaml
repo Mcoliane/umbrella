@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Umbrella Router Service API
   version: 1.0.0
-  description: Route decisions can incorporate dynamic catalog actions when a catalog service is configured.
+  description: Route decisions combine static routing rules with the runtime capability contract. Responses include runtime selection metadata such as `runtimeRequested`, `runtimeResolved`, `runtimeReason`, `actionFamily`, `runtimeCapability`, `runtimeSupported`, and alias-resolution metadata like `resolvedActionId`.
 servers:
   - url: http://127.0.0.1:8795
 paths:
@@ -14,6 +14,10 @@ paths:
     get:
       responses:
         '200': { description: Router config }
+  /v1/router/runtime-capabilities:
+    get:
+      responses:
+        '200': { description: Runtime capability contract }
   /v1/router/route-step:
     post:
       responses:

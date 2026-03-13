@@ -1,0 +1,136 @@
+{
+  "id": "umbrella.runtime-capabilities.v1",
+  "requiredContract": [
+    "step.submit",
+    "result.fetch",
+    "step.cancel",
+    "heartbeat",
+    "timeout.normalization",
+    "failure.normalization",
+    "policy.context"
+  ],
+  "runtimes": {
+    "native": {
+      "capabilities": [
+        "control-plane.native-actions",
+        "memory.boundary"
+      ],
+      "exactActions": [
+        "memory.promote",
+        "memory.hydrate",
+        "memoryWrite",
+        "memoryRead",
+        "memoryDelete",
+        "memoryList"
+      ],
+      "capabilityRules": [
+        {
+          "matchAction": "memory.promote",
+          "capability": "memory.boundary",
+          "actionFamily": "memory.promote"
+        },
+        {
+          "matchAction": "memory.hydrate",
+          "capability": "memory.boundary",
+          "actionFamily": "memory.hydrate"
+        },
+        {
+          "matchAction": "memoryWrite",
+          "capability": "control-plane.native-actions",
+          "actionFamily": "memoryWrite"
+        },
+        {
+          "matchAction": "memoryRead",
+          "capability": "control-plane.native-actions",
+          "actionFamily": "memoryRead"
+        },
+        {
+          "matchAction": "memoryDelete",
+          "capability": "control-plane.native-actions",
+          "actionFamily": "memoryDelete"
+        },
+        {
+          "matchAction": "memoryList",
+          "capability": "control-plane.native-actions",
+          "actionFamily": "memoryList"
+        }
+      ]
+    },
+    "umbrella-agent-runtime": {
+      "capabilities": [
+        "catalog.skill.invoke",
+        "session.turn.invoke",
+        "shop.action.invoke",
+        "delegation.invoke",
+        "subagent.assignment.invoke",
+        "plugin-host.execution",
+        "runtime.alias.memory.get",
+        "runtime.alias.memory.search",
+        "runtime.alias.memory.link"
+      ],
+      "actionFamilies": [
+        "skill.*"
+      ],
+      "compatibilityAliases": {
+        "memory.get": "skill.memory.get",
+        "memory.search": "skill.memory.search",
+        "memory.link": "skill.memory.link"
+      },
+      "capabilityRules": [
+        {
+          "matchPattern": "skill.*",
+          "capability": "catalog.skill.invoke",
+          "actionFamily": "skill.*"
+        }
+      ]
+    },
+    "removed": {
+      "capabilities": [
+        "legacy.adapter.actions",
+        "removed.compatibility"
+      ],
+      "exactActions": [
+        "bootstrap.prepare",
+        "bootstrap.compile",
+        "mirror.verify",
+        "validation.canonical_entry_consistency",
+        "dist.fresh_install_sim",
+        "audit.uniqueness_vs_vanilla"
+      ],
+      "actionFamilies": [
+        "bootstrap.*",
+        "mirror.*",
+        "validation.*",
+        "dist.*",
+        "audit.*"
+      ],
+      "capabilityRules": [
+        {
+          "matchPattern": "bootstrap.*",
+          "capability": "removed.compatibility",
+          "actionFamily": "bootstrap.*"
+        },
+        {
+          "matchPattern": "mirror.*",
+          "capability": "removed.compatibility",
+          "actionFamily": "mirror.*"
+        },
+        {
+          "matchPattern": "validation.*",
+          "capability": "removed.compatibility",
+          "actionFamily": "validation.*"
+        },
+        {
+          "matchPattern": "dist.*",
+          "capability": "removed.compatibility",
+          "actionFamily": "dist.*"
+        },
+        {
+          "matchPattern": "audit.*",
+          "capability": "removed.compatibility",
+          "actionFamily": "audit.*"
+        }
+      ]
+    }
+  }
+}

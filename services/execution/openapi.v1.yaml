@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Umbrella Execution Service API
   version: 1.0.0
-  description: Execution responses may include structured failure fields such as `failureCategory`, `failureSource`, and `failureReason`. When catalog and plugin-host integration is configured, dynamic catalog actions can be invoked through the plugin-host.
+  description: Execution responses may include structured failure fields such as `failureCategory`, `failureSource`, and `failureReason`, plus runtime selection metadata including `runtimeRequested`, `runtimeResolved`, `runtimeClass`, `runtimeReason`, `executorRuntime`, `supportedRuntimes`, `actionFamily`, and `runtimeCapability`. Compatibility aliases such as `memory.get`, `memory.search`, and `memory.link` resolve into their `skill.*` counterparts and surface `resolvedActionId` in the response. When catalog and plugin-host integration is configured, dynamic catalog actions are handled through the Umbrella agent runtime and executed via plugin-host.
 servers:
   - url: http://127.0.0.1:8794
 paths:
@@ -10,9 +10,14 @@ paths:
     get:
       responses:
         '200': { description: OK }
+  /v1/execution/runtime-support:
+    get:
+      summary: Inspect runtime capability support for an action id and optional requested runtime
+      responses:
+        '200': { description: Runtime support decision }
   /v1/execution/submit-step-spec:
     post:
-      summary: Execute a structured step spec through policy checks, native handlers, or the runtime adapter
+      summary: Execute a structured step spec through policy checks, native handlers including memory boundary actions, the Umbrella agent runtime, or the Removed runtime adapter
       responses:
         '200': { description: Execution result }
   /v1/execution/submit-command:

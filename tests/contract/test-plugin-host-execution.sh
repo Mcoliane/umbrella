@@ -88,9 +88,14 @@ req = urllib.request.Request(exec_url + '/v1/execution/submit-step-spec', method
 with urllib.request.urlopen(req, timeout=20) as resp:
     out = json.loads(resp.read().decode('utf-8'))
 assert out.get('ok') is True, out
+assert out.get('runtimeResolved') == 'umbrella-agent-runtime', out
+assert out.get('runtimeClass') == 'umbrella-agent-runtime', out
+assert out.get('runtimeReason') == 'catalog_action', out
+assert out.get('executorRuntime') == 'plugin-host', out
 result = out.get('result') if isinstance(out.get('result'), dict) else {}
 assert result.get('status') == 'SUCCESS', out
 assert result.get('kind') == 'plugin', out
+assert result.get('runtimeResolved') == 'umbrella-agent-runtime', out
 plugin_result = result.get('pluginResult') if isinstance(result.get('pluginResult'), dict) else {}
 assert plugin_result.get('summary') == 'example summary for fact:123', out
 

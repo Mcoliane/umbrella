@@ -176,6 +176,51 @@ def classify_execution_failure(execution_result: dict) -> dict:
     }
 
 
+def extract_runtime_metadata(execution_result: dict) -> dict:
+    if not isinstance(execution_result, dict):
+        return {}
+    result = execution_result.get('result') if isinstance(execution_result.get('result'), dict) else {}
+    runtime_requested = str(execution_result.get('runtimeRequested') or result.get('runtimeRequested') or '').strip()
+    runtime_resolved = str(execution_result.get('runtimeResolved') or result.get('runtimeResolved') or '').strip()
+    runtime_class = str(execution_result.get('runtimeClass') or result.get('runtimeClass') or '').strip()
+    runtime_reason = str(execution_result.get('runtimeReason') or result.get('runtimeReason') or '').strip()
+    executor_runtime = str(execution_result.get('executorRuntime') or result.get('executorRuntime') or '').strip()
+    action_family = str(execution_result.get('actionFamily') or result.get('actionFamily') or '').strip()
+    runtime_capability = str(execution_result.get('runtimeCapability') or result.get('runtimeCapability') or '').strip()
+    resolved_action_id = str(execution_result.get('resolvedActionId') or result.get('resolvedActionId') or '').strip()
+    deprecated_action_id = str(execution_result.get('deprecatedActionId') or result.get('deprecatedActionId') or '').strip()
+    supported_runtimes = execution_result.get('supportedRuntimes')
+    if not isinstance(supported_runtimes, list):
+        supported_runtimes = result.get('supportedRuntimes') if isinstance(result.get('supportedRuntimes'), list) else []
+    runtime_supported = execution_result.get('runtimeSupported')
+    if not isinstance(runtime_supported, bool):
+        runtime_supported = result.get('runtimeSupported') if isinstance(result.get('runtimeSupported'), bool) else None
+    out = {}
+    if runtime_requested:
+        out['runtimeRequested'] = runtime_requested
+    if runtime_resolved:
+        out['runtimeResolved'] = runtime_resolved
+    if runtime_class:
+        out['runtimeClass'] = runtime_class
+    if runtime_reason:
+        out['runtimeReason'] = runtime_reason
+    if executor_runtime:
+        out['executorRuntime'] = executor_runtime
+    if action_family:
+        out['actionFamily'] = action_family
+    if runtime_capability:
+        out['runtimeCapability'] = runtime_capability
+    if resolved_action_id:
+        out['resolvedActionId'] = resolved_action_id
+    if deprecated_action_id:
+        out['deprecatedActionId'] = deprecated_action_id
+    if supported_runtimes:
+        out['supportedRuntimes'] = supported_runtimes
+    if runtime_supported is not None:
+        out['runtimeSupported'] = runtime_supported
+    return out
+
+
 class OrchestratorEngine:
     def __init__(self, umbrella_root: Path):
         self.root = umbrella_root
@@ -185,6 +230,12 @@ class OrchestratorEngine:
 
     def _write_summary(self, run_dir: Path, run: dict, extra: dict | None = None) -> dict:
         completed = sum(1 for s in run['steps'] if s.get('status') in {'SUCCESS', 'FAILED', 'BLOCKED'})
+        runtime_breakdown = {}
+        for step in run['steps']:
+            step_result = step.get('result') if isinstance(step.get('result'), dict) else {}
+            runtime = str(step_result.get('runtimeResolved', '')).strip()
+            if runtime:
+                runtime_breakdown[runtime] = int(runtime_breakdown.get(runtime, 0)) + 1
         summary = {
             'runId': run['runId'],
             'state': run['state'],
@@ -195,6 +246,8 @@ class OrchestratorEngine:
             'createdAt': run['createdAt'],
             'finishedAt': run.get('finishedAt', ''),
         }
+        if runtime_breakdown:
+            summary['runtimeBreakdown'] = runtime_breakdown
         if run.get('approvalKey'):
             summary['approvalKey'] = run.get('approvalKey')
         if run.get('blockedStepId'):
@@ -207,6 +260,21 @@ class OrchestratorEngine:
             summary['failureSource'] = run.get('failureSource')
         if run.get('failureMessage'):
             summary['failureMessage'] = run.get('failureMessage')
+        for key in (
+            'runtimeRequested',
+            'runtimeResolved',
+            'runtimeClass',
+            'runtimeReason',
+            'executorRuntime',
+            'actionFamily',
+            'runtimeCapability',
+            'resolvedActionId',
+            'deprecatedActionId',
+            'supportedRuntimes',
+            'runtimeSupported',
+        ):
+            if key in run:
+                summary[key] = run.get(key)
         if extra:
             summary.update(extra)
         write_json(run_dir / 'summary.json', summary)
@@ -491,6 +559,9 @@ class OrchestratorEngine:
                     step_states[sid] = 'FAILED'
                 row['endedAt'] = now_iso()
                 row['result'] = ex
+                runtime_meta = extract_runtime_metadata(ex)
+                if runtime_meta:
+                    row.update(runtime_meta)
 
                 if row['status'] != 'SUCCESS':
                     run['state'] = 'FAILED'
@@ -500,6 +571,7 @@ class OrchestratorEngine:
                     run['failureSource'] = failure['failureSource']
                     run['failureCategory'] = failure['failureCategory']
                     run['failureMessage'] = failure['failureMessage']
+                    run.update(runtime_meta)
                     break
 
             if run['state'] in {'FAILED', 'BLOCKED'}:

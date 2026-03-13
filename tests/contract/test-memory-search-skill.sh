@@ -150,11 +150,14 @@ assert worker.get('shop', {}).get('enabledActionIds') == ['skill.memory.search']
 
 invoked = post(session_url + f'/v1/sessions/{session_id}/invoke-action', {
     'shopId': 'research-office',
-    'actionId': 'skill.memory.search',
+    'actionId': 'memory.search',
     'inputs': {'namespace': 'research', 'query': 'result', 'k': 10, 'baseUrl': mem_url},
     'metadata': {'timeoutSec': 5},
 })
 assert invoked.get('ok') is True, invoked
+assert invoked.get('invocation', {}).get('actionId') == 'memory.search', invoked
+assert invoked.get('invocation', {}).get('resolvedActionId') == 'skill.memory.search', invoked
+assert invoked.get('invocation', {}).get('result', {}).get('resolvedActionId') == 'skill.memory.search', invoked
 plugin_result = ((((invoked.get('invocation') or {}).get('result') or {}).get('result') or {}).get('pluginResult') or {})
 results = plugin_result.get('results') if isinstance(plugin_result.get('results'), list) else []
 assert len(results) >= 2, invoked

@@ -323,7 +323,10 @@ assert assignment.get('resultRefs', {}).get('delegationId'), assignment_out
 assert assignment.get('resultRefs', {}).get('invocationId'), assignment_out
 assert assignment_out.get('subAgent', {}).get('state') == 'completed', assignment_out
 assert assignment_out.get('delegation', {}).get('shopId') == 'research-office', assignment_out
+assert assignment_out.get('delegation', {}).get('runtimeResolved') == 'umbrella-agent-runtime', assignment_out
 assert assignment_out.get('invocation', {}).get('inputs', {}).get('nodeId') == 'fact:999', assignment_out
+assert assignment_out.get('invocation', {}).get('runtimeResolved') == 'umbrella-agent-runtime', assignment_out
+assert assignment_out.get('invocation', {}).get('result', {}).get('runtimeResolved') == 'umbrella-agent-runtime', assignment_out
 
 assignment_get_req = urllib.request.Request(
     session_url + f"/v1/sessions/{session_id}/assignments/{assignment.get('assignmentId')}",
@@ -517,6 +520,7 @@ assert len(fetched.get('subAgents', [])) == 1, fetched
 assert len(fetched.get('assignments', [])) == 1, fetched
 assert fetched.get('assignments', [])[0].get('status') == 'completed', fetched
 assert fetched.get('assignments', [])[0].get('resultRefs', {}).get('delegationId'), fetched
+assert fetched.get('invocations', [])[0].get('runtimeResolved') == 'umbrella-agent-runtime', fetched
 assert fetched.get('turns', [])[0].get('state') == 'COMPLETED', fetched
 assert fetched.get('turns', [])[0].get('orchestrationMode') == 'manual', fetched
 assert fetched.get('turns', [])[1].get('state') == 'COMPLETED', fetched

@@ -64,9 +64,32 @@ router_url = sys.argv[1]
 req = urllib.request.Request(router_url + '/v1/router/route-step', method='POST', data=json.dumps({'step': {'stepId': 'skill-step', 'action': 'skill.memory.summarize'}}).encode('utf-8'), headers={'Content-Type':'application/json'})
 with urllib.request.urlopen(req, timeout=20) as resp:
     out = json.loads(resp.read().decode('utf-8'))
-assert out.get('runtime') == 'plugin-host', out
+assert out.get('runtime') == 'umbrella-agent-runtime', out
+assert out.get('runtimeResolved') == 'umbrella-agent-runtime', out
+assert out.get('runtimeClass') == 'umbrella-agent-runtime', out
+assert out.get('executorRuntime') == 'plugin-host', out
+assert out.get('runtimeReason') == 'catalog_action', out
 assert out.get('reason') == 'catalog_action', out
 assert out.get('catalogAction', {}).get('pluginId') == 'example.memory.skill', out
+
+legacy_req = urllib.request.Request(router_url + '/v1/router/route-step', method='POST', data=json.dumps({'step': {'stepId': 'legacy-memory-get', 'action': 'memory.get'}}).encode('utf-8'), headers={'Content-Type':'application/json'})
+with urllib.request.urlopen(legacy_req, timeout=20) as resp:
+    legacy_out = json.loads(resp.read().decode('utf-8'))
+assert legacy_out.get('runtime') == 'umbrella-agent-runtime', legacy_out
+assert legacy_out.get('resolvedActionId') == 'skill.memory.get', legacy_out
+assert legacy_out.get('deprecatedActionId') == 'memory.get', legacy_out
+
+promote_req = urllib.request.Request(router_url + '/v1/router/route-step', method='POST', data=json.dumps({'step': {'stepId': 'promote-step', 'action': 'memory.promote'}}).encode('utf-8'), headers={'Content-Type':'application/json'})
+with urllib.request.urlopen(promote_req, timeout=20) as resp:
+    promote_out = json.loads(resp.read().decode('utf-8'))
+assert promote_out.get('runtime') == 'native', promote_out
+assert promote_out.get('runtimeReason') == 'matched_action:memory.promote', promote_out
+
+hydrate_req = urllib.request.Request(router_url + '/v1/router/route-step', method='POST', data=json.dumps({'step': {'stepId': 'hydrate-step', 'action': 'memory.hydrate'}}).encode('utf-8'), headers={'Content-Type':'application/json'})
+with urllib.request.urlopen(hydrate_req, timeout=20) as resp:
+    hydrate_out = json.loads(resp.read().decode('utf-8'))
+assert hydrate_out.get('runtime') == 'native', hydrate_out
+assert hydrate_out.get('runtimeReason') == 'matched_action:memory.hydrate', hydrate_out
 print('router catalog routing PASS')
 PY
 

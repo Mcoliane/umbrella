@@ -1,6 +1,6 @@
 # Umbrella Execution Service
 
-HTTP service wrapper over runtime adapter contract calls.
+HTTP service wrapper over runtime dispatch. It can execute native control-plane actions, Umbrella agent runtime actions, or legacy Removed adapter actions.
 
 ## Run
 
@@ -20,12 +20,38 @@ Step actions handled natively by execution-service:
 - `memoryRead`
 - `memoryDelete`
 - `memoryList`
+- `memory.promote`
+- `memory.hydrate`
 
-When `--catalog-url` and `--plugin-host-url` are configured, enabled catalog actions can also be delegated through the plugin-host instead of the legacy runtime adapter.
+When `--catalog-url` and `--plugin-host-url` are configured, enabled catalog actions are handled as `umbrella-agent-runtime` actions. `plugin-host` is the internal executor for that runtime path rather than the public runtime identity.
+
+Execution now reads the same runtime capability contract as router from `control-plane/router/runtime-capabilities.json`. That lets it:
+- reject unsupported runtime/action combinations with `failureReason: runtime_capability_unsupported`
+- preserve `supportedRuntimes`, `actionFamily`, and `runtimeCapability` in results
+- expose read-only support introspection through `GET /v1/execution/runtime-support`
+
+Execution responses include runtime selection metadata:
+- `runtimeRequested`
+- `runtimeResolved`
+- `runtimeClass`
+- `runtimeReason`
+- `executorRuntime`
+
+Legacy compatibility aliases:
+- `memory.get` -> `skill.memory.get`
+- `memory.search` -> `skill.memory.search`
+- `memory.link` -> `skill.memory.link`
+
+Execution preserves the original requested action id while resolving these aliases into the Umbrella agent runtime path.
+
+Boundary ownership:
+- `memory.promote` and `memory.hydrate` are native platform actions owned by execution-service and the durable memory APIs
+- they no longer rely on the Removed adapter for normal execution
 
 ## Endpoints
 
 - `GET /v1/execution/health`
+- `GET /v1/execution/runtime-support`
 - `POST /v1/execution/submit-step-spec`
 - `POST /v1/execution/submit-command`
 - `POST /v1/execution/heartbeat`

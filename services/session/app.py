@@ -17,6 +17,12 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from services.id_utils import validate_identifier
 from services.memory.auth import check_auth
 
+LEGACY_ACTION_ALIASES = {
+    'memory.get': 'skill.memory.get',
+    'memory.search': 'skill.memory.search',
+    'memory.link': 'skill.memory.link',
+}
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -215,6 +221,34 @@ class SessionEngine:
             return None
         payload = self._get_json(self.catalog_url, f'/v1/catalog/items/{urllib.parse.quote(item_id, safe="")}')
         return payload if isinstance(payload, dict) else None
+
+    def _requested_runtime(self, metadata: dict | None = None) -> str:
+        requested = str((metadata or {}).get('runtimeRequested') or '').strip()
+        if not requested:
+            requested = str((metadata or {}).get('runtime') or '').strip()
+        return requested
+
+    def _resolved_runtime(self, action_id: str, metadata: dict | None = None) -> dict:
+        requested = self._requested_runtime(metadata)
+        if str(action_id or '').strip().startswith('skill.'):
+            return {
+                'runtimeRequested': requested,
+                'runtimeResolved': 'umbrella-agent-runtime',
+                'runtimeClass': 'umbrella-agent-runtime',
+                'runtimeReason': 'shop_skill_action',
+                'executorRuntime': 'plugin-host',
+            }
+        return {
+            'runtimeRequested': requested,
+            'runtimeResolved': 'umbrella-agent-runtime',
+            'runtimeClass': 'umbrella-agent-runtime',
+            'runtimeReason': 'session_action',
+            'executorRuntime': 'plugin-host',
+        }
+
+    def _resolve_action_alias(self, action_id: str) -> tuple[str, str]:
+        original = str(action_id or '').strip()
+        return original, LEGACY_ACTION_ALIASES.get(original, original)
 
     def _resolved_timeout_sec(self, action_id: str, metadata: dict | None = None) -> int:
         raw_timeout = (metadata or {}).get('timeoutSec', None)
@@ -1215,13 +1249,14 @@ class SessionEngine:
         action_id = str(action_id or '').strip()
         if not action_id:
             raise ValueError('actionId is required')
+        original_action_id, resolved_action_id = self._resolve_action_alias(action_id)
         shops = session.get('shops') if isinstance(session.get('shops'), dict) else {}
         target_shop_id = validate_identifier(shop_id or self._town_hall_shop_id(session), 'shopId')
         shop = shops.get(target_shop_id) if isinstance(shops.get(target_shop_id), dict) else None
         if not shop:
             raise ValueError('shop not found')
         shop_actions = self._shop_actions(session).get(target_shop_id, [])
-        if action_id not in {str(a.get('id', '')).strip() for a in shop_actions}:
+        if resolved_action_id not in {str(a.get('id', '')).strip() for a in shop_actions}:
             raise ValueError('action is not enabled in target shop')
         executing_agent_id = str(shop.get('ownerAgentId', '')).strip() or str(session.get('mayorAgentId', '')).strip()
         invocation_id = f'invoke-{uuid.uuid4().hex[:12]}'
@@ -1229,11 +1264,15 @@ class SessionEngine:
         step_id = validate_identifier(invocation_id, 'stepId')
         step_spec = {
             'stepId': step_id,
-            'action': action_id,
+            'action': original_action_id,
+            'runtime': 'umbrella-agent-runtime',
             'inputs': inputs if isinstance(inputs, dict) else {},
-            'timeoutSec': self._resolved_timeout_sec(action_id, metadata),
+            'timeoutSec': self._resolved_timeout_sec(resolved_action_id, metadata),
             'metadata': {
                 **(metadata if isinstance(metadata, dict) else {}),
+                'runtimeRequested': self._requested_runtime(metadata) or 'umbrella-agent-runtime',
+                'originalActionId': original_action_id,
+                'resolvedActionId': resolved_action_id,
                 'agentId': executing_agent_id,
                 'sessionId': session_id,
                 'shopId': target_shop_id,
@@ -1259,14 +1298,17 @@ class SessionEngine:
                 body = ''
             raise RuntimeError(f'HTTP {ex.code}: {body or ex.reason}') from ex
 
+        runtime = self._resolved_runtime(resolved_action_id, metadata)
         invocation = {
             'invocationId': invocation_id,
-            'actionId': action_id,
+            'actionId': original_action_id,
+            'resolvedActionId': resolved_action_id,
             'shopId': target_shop_id,
             'executingAgentId': executing_agent_id,
             'turnId': turn_id,
             'delegationId': delegation_id,
             'inputs': inputs if isinstance(inputs, dict) else {},
+            **runtime,
             'result': execution,
             'createdAt': now_iso(),
         }
@@ -1279,7 +1321,7 @@ class SessionEngine:
                     'messageId': f'msg-{uuid.uuid4().hex[:12]}',
                     'role': 'tool',
                     'content': content,
-                    'metadata': {'actionId': action_id, 'invocationId': invocation_id, 'shopId': target_shop_id, 'executingAgentId': executing_agent_id},
+                    'metadata': {'actionId': original_action_id, 'resolvedActionId': resolved_action_id, 'invocationId': invocation_id, 'shopId': target_shop_id, 'executingAgentId': executing_agent_id, **runtime},
                     'createdAt': now_iso(),
                 }
             )
@@ -1328,6 +1370,11 @@ class SessionEngine:
             'planStepId': str((metadata or {}).get('planStepId', '')).strip(),
             'dependsOn': [str(x).strip() for x in ((metadata or {}).get('dependsOn') or []) if str(x).strip()],
             'actionId': str(action_id or '').strip(),
+            'resolvedActionId': self._resolve_action_alias(str(action_id or '').strip())[1],
+            'runtimeRequested': self._requested_runtime(metadata),
+            'runtimeResolved': 'umbrella-agent-runtime',
+            'runtimeClass': 'umbrella-agent-runtime',
+            'runtimeReason': 'delegated_shop_action',
             'state': 'IN_PROGRESS',
             'createdAt': now_iso(),
             'metadata': metadata or {},

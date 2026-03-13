@@ -1,7 +1,26 @@
 {
   "id": "umbrella.router.runtime-routing.v2",
+  "supportedRuntimes": [
+    "native",
+    "umbrella-agent-runtime",
+    "removed"
+  ],
   "defaultRuntime": "removed",
+  "capabilityReroute": {
+    "enabled": true,
+    "fallbackByRuntime": {
+      "umbrella-agent-runtime": [
+        "removed"
+      ],
+      "native": [
+        "removed"
+      ],
+      "removed": []
+    }
+  },
   "rules": [
+    {"matchAction": "memory.promote", "runtime": "native"},
+    {"matchAction": "memory.hydrate", "runtime": "native"},
     {"matchStepPrefix": "prepare", "runtime": "removed"},
     {"matchStepPrefix": "compile", "runtime": "removed"},
     {"matchStepPrefix": "audit", "runtime": "removed"},

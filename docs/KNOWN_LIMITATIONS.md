@@ -10,3 +10,4 @@
 - The plugin/skills runtime is implemented, but stronger isolation is still host-dependent: process isolation is enforced directly, while container isolation is optional and requires local `docker` or `podman`.
 - Approval for dynamic actions is policy-aware, but first-class human approval UX is still centered on run/step approval flows rather than a dedicated interactive skill-approval surface.
 - Shop profiles and runtime session state are persisted under generated observability paths; they are not yet promoted into a more formal operator-managed configuration model.
+- Runtime capability routing is implemented, but runtime-family telemetry is still basic summary metadata rather than a full observability dashboard with counters and historical trend views.

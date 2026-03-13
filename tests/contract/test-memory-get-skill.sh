@@ -142,11 +142,14 @@ assert worker.get('shop', {}).get('enabledActionIds') == ['skill.memory.get'], w
 
 invoked = post(session_url + f'/v1/sessions/{session_id}/invoke-action', {
     'shopId': 'development-shop',
-    'actionId': 'skill.memory.get',
+    'actionId': 'memory.get',
     'inputs': {'nodeId': 'fact:team:alpha', 'baseUrl': mem_url},
     'metadata': {'timeoutSec': 5},
 })
 assert invoked.get('ok') is True, invoked
+assert invoked.get('invocation', {}).get('actionId') == 'memory.get', invoked
+assert invoked.get('invocation', {}).get('resolvedActionId') == 'skill.memory.get', invoked
+assert invoked.get('invocation', {}).get('result', {}).get('resolvedActionId') == 'skill.memory.get', invoked
 plugin_result = ((((invoked.get('invocation') or {}).get('result') or {}).get('result') or {}).get('pluginResult') or {})
 assert plugin_result.get('nodeId') == 'fact:team:alpha', invoked
 assert (plugin_result.get('node') or {}).get('title') == 'Alpha Fact', invoked

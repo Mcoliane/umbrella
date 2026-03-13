@@ -4,6 +4,11 @@ Umbrella0.4 is a local multi-service control plane and agent runtime with approv
 
 The plugin/skills runtime is now part of the stack: catalog manages skill/plugin discovery and lifecycle, plugin-host executes dynamic actions behind a controlled boundary, and session provides the town/shop runtime for mayor, originator, worker shops, and sub-agents.
 
+Umbrella is runtime-agnostic. The control plane now distinguishes:
+- `native` for first-party platform and boundary actions
+- `umbrella-agent-runtime` for Umbrella-native shops/sessions/skills
+- `removed` as a supported alternate runtime with its own compatibility action families
+
 ## License
 
 This project is licensed under the `Umbrella Testing License` in [LICENSE](LICENSE). Use is limited to express-approved users for testing Emcom Umbrella only.
@@ -26,6 +31,7 @@ umbrella-manage status
 - Uninstall/reset: `docs/UNINSTALL_RESET.md`
 - Known limitations: `docs/KNOWN_LIMITATIONS.md`
 - Memory boundary contract: `docs/memory-boundary-contract.md`
+- Runtime matrix: `docs/runtime-matrix.md`
 
 ## Core Commands
 
@@ -75,6 +81,11 @@ Session/runtime model:
 - worker agents own shops with shop-scoped governed actions
 - turns can fan out across shops, use dependency graphs, retries, and reconciliation
 - sub-agents are runtime instances of worker shops inside a session
+
+Runtime model:
+- `native` owns platform/control-plane and memory-boundary actions
+- `umbrella-agent-runtime` owns catalog skills plus session/shop/sub-agent execution
+- `removed` remains supported for compatibility action families that are not required of every runtime
 
 ## Quality Gates
 

@@ -23,5 +23,13 @@ Run summaries persist structured failure details when available, including:
 - `failedStepId`
 - `blockedStepId`
 
+Run summaries also persist runtime telemetry when available, including:
+- `runtimeBreakdown`
+- `runtimeRequested`
+- `runtimeResolved`
+- `executorRuntime`
+- `actionFamily`
+- `runtimeCapability`
+
 Resume protection:
 - `resumeBlocked=true` is rejected unless `caller` is `approval-service`.
