@@ -117,6 +117,8 @@ class UmbrellaTui:
 
     def show_model_provider(self):
         provider = self.state.home.get("modelProvider") if isinstance(self.state.home.get("modelProvider"), dict) else {}
+        broker_meta = provider.get("broker") if isinstance(provider.get("broker"), dict) else {}
+        connection_meta = provider.get("connection") if isinstance(provider.get("connection"), dict) else {}
         provider_meta = provider.get("provider") if isinstance(provider.get("provider"), dict) else {}
         configured = bool(provider.get("configured", False))
         enabled = bool(provider.get("enabled", False))
@@ -125,9 +127,13 @@ class UmbrellaTui:
         key_masked = str(((provider.get("secrets") or {}).get("apiKeyMasked", ""))).strip() or "missing"
         self.add_local_event(
             "system",
-            f"Model provider: {'enabled' if enabled else 'disabled'} configured={configured} type={provider_meta.get('type','')} model={model} base={base_url} key={key_masked}",
+            (
+                f"Model broker: {'enabled' if enabled else 'disabled'} configured={configured} "
+                f"connection={connection_meta.get('id','')} type={provider_meta.get('type','')} model={model} "
+                f"base={base_url} brokerUrl={broker_meta.get('url','')} key={key_masked}"
+            ),
         )
-        self.state.status = "Model provider"
+        self.state.status = "Model broker"
 
     def setup_model_provider(self, screen):
         current = self.state.home.get("modelProvider") if isinstance(self.state.home.get("modelProvider"), dict) else {}
@@ -165,11 +171,11 @@ class UmbrellaTui:
         )
         self.refresh_home()
         if out.get("saved"):
-            self.add_local_event("system", "Saved model provider configuration.")
-            self.state.status = "Model provider saved"
+            self.add_local_event("system", "Saved model broker connection.")
+            self.state.status = "Model broker saved"
             return
         self.add_local_event("error", f"Model setup failed: {json.dumps(out, ensure_ascii=False)[:180]}")
-        self.state.status = "Model setup failed"
+        self.state.status = "Model broker setup failed"
 
     def test_model_provider(self):
         out = self.client.test_model_provider()

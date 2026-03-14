@@ -16,7 +16,7 @@ from urllib.parse import unquote, urlparse
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from services.id_utils import validate_identifier
 from services.memory.auth import check_auth
-from services.runtime_model import load_model_provider, mask_secret, save_model_provider, test_model_provider
+from services.runtime_model import discover_broker_url, load_model_broker, load_model_provider, mask_secret, save_model_provider, test_model_provider
 
 LEGACY_ACTION_ALIASES = {
     'memory.get': 'skill.memory.get',
@@ -360,11 +360,25 @@ class SessionEngine:
         return self._package_payload(package)
 
     def model_provider_status(self) -> dict:
+        broker = load_model_broker(self.root)
         provider = load_model_provider(self.root)
         provider_meta = provider.get('provider') if isinstance(provider.get('provider'), dict) else {}
+        connection_id = str(((broker.get('routing') or {}).get('defaultConnectionId', '')) or ((broker.get('broker') or {}).get('defaultConnectionId', ''))).strip() or str(provider_meta.get('id', '')).strip()
+        connection = (broker.get('connections') or {}).get(connection_id, {}) if isinstance((broker.get('connections') or {}).get(connection_id, {}), dict) else {}
         return {
             'enabled': bool(provider.get('enabled', False)),
             'configured': bool(str(provider_meta.get('baseUrl', '')).strip() and str(provider_meta.get('defaultModel', '')).strip()),
+            'broker': {
+                'enabled': bool(broker.get('enabled', False)),
+                'url': discover_broker_url(self.root, broker),
+                'defaultConnectionId': connection_id,
+                'allowFallback': bool(((broker.get('broker') or {}).get('allowFallback', True))),
+            },
+            'connection': {
+                'id': connection_id,
+                'label': str(connection.get('label', '')).strip(),
+                'authMode': str(connection.get('authMode', '')).strip(),
+            },
             'provider': {
                 'id': str(provider_meta.get('id', '')).strip(),
                 'type': str(provider_meta.get('type', '')).strip(),
@@ -410,6 +424,12 @@ class SessionEngine:
         provider = load_model_provider(self.root)
         result = test_model_provider(provider)
         return status | {'test': result}
+
+    def model_broker_status(self) -> dict:
+        return self.model_provider_status()
+
+    def test_model_broker(self) -> dict:
+        return self.test_model_provider()
 
     def _resolve_agent_package(self, package_id: str) -> dict | None:
         if not str(package_id or '').strip():
@@ -1036,8 +1056,11 @@ class SessionEngine:
             'reply': reply,
             'mode': mode,
             'providerUsed': bool(plugin_result.get('providerUsed', False)),
+            'providerType': str(plugin_result.get('providerType', '')).strip(),
+            'connectionUsed': str(plugin_result.get('connectionUsed', '')).strip(),
             'modelUsed': str(plugin_result.get('modelUsed', '')).strip(),
             'fallbackUsed': bool(plugin_result.get('fallbackUsed', False)),
+            'latencyMs': int(plugin_result.get('latencyMs', 0) or 0),
             'delegationPlan': plugin_result.get('delegationPlan') if isinstance(plugin_result.get('delegationPlan'), list) else [],
             'invocation': invocation,
             'pluginResult': plugin_result,
@@ -1304,8 +1327,11 @@ class SessionEngine:
                         'turnId': turn_id,
                         'delegationIds': [str(row.get('delegationId', '')).strip() for row in (orchestrated.get('delegations') or []) if isinstance(row, dict)],
                         'providerUsed': bool(direct.get('providerUsed', False)),
+                        'providerType': str(direct.get('providerType', '')).strip(),
+                        'connectionUsed': str(direct.get('connectionUsed', '')).strip(),
                         'modelUsed': str(direct.get('modelUsed', '')).strip(),
                         'fallbackUsed': bool(direct.get('fallbackUsed', False)),
+                        'latencyMs': int(direct.get('latencyMs', 0) or 0),
                     },
                 )
                 self.store.save(session)
@@ -1322,8 +1348,11 @@ class SessionEngine:
                     'message': message,
                     'runtimeResolved': 'umbrella-agent-runtime',
                     'providerUsed': bool(direct.get('providerUsed', False)),
+                    'providerType': str(direct.get('providerType', '')).strip(),
+                    'connectionUsed': str(direct.get('connectionUsed', '')).strip(),
                     'modelUsed': str(direct.get('modelUsed', '')).strip(),
                     'fallbackUsed': bool(direct.get('fallbackUsed', False)),
+                    'latencyMs': int(direct.get('latencyMs', 0) or 0),
                 }
             reply = str(direct.get('reply', '')).strip() or 'I’m ready to help.'
             session = self.store.get(session_id) or session
@@ -1337,8 +1366,11 @@ class SessionEngine:
                     'modeResolved': 'direct',
                     'actionId': direct.get('actionId', ''),
                     'providerUsed': bool(direct.get('providerUsed', False)),
+                    'providerType': str(direct.get('providerType', '')).strip(),
+                    'connectionUsed': str(direct.get('connectionUsed', '')).strip(),
                     'modelUsed': str(direct.get('modelUsed', '')).strip(),
                     'fallbackUsed': bool(direct.get('fallbackUsed', False)),
+                    'latencyMs': int(direct.get('latencyMs', 0) or 0),
                 },
             )
             self.store.save(session)
@@ -1353,8 +1385,11 @@ class SessionEngine:
                 'message': message,
                 'runtimeResolved': 'umbrella-agent-runtime',
                 'providerUsed': bool(direct.get('providerUsed', False)),
+                'providerType': str(direct.get('providerType', '')).strip(),
+                'connectionUsed': str(direct.get('connectionUsed', '')).strip(),
                 'modelUsed': str(direct.get('modelUsed', '')).strip(),
                 'fallbackUsed': bool(direct.get('fallbackUsed', False)),
+                'latencyMs': int(direct.get('latencyMs', 0) or 0),
             }
 
         direct = self._converse_direct(
@@ -1383,8 +1418,11 @@ class SessionEngine:
                 'modeResolved': str(direct.get('mode', 'direct')).strip() or 'direct',
                 'actionId': direct.get('actionId', ''),
                 'providerUsed': bool(direct.get('providerUsed', False)),
+                'providerType': str(direct.get('providerType', '')).strip(),
+                'connectionUsed': str(direct.get('connectionUsed', '')).strip(),
                 'modelUsed': str(direct.get('modelUsed', '')).strip(),
                 'fallbackUsed': bool(direct.get('fallbackUsed', False)),
+                'latencyMs': int(direct.get('latencyMs', 0) or 0),
             },
         )
         self.store.save(session)
@@ -1399,8 +1437,11 @@ class SessionEngine:
             'message': message,
             'runtimeResolved': 'umbrella-agent-runtime',
             'providerUsed': bool(direct.get('providerUsed', False)),
+            'providerType': str(direct.get('providerType', '')).strip(),
+            'connectionUsed': str(direct.get('connectionUsed', '')).strip(),
             'modelUsed': str(direct.get('modelUsed', '')).strip(),
             'fallbackUsed': bool(direct.get('fallbackUsed', False)),
+            'latencyMs': int(direct.get('latencyMs', 0) or 0),
         }
 
     def heartbeat_session(self, session_id: str, *, seen_by: str = 'system') -> dict:
@@ -2197,6 +2238,8 @@ def handler_factory(engine: SessionEngine, token: str):
             path = urlparse(self.path).path
             if path == '/v1/session/health':
                 return json_response(self, 200, {'status': 'ok', 'service': 'session', 'checkedAt': now_iso()})
+            if path == '/v1/runtime/model-broker':
+                return json_response(self, 200, engine.model_broker_status())
             if path == '/v1/runtime/model-provider':
                 return json_response(self, 200, engine.model_provider_status())
             if path == '/v1/shop-profiles':
@@ -2258,7 +2301,7 @@ def handler_factory(engine: SessionEngine, token: str):
             path = urlparse(self.path).path
             body = parse_json(self)
             try:
-                if path == '/v1/runtime/model-provider':
+                if path in {'/v1/runtime/model-provider', '/v1/runtime/model-broker'}:
                     out = engine.save_model_provider(
                         enabled=body.get('enabled') if isinstance(body.get('enabled'), bool) else None,
                         provider_payload=body.get('provider') if isinstance(body.get('provider'), dict) else None,
@@ -2266,6 +2309,8 @@ def handler_factory(engine: SessionEngine, token: str):
                         api_key=body.get('apiKey') if 'apiKey' in body else None,
                     )
                     return json_response(self, 200, out)
+                if path == '/v1/runtime/model-broker/test':
+                    return json_response(self, 200, engine.test_model_broker())
                 if path == '/v1/runtime/model-provider/test':
                     return json_response(self, 200, engine.test_model_provider())
                 if path == '/v1/shop-profiles':

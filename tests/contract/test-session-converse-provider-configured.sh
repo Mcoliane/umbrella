@@ -12,6 +12,7 @@ PY
 }
 
 FAKE_PORT="$(free_port)"
+BROKER_PORT="$(free_port)"
 POLICY_PORT="$(free_port)"
 CATALOG_PORT="$(free_port)"
 PLUGIN_HOST_PORT="$(free_port)"
@@ -19,6 +20,7 @@ EXEC_PORT="$(free_port)"
 SESSION_PORT="$(free_port)"
 
 FAKE_URL="http://127.0.0.1:$FAKE_PORT/v1"
+BROKER_URL="http://127.0.0.1:$BROKER_PORT"
 POLICY_URL="http://127.0.0.1:$POLICY_PORT"
 CATALOG_URL="http://127.0.0.1:$CATALOG_PORT"
 PLUGIN_HOST_URL="http://127.0.0.1:$PLUGIN_HOST_PORT"
@@ -27,18 +29,77 @@ SESSION_URL="http://127.0.0.1:$SESSION_PORT"
 
 CONFIG_PATH="$ROOT/control-plane/runtime/model-provider.json"
 SECRETS_PATH="$ROOT/control-plane/runtime/model-provider.secrets.json"
+BROKER_CONFIG_PATH="$ROOT/control-plane/runtime/model-broker.json"
+BROKER_SECRETS_PATH="$ROOT/control-plane/runtime/model-broker.secrets.json"
 CONFIG_BAK="$ROOT/tmp/model-provider-configured.json.bak"
 SECRETS_BAK="$ROOT/tmp/model-provider-configured.secrets.bak"
+BROKER_CONFIG_BAK="$ROOT/tmp/model-broker-configured.json.bak"
+BROKER_SECRETS_BAK="$ROOT/tmp/model-broker-configured.secrets.bak"
 [[ -f "$CONFIG_PATH" ]] && cp "$CONFIG_PATH" "$CONFIG_BAK" || true
 [[ -f "$SECRETS_PATH" ]] && cp "$SECRETS_PATH" "$SECRETS_BAK" || true
+[[ -f "$BROKER_CONFIG_PATH" ]] && cp "$BROKER_CONFIG_PATH" "$BROKER_CONFIG_BAK" || true
+[[ -f "$BROKER_SECRETS_PATH" ]] && cp "$BROKER_SECRETS_PATH" "$BROKER_SECRETS_BAK" || true
 
 cleanup() {
-  kill "$P0" "$P1" "$P2" "$P3" "$P4" "$P5" >/dev/null 2>&1 || true
+  kill "$P0" "$PB" "$P1" "$P2" "$P3" "$P4" "$P5" >/dev/null 2>&1 || true
   if [[ -f "$CONFIG_BAK" ]]; then cp "$CONFIG_BAK" "$CONFIG_PATH"; fi
   if [[ -f "$SECRETS_BAK" ]]; then cp "$SECRETS_BAK" "$SECRETS_PATH"; else rm -f "$SECRETS_PATH"; fi
+  if [[ -f "$BROKER_CONFIG_BAK" ]]; then cp "$BROKER_CONFIG_BAK" "$BROKER_CONFIG_PATH"; fi
+  if [[ -f "$BROKER_SECRETS_BAK" ]]; then cp "$BROKER_SECRETS_BAK" "$BROKER_SECRETS_PATH"; else rm -f "$BROKER_SECRETS_PATH"; fi
 }
 trap cleanup EXIT
 
+cat >"$BROKER_CONFIG_PATH" <<JSON
+{
+  "version": "umbrella.model-broker.v1",
+  "enabled": true,
+  "broker": {
+    "url": "$BROKER_URL",
+    "defaultConnectionId": "default",
+    "allowFallback": true
+  },
+  "providers": {
+    "openai-compatible": {
+      "id": "openai-compatible",
+      "type": "openai-compatible",
+      "supportsApiKey": true,
+      "supportsOAuth": false
+    }
+  },
+  "connections": {
+    "default": {
+      "id": "default",
+      "providerId": "openai-compatible",
+      "authMode": "api_key",
+      "label": "Test Broker Connection",
+      "enabled": true,
+      "baseUrl": "$FAKE_URL",
+      "defaultModel": "gpt-fake",
+      "timeoutSec": 10
+    }
+  },
+  "routing": {
+    "defaultConnectionId": "default",
+    "allowFallback": true,
+    "packageDefaults": {
+      "umbrella.mayor.v1": {"model": "gpt-fake"},
+      "umbrella.originator.v1": {"model": "gpt-fake"},
+      "umbrella.programming-agent.v1": {"model": "gpt-fake"}
+    }
+  }
+}
+JSON
+cat >"$BROKER_SECRETS_PATH" <<JSON
+{
+  "connections": {
+    "default": {
+      "apiKey": "sk-fake-provider"
+    }
+  }
+}
+JSON
+
+# Legacy files stay mirrored for compatibility-oriented status endpoints.
 cat >"$CONFIG_PATH" <<JSON
 {
   "version": "umbrella.model-provider.v1",
@@ -96,6 +157,9 @@ ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
 PY
 P0=$!
 
+python3 "$ROOT/services/model_broker/app.py" --host 127.0.0.1 --port "$BROKER_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-broker.out" 2>"$ROOT/tmp/umbrella04-broker.err" &
+PB=$!
+
 python3 "$ROOT/services/policy/app.py" --host 127.0.0.1 --port "$POLICY_PORT" --umbrella-root "$ROOT" --catalog-url "$CATALOG_URL" >"$ROOT/tmp/umbrella04-prov-policy.out" 2>"$ROOT/tmp/umbrella04-prov-policy.err" &
 P1=$!
 python3 "$ROOT/services/catalog/app.py" --host 127.0.0.1 --port "$CATALOG_PORT" --umbrella-root "$ROOT" --registry "$ROOT/tmp/session-provider-catalog.json" >"$ROOT/tmp/umbrella04-prov-catalog.out" 2>"$ROOT/tmp/umbrella04-prov-catalog.err" &
@@ -134,13 +198,14 @@ PY
 
 wait_health "$CATALOG_URL/v1/catalog/health"
 wait_health "$PLUGIN_HOST_URL/v1/plugin-host/health"
+wait_health "$BROKER_URL/v1/model-broker/health"
 wait_health "$EXEC_URL/v1/execution/health"
 wait_health "$SESSION_URL/v1/session/health"
 
-python3 - "$SESSION_URL" <<'PY'
+python3 - "$SESSION_URL" "$BROKER_URL" <<'PY'
 import json, sys, urllib.request
 
-session_url = sys.argv[1]
+session_url, broker_url = sys.argv[1:]
 
 def get(url):
     with urllib.request.urlopen(url, timeout=20) as resp:
@@ -154,6 +219,10 @@ def post(url, payload):
 provider = get(session_url + '/v1/runtime/model-provider')
 assert provider.get('configured') is True, provider
 assert provider.get('secrets', {}).get('apiKeyPresent') is True, provider
+assert provider.get('broker', {}).get('url') == broker_url, provider
+
+broker_models = get(broker_url + '/v1/models')
+assert 'gpt-fake' in (broker_models.get('models') or []), broker_models
 
 created = post(session_url + '/v1/sessions', {'agentId': 'mayor', 'title': 'Mayor'})
 session = created.get('session') or {}
@@ -166,6 +235,7 @@ assert reply.get('reply') == 'provider:gpt-fake', reply
 assert reply.get('providerUsed') is True, reply
 assert reply.get('modelUsed') == 'gpt-fake', reply
 assert reply.get('fallbackUsed') is False, reply
+assert reply.get('connectionUsed') == 'default', reply
 
 fetched = get(session_url + f'/v1/sessions/{session_id}')
 session_payload = fetched.get('session') if isinstance(fetched.get('session'), dict) else fetched

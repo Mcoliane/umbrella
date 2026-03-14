@@ -25,6 +25,8 @@
   },
   "executionPolicy": {
     "envAllowlist": [
+      "UMBRELLA_MODEL_BROKER_URL",
+      "UMBRELLA_MODEL_BROKER_TOKEN",
       "UMBRELLA_CHAT_BASE_URL",
       "UMBRELLA_CHAT_API_KEY",
       "UMBRELLA_CHAT_MODEL",

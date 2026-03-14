@@ -36,7 +36,9 @@ Umbrella currently manages three runtime classes:
 - Umbrella-native agent runtime
 - owns sessions, shops, sub-agents, catalog-managed skills, and plugin-host-backed execution
 - owns server-side conversation through `POST /v1/sessions/{id}/converse`
-- supports OpenAI-compatible model configuration through `control-plane/runtime/model-provider.json`
+- uses an internal `model-broker` service for model access
+- keeps compatibility model config in `control-plane/runtime/model-provider.json`
+- stores broker routing and connections in `control-plane/runtime/model-broker.json`
 
 `removed`
 - supported alternate runtime
@@ -296,6 +298,7 @@ Current direction:
 - you can talk directly to the mayor or another agent from the main screen
 - the TUI is a thin client over the session service `converse` endpoint
 - mayor conversations can answer directly or orchestrate worker shops and return a mayor summary
+- conversation uses the internal model broker when a real provider connection is configured
 
 Current controls:
 - `Enter` send a message to the current target
@@ -334,6 +337,7 @@ Architecture docs:
 - [docs/runtime-matrix.md](docs/runtime-matrix.md)
 - [docs/platform-tui.md](docs/platform-tui.md)
 - [docs/model-provider-setup.md](docs/model-provider-setup.md)
+- [services/model_broker/README.md](services/model_broker/README.md)
 - [docs/memory-boundary-contract.md](docs/memory-boundary-contract.md)
 - [docs/pattern-evidence.md](docs/pattern-evidence.md)
 

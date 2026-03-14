@@ -178,7 +178,7 @@ for name, s in m.get('services', {}).items():
         url = (s.get('url', '').rstrip('/') + s.get('health', '')).strip()
         try:
             headers = {}
-            if token and name in {'policy','lifecycle','router','scheduler','memory-core','execution','approval','orchestrator'}:
+            if token and name in {'policy','lifecycle','router','scheduler','memory-core','execution','approval','orchestrator','model-broker'}:
                 headers['Authorization'] = f'Bearer {token}'
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=1.5) as r:
@@ -278,6 +278,7 @@ PY
   CATALOG_PORT="${CATALOG_PORT:-$(free_port)}"
   PLUGIN_HOST_PORT="${PLUGIN_HOST_PORT:-$(free_port)}"
   SESSION_PORT="${SESSION_PORT:-$(free_port)}"
+  MODEL_BROKER_PORT="${MODEL_BROKER_PORT:-$(free_port)}"
 
   POLICY_URL="http://127.0.0.1:$POLICY_PORT"
   LIFECYCLE_URL="http://127.0.0.1:$LIFECYCLE_PORT"
@@ -290,6 +291,7 @@ PY
   CATALOG_URL="http://127.0.0.1:$CATALOG_PORT"
   PLUGIN_HOST_URL="http://127.0.0.1:$PLUGIN_HOST_PORT"
   SESSION_URL="http://127.0.0.1:$SESSION_PORT"
+  MODEL_BROKER_URL="http://127.0.0.1:$MODEL_BROKER_PORT"
 
   declare -a SERVICES=()
 
@@ -307,6 +309,8 @@ PY
   SERVICES+=("catalog|$CATALOG_PORT|$P9|/v1/catalog/health")
   P10="$(spawn_service "$LOG_DIR/plugin-host.out" "$LOG_DIR/plugin-host.err" python3 "$ROOT/services/plugin_host/app.py" --host 127.0.0.1 --port "$PLUGIN_HOST_PORT" --umbrella-root "$ROOT" --catalog-url "$CATALOG_URL")"
   SERVICES+=("plugin-host|$PLUGIN_HOST_PORT|$P10|/v1/plugin-host/health")
+  P12="$(spawn_service "$LOG_DIR/model-broker.out" "$LOG_DIR/model-broker.err" python3 "$ROOT/services/model_broker/app.py" --host 127.0.0.1 --port "$MODEL_BROKER_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN")"
+  SERVICES+=("model-broker|$MODEL_BROKER_PORT|$P12|/v1/model-broker/health")
   P6="$(spawn_service "$LOG_DIR/execution.out" "$LOG_DIR/execution.err" python3 "$ROOT/services/execution/app.py" --host 127.0.0.1 --port "$EXECUTION_PORT" --umbrella-root "$ROOT" --memory-core-url "$MEMORY_CORE_URL" --policy-url "$POLICY_URL" --catalog-url "$CATALOG_URL" --plugin-host-url "$PLUGIN_HOST_URL" --mesh-token "$MESH_TOKEN" --token "$MESH_TOKEN")"
   SERVICES+=("execution|$EXECUTION_PORT|$P6|/v1/execution/health")
   P7="$(spawn_service "$LOG_DIR/approval.out" "$LOG_DIR/approval.err" python3 "$ROOT/services/approval/app.py" --host 127.0.0.1 --port "$APPROVAL_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN")"
@@ -328,6 +332,7 @@ PY
   wait_health "$MEMORY_CORE_URL/v1/memory-core/health" "$MESH_TOKEN"
   wait_health "$CATALOG_URL/v1/catalog/health"
   wait_health "$PLUGIN_HOST_URL/v1/plugin-host/health"
+  wait_health "$MODEL_BROKER_URL/v1/model-broker/health" "$MESH_TOKEN"
   wait_health "$EXECUTION_URL/v1/execution/health" "$MESH_TOKEN"
   wait_health "$APPROVAL_URL/v1/approval/health" "$MESH_TOKEN"
   wait_health "$ORCHESTRATOR_URL/v1/orchestrator/health" "$MESH_TOKEN"

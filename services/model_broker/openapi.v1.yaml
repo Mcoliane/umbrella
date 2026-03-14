@@ -1,0 +1,46 @@
+openapi: 3.1.0
+info:
+  title: Umbrella Model Broker API
+  version: 0.1.0
+paths:
+  /v1/model-broker/health:
+    get:
+      summary: Broker health
+      responses:
+        "200":
+          description: OK
+  /v1/providers:
+    get:
+      summary: List provider adapters
+      responses:
+        "200":
+          description: Provider list
+  /v1/connections:
+    get:
+      summary: List configured broker connections
+      responses:
+        "200":
+          description: Connection list
+    post:
+      summary: Save or update a broker connection
+      responses:
+        "200":
+          description: Saved connection
+  /v1/connections/test:
+    post:
+      summary: Test a broker connection
+      responses:
+        "200":
+          description: Test result
+  /v1/models:
+    get:
+      summary: List models visible through the default connection
+      responses:
+        "200":
+          description: Model list
+  /v1/chat/respond:
+    post:
+      summary: Generate a normalized broker chat response
+      responses:
+        "200":
+          description: Broker response

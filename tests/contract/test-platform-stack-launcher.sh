@@ -23,11 +23,11 @@ status = json.loads(Path(sys.argv[2]).read_text())
 
 assert manifest.get('profile') == 'full', manifest
 services = manifest.get('services') or {}
-for required in ['policy', 'catalog', 'plugin-host', 'execution', 'session']:
+for required in ['policy', 'catalog', 'plugin-host', 'model-broker', 'execution', 'session']:
     assert required in services, manifest
 assert status.get('ok') is True, status
 rows = {row.get('service'): row for row in status.get('services', [])}
-for required in ['policy', 'catalog', 'plugin-host', 'execution', 'session']:
+for required in ['policy', 'catalog', 'plugin-host', 'model-broker', 'execution', 'session']:
     assert rows.get(required, {}).get('healthOk') is True, status
 print('platform stack launcher PASS')
 PY

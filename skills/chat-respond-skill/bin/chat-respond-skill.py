@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 import urllib.error
-import urllib.request
 from pathlib import Path
 
 
@@ -13,18 +11,7 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from services.runtime_model import env_provider_fallback, load_model_provider, provider_chat_url, provider_enabled, provider_headers, resolve_model_for_agent
-
-
-def _post_json(url: str, payload: dict, headers: dict[str, str], timeout: float) -> dict:
-    req = urllib.request.Request(
-        url,
-        method="POST",
-        data=json.dumps(payload).encode("utf-8"),
-        headers=headers,
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+from services.runtime_model import call_model_broker, load_model_broker
 
 
 def _last_user_facts(history: list[dict]) -> str:
@@ -151,80 +138,35 @@ def _fallback(invocation: dict, inputs: dict) -> dict:
 
 
 def _provider_response(inputs: dict) -> dict | None:
+    broker = load_model_broker(ROOT)
+    if not bool(broker.get("enabled", False)):
+        return None
     override = inputs.get("modelProvider") if isinstance(inputs.get("modelProvider"), dict) else {}
-    provider = load_model_provider(ROOT)
-    if not provider_enabled(provider):
-        provider = env_provider_fallback()
-    if not provider_enabled(provider):
-        return None
-    package_metadata = inputs.get("agentPackageMetadata") if isinstance(inputs.get("agentPackageMetadata"), dict) else {}
-    resolved = resolve_model_for_agent(
-        str(inputs.get("agentPackageId", "")).strip(),
-        package_metadata,
-        provider,
-        override={
-            "model": override.get("model") or inputs.get("model"),
-            "temperature": inputs.get("temperature"),
-            "maxTokens": inputs.get("maxTokens"),
-        },
-    )
-    timeout = float(
-        override.get("timeoutSec")
-        or ((provider.get("provider") or {}).get("timeoutSec", 20))
-        or (os.environ.get("UMBRELLA_CHAT_TIMEOUT_SEC", "20").strip() or "20")
-    )
-    model = str(resolved.get("model", "")).strip()
-    if not model:
-        return None
-
-    system_prompt = str(inputs.get("systemPrompt", "")).strip()
-    instructions = str(inputs.get("instructions", "")).strip()
-    message = str(inputs.get("message", "")).strip()
-    town_context = inputs.get("townContext") if isinstance(inputs.get("townContext"), dict) else {}
-    available_shops = inputs.get("availableShops") if isinstance(inputs.get("availableShops"), list) else []
-    package_name = str(inputs.get("agentPackageId", "")).strip() or str(inputs.get("agentId", "agent")).strip() or "agent"
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt or "You are a town agent inside Umbrella. Reply in JSON with keys reply and mode."},
-            {"role": "system", "content": instructions or "Mode must be direct or delegate."},
-            {
-                "role": "system",
-                "content": (
-                    f"Agent package: {package_name}. "
-                    f"Town title: {str(town_context.get('title', '')).strip() or 'Town Hall'}. "
-                    f"Worker shops available: {len(available_shops)}. "
-                    "Always respond with JSON containing reply and mode."
-                ),
-            },
-            {"role": "user", "content": message},
-        ],
-        "temperature": float(resolved.get("temperature", 0.2) or 0.2),
-        "max_tokens": int(resolved.get("maxTokens", 300) or 300),
+    broker_request = {
+        "connectionId": str(override.get("connectionId", "")).strip(),
+        "agentPackageId": str(inputs.get("agentPackageId", "")).strip(),
+        "agentPackageMetadata": inputs.get("agentPackageMetadata") if isinstance(inputs.get("agentPackageMetadata"), dict) else {},
+        "agentId": str(inputs.get("agentId", "")).strip(),
+        "shopId": str(inputs.get("shopId", "")).strip(),
+        "message": str(inputs.get("message", "")).strip(),
+        "conversationHistory": inputs.get("conversationHistory") if isinstance(inputs.get("conversationHistory"), list) else [],
+        "townContext": inputs.get("townContext") if isinstance(inputs.get("townContext"), dict) else {},
+        "availableShops": inputs.get("availableShops") if isinstance(inputs.get("availableShops"), list) else [],
+        "subAgents": inputs.get("subAgents") if isinstance(inputs.get("subAgents"), list) else [],
+        "runtimeMode": str(inputs.get("runtimeMode", "")).strip(),
+        "systemPrompt": str(inputs.get("systemPrompt", "")).strip(),
+        "instructions": str(inputs.get("instructions", "")).strip(),
+        "model": str(override.get("model") or inputs.get("model", "")).strip(),
+        "temperature": inputs.get("temperature"),
+        "maxTokens": inputs.get("maxTokens"),
     }
     try:
-        data = _post_json(provider_chat_url(provider), payload, provider_headers(provider, str(override.get("apiKey", "")).strip()), timeout)
+        response = call_model_broker(ROOT, "/v1/chat/respond", broker_request, timeout_sec=20.0)
     except (urllib.error.URLError, urllib.error.HTTPError, ValueError, json.JSONDecodeError):
         return None
-    choices = data.get("choices") if isinstance(data.get("choices"), list) else []
-    if not choices:
+    if not isinstance(response, dict) or not response.get("ok"):
         return None
-    content = str((((choices[0] or {}).get("message") or {}).get("content")) or "").strip()
-    if not content:
-        return None
-    try:
-        parsed = json.loads(content)
-    except Exception:
-        return {"ok": True, "mode": "direct", "reply": content}
-    if not isinstance(parsed, dict):
-        return {"ok": True, "mode": "direct", "reply": content, "providerUsed": True, "modelUsed": model, "fallbackUsed": False}
-    parsed["ok"] = True
-    parsed["mode"] = str(parsed.get("mode", "direct")).strip() or "direct"
-    parsed["reply"] = str(parsed.get("reply", "")).strip()
-    parsed["providerUsed"] = True
-    parsed["modelUsed"] = model
-    parsed["fallbackUsed"] = False
-    return parsed
+    return response
 
 
 def main() -> int:

@@ -16,6 +16,7 @@ class TuiClient:
         self.platform_manifest_path = root / "control-plane" / "runtime" / "platform-manifest.json"
         self.manifest_path = manifest_path or (root / "control-plane" / "runtime" / "service-manifest.json")
         self.manifest = {}
+        self.platform_manifest = {}
         self.services = {}
         self.default_urls = {
             "policy": "http://127.0.0.1:8788",
@@ -23,6 +24,7 @@ class TuiClient:
             "plugin-host": "http://127.0.0.1:8790",
             "execution": "http://127.0.0.1:8794",
             "session": "http://127.0.0.1:8784",
+            "model-broker": "http://127.0.0.1:8796",
             "router": "http://127.0.0.1:8795",
             "orchestrator": "http://127.0.0.1:8787",
             "approval": "http://127.0.0.1:8793",
@@ -42,8 +44,16 @@ class TuiClient:
 
     def reload_manifests(self):
         manifest = self._load_json(self.manifest_path, {})
-        services = manifest.get("services") if isinstance(manifest, dict) else {}
+        platform_manifest = self._load_json(self.platform_manifest_path, {})
+        platform_services = platform_manifest.get("services") if isinstance(platform_manifest, dict) else {}
+        services = {}
+        if isinstance(platform_services, dict):
+            services.update(platform_services)
+        file_services = manifest.get("services") if isinstance(manifest, dict) else {}
+        if isinstance(file_services, dict):
+            services.update(file_services)
         self.manifest = manifest if isinstance(manifest, dict) else {}
+        self.platform_manifest = platform_manifest if isinstance(platform_manifest, dict) else {}
         self.services = services if isinstance(services, dict) else {}
 
     def service_url(self, name: str) -> str:
@@ -94,7 +104,7 @@ class TuiClient:
         if not base:
             return {"service": service, "ok": False, "status": "missing-url"}
         headers = {}
-        if service in {"policy", "lifecycle", "router", "scheduler", "memory-core", "execution", "approval", "orchestrator"}:
+        if service in {"policy", "lifecycle", "router", "scheduler", "memory-core", "execution", "approval", "orchestrator", "model-broker"}:
             token = self._mesh_token()
             if token:
                 headers["Authorization"] = f"Bearer {token}"
@@ -214,7 +224,11 @@ class TuiClient:
 
     def runtime_capabilities(self) -> dict:
         base = self.service_url("router")
-        return self._request("GET", f"{base}/v1/router/runtime-capabilities")["json"]
+        headers = {}
+        token = self._mesh_token()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        return self._request("GET", f"{base}/v1/router/runtime-capabilities", headers=headers)["json"]
 
     def home_snapshot(self) -> dict:
         health_checks = [
@@ -223,6 +237,7 @@ class TuiClient:
             self.health("plugin-host", "/v1/plugin-host/health"),
             self.health("execution", "/v1/execution/health"),
             self.health("session", "/v1/session/health"),
+            self.health("model-broker", "/v1/model-broker/health"),
             self.health("router", "/v1/router/health"),
             self.health("orchestrator", "/v1/orchestrator/health"),
         ]

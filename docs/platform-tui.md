@@ -35,6 +35,7 @@ The current implementation now talks to the session service through a real serve
 - `GET /v1/runtime/model-provider`
 - `POST /v1/runtime/model-provider`
 - `POST /v1/runtime/model-provider/test`
+- `GET /v1/model-broker/health`
 - the TUI no longer owns mayor/originator conversation policy itself
 - the mayor can reply directly in a fresh town and can still delegate to workers when they exist
 
@@ -145,8 +146,8 @@ Primary interaction:
 - `Enter` to send a message to the current target
 - `/` to open slash-command mode
 - `Tab` to cycle targets
-- `/model` to inspect model-provider status
-- `/model setup` to configure a provider
+- `/model` to inspect broker-backed model status
+- `/model setup` to configure the default broker connection
 - `/model test` to test the configured backend
 
 Actions:

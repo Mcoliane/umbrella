@@ -1,0 +1,44 @@
+{
+  "version": "umbrella.model-broker.v1",
+  "enabled": true,
+  "broker": {
+    "url": "",
+    "defaultConnectionId": "default",
+    "allowFallback": true
+  },
+  "providers": {
+    "openai-compatible": {
+      "id": "openai-compatible",
+      "type": "openai-compatible",
+      "supportsApiKey": true,
+      "supportsOAuth": false
+    }
+  },
+  "connections": {
+    "default": {
+      "id": "default",
+      "providerId": "openai-compatible",
+      "authMode": "api_key",
+      "label": "Default OpenAI-Compatible",
+      "enabled": true,
+      "baseUrl": "http://127.0.0.1:19999/v1",
+      "defaultModel": "gpt-test",
+      "timeoutSec": 9
+    }
+  },
+  "routing": {
+    "defaultConnectionId": "default",
+    "allowFallback": true,
+    "packageDefaults": {
+      "umbrella.mayor.v1": {
+        "model": ""
+      },
+      "umbrella.originator.v1": {
+        "model": ""
+      },
+      "umbrella.programming-agent.v1": {
+        "model": ""
+      }
+    }
+  }
+}

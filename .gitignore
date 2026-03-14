@@ -20,6 +20,7 @@ control-plane/extensions/
 control-plane/approvals/*.json
 control-plane/approvals/resume-journal/
 control-plane/runtime/bootstrap-secret.txt
+control-plane/runtime/model-broker.secrets.json
 control-plane/runtime/model-provider.secrets.json
 control-plane/runtime/platform-manifest.json
 control-plane/runtime/platform-token.txt
