@@ -315,7 +315,7 @@ PY
   SERVICES+=("orchestrator|$ORCHESTRATOR_PORT|$P8|/v1/orchestrator/health")
 
   if [[ "$PROFILE" == "full" ]]; then
-    P11="$(spawn_service "$LOG_DIR/session.out" "$LOG_DIR/session.err" python3 "$ROOT/services/session/app.py" --host 127.0.0.1 --port "$SESSION_PORT" --umbrella-root "$ROOT" --catalog-url "$CATALOG_URL" --execution-url "$EXECUTION_URL")"
+    P11="$(spawn_service "$LOG_DIR/session.out" "$LOG_DIR/session.err" python3 "$ROOT/services/session/app.py" --host 127.0.0.1 --port "$SESSION_PORT" --umbrella-root "$ROOT" --catalog-url "$CATALOG_URL" --execution-url "$EXECUTION_URL" --mesh-token "$MESH_TOKEN")"
     SERVICES+=("session|$SESSION_PORT|$P11|/v1/session/health")
   fi
 
