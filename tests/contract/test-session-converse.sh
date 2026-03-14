@@ -17,7 +17,7 @@ cat >"$CONFIG_PATH" <<'JSON'
   "enabled": false,
   "provider": {
     "id": "default",
-    "type": "openai-compatible",
+    "type": "zai",
     "baseUrl": "",
     "defaultModel": "",
     "timeoutSec": 20

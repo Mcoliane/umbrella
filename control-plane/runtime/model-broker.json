@@ -7,6 +7,12 @@
     "allowFallback": true
   },
   "providers": {
+    "zai": {
+      "id": "zai",
+      "type": "zai",
+      "supportsApiKey": true,
+      "supportsOAuth": false
+    },
     "openai-compatible": {
       "id": "openai-compatible",
       "type": "openai-compatible",
@@ -17,13 +23,13 @@
   "connections": {
     "default": {
       "id": "default",
-      "providerId": "openai-compatible",
+      "providerId": "zai",
       "authMode": "api_key",
-      "label": "Default OpenAI-Compatible",
+      "label": "Primary Z.ai Connection",
       "enabled": true,
-      "baseUrl": "http://127.0.0.1:19999/v1",
-      "defaultModel": "gpt-test",
-      "timeoutSec": 9
+      "baseUrl": "https://api.z.ai/api/coding/paas/v4",
+      "defaultModel": "glm-4.7",
+      "timeoutSec": 20
     }
   },
   "routing": {
@@ -31,13 +37,13 @@
     "allowFallback": true,
     "packageDefaults": {
       "umbrella.mayor.v1": {
-        "model": ""
+        "model": "glm-4.7"
       },
       "umbrella.originator.v1": {
-        "model": ""
+        "model": "glm-4.7"
       },
       "umbrella.programming-agent.v1": {
-        "model": ""
+        "model": "glm-4.7"
       }
     }
   }

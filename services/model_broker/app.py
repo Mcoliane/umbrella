@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from services.memory.auth import check_auth
 from services.model_broker.providers import openai_compatible
+from services.model_broker.providers import zai
 from services.runtime_model import load_model_broker, mask_secret, save_model_broker
 
 
@@ -44,9 +45,37 @@ def err(code: str, message: str, request_id: str) -> dict:
     return {"error": {"code": code, "message": message, "request_id": request_id}}
 
 
+def parse_json_content_block(content: str) -> dict | None:
+    raw = str(content or "").strip()
+    if not raw:
+        return None
+    candidates = [raw]
+    if raw.startswith("```"):
+        stripped = raw.strip("`").strip()
+        if stripped.lower().startswith("json"):
+            stripped = stripped[4:].strip()
+        candidates.append(stripped)
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            continue
+    return None
+
+
 class BrokerEngine:
     def __init__(self, root: Path):
         self.root = Path(root).resolve()
+
+    def _provider_adapter(self, provider_type: str):
+        normalized = str(provider_type or "").strip() or "zai"
+        if normalized == "zai":
+            return zai
+        if normalized == "openai-compatible":
+            return openai_compatible
+        return None
 
     def _load(self) -> dict:
         return load_model_broker(self.root)
@@ -76,7 +105,7 @@ class BrokerEngine:
 
     def _connection_payload(self, broker: dict, connection_id: str, connection: dict) -> dict:
         providers = broker.get("providers") if isinstance(broker.get("providers"), dict) else {}
-        provider_id = str(connection.get("providerId", "")).strip() or "openai-compatible"
+        provider_id = str(connection.get("providerId", "")).strip() or "zai"
         provider = providers.get(provider_id) if isinstance(providers.get(provider_id), dict) else {}
         secret = (
             ((broker.get("secrets") or {}).get("connections") or {}).get(connection_id, {})
@@ -160,7 +189,7 @@ class BrokerEngine:
     ) -> dict:
         broker = self._load()
         connection_id = str(connection_id or "").strip() or self._default_connection_id(broker)
-        provider_id = str(provider_id or "").strip() or "openai-compatible"
+        provider_id = str(provider_id or "").strip() or "zai"
         providers = broker.get("providers") if isinstance(broker.get("providers"), dict) else {}
         if provider_id not in providers:
             providers[provider_id] = {
@@ -209,7 +238,7 @@ class BrokerEngine:
         connection_id = str(request.get("connectionId", "")).strip() or self._default_connection_id(broker)
         connections = broker.get("connections") if isinstance(broker.get("connections"), dict) else {}
         connection = connections.get(connection_id) if isinstance(connections.get(connection_id), dict) else {}
-        provider_id = str(connection.get("providerId", "")).strip() or "openai-compatible"
+        provider_id = str(connection.get("providerId", "")).strip() or "zai"
         providers = broker.get("providers") if isinstance(broker.get("providers"), dict) else {}
         provider = providers.get(provider_id) if isinstance(providers.get(provider_id), dict) else {}
         secret = (
@@ -233,15 +262,16 @@ class BrokerEngine:
             return {"ok": False, "configured": False, "connectionId": cid, "message": "connection not configured"}
         timeout_sec = float(connection.get("timeoutSec", 20) or 20)
         try:
-            if str(provider.get("type", "openai-compatible")).strip() == "openai-compatible":
-                openai_compatible.test_connection(base_url=base_url, model=model, api_key=str(secret.get("apiKey", "")).strip(), timeout_sec=timeout_sec)
-            else:
+            provider_type = str(provider.get("type", "")).strip() or str(connection.get("providerId", "")).strip() or "zai"
+            adapter = self._provider_adapter(provider_type)
+            if adapter is None:
                 return {"ok": False, "configured": True, "connectionId": cid, "message": "unsupported provider type"}
+            adapter.test_connection(base_url=base_url, model=model, api_key=str(secret.get("apiKey", "")).strip(), timeout_sec=timeout_sec)
             return {
                 "ok": True,
                 "configured": True,
                 "connectionId": cid,
-                "providerType": str(provider.get("type", "")).strip(),
+                "providerType": provider_type,
                 "model": model,
                 "latencyMs": int((time.time() - started) * 1000),
                 "message": "connection reachable",
@@ -251,7 +281,7 @@ class BrokerEngine:
                 "ok": False,
                 "configured": True,
                 "connectionId": cid,
-                "providerType": str(provider.get("type", "")).strip(),
+                "providerType": str(provider.get("type", "")).strip() or str(connection.get("providerId", "")).strip() or "zai",
                 "model": model,
                 "latencyMs": int((time.time() - started) * 1000),
                 "message": f"HTTP {exc.code}",
@@ -261,7 +291,7 @@ class BrokerEngine:
                 "ok": False,
                 "configured": True,
                 "connectionId": cid,
-                "providerType": str(provider.get("type", "")).strip(),
+                "providerType": str(provider.get("type", "")).strip() or str(connection.get("providerId", "")).strip() or "zai",
                 "model": model,
                 "latencyMs": int((time.time() - started) * 1000),
                 "message": str(exc),
@@ -277,8 +307,10 @@ class BrokerEngine:
         if not connection or not bool(connection.get("enabled", False)):
             return {"connectionId": cid, "models": models}
         try:
-            if str(provider.get("type", "openai-compatible")).strip() == "openai-compatible":
-                payload = openai_compatible.list_models(
+            provider_type = str(provider.get("type", "")).strip() or str(connection.get("providerId", "")).strip() or "zai"
+            adapter = self._provider_adapter(provider_type)
+            if adapter is not None:
+                payload = adapter.list_models(
                     base_url=str(connection.get("baseUrl", "")).strip(),
                     api_key=str(secret.get("apiKey", "")).strip(),
                     timeout_sec=float(connection.get("timeoutSec", 20) or 20),
@@ -300,8 +332,9 @@ class BrokerEngine:
             return {"ok": False, "error": {"message": "connection not found"}}
         if not bool(broker.get("enabled", False)) or not bool(connection.get("enabled", False)):
             return {"ok": False, "error": {"message": "model broker is not configured"}}
-        provider_type = str(provider.get("type", "openai-compatible")).strip() or "openai-compatible"
-        if provider_type != "openai-compatible":
+        provider_type = str(provider.get("type", "")).strip() or str(connection.get("providerId", "")).strip() or "zai"
+        adapter = self._provider_adapter(provider_type)
+        if adapter is None:
             return {"ok": False, "error": {"message": f"unsupported provider type: {provider_type}"}}
 
         request = payload if isinstance(payload, dict) else {}
@@ -338,9 +371,12 @@ class BrokerEngine:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if provider_type == "zai":
+            provider_payload["response_format"] = {"type": "json_object"}
+            provider_payload["thinking"] = {"type": "disabled"}
         started = time.time()
         try:
-            raw = openai_compatible.chat_respond(
+            raw = adapter.chat_respond(
                 base_url=str(connection.get("baseUrl", "")).strip(),
                 api_key=str(secret.get("apiKey", "")).strip(),
                 payload=provider_payload,
@@ -353,13 +389,11 @@ class BrokerEngine:
         choices = raw.get("choices") if isinstance(raw.get("choices"), list) else []
         if not choices:
             return {"ok": False, "error": {"message": "provider returned no choices"}}
-        content = str((((choices[0] or {}).get("message") or {}).get("content")) or "").strip()
+        message = (choices[0] or {}).get("message") if isinstance((choices[0] or {}).get("message"), dict) else {}
+        content = str((message or {}).get("content") or "").strip()
         if not content:
             return {"ok": False, "error": {"message": "provider returned empty content"}}
-        try:
-            parsed = json.loads(content)
-        except Exception:
-            parsed = {"reply": content, "mode": "direct"}
+        parsed = parse_json_content_block(content)
         if not isinstance(parsed, dict):
             parsed = {"reply": content, "mode": "direct"}
         parsed["ok"] = True
@@ -410,7 +444,7 @@ def handler_factory(engine: BrokerEngine, token: str):
                 if path == "/v1/connections":
                     out = engine.save_connection(
                         connection_id=str(body.get("connectionId", "")).strip(),
-                        provider_id=str(body.get("providerId", body.get("providerType", "openai-compatible"))).strip(),
+                        provider_id=str(body.get("providerId", body.get("providerType", "zai"))).strip(),
                         auth_mode=str(body.get("authMode", "api_key")).strip(),
                         label=str(body.get("label", "")).strip(),
                         enabled=body.get("enabled") if isinstance(body.get("enabled"), bool) else None,

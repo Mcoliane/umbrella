@@ -9,6 +9,9 @@ from pathlib import Path
 from services.tui.client import TuiClient
 from services.tui.state import PlatformState
 
+ZAI_CODING_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
+ZAI_GLM47_MODEL = "glm-4.7"
+
 
 def _clip(value: str, width: int) -> str:
     if width <= 0:
@@ -129,25 +132,75 @@ class UmbrellaTui:
             "system",
             (
                 f"Model broker: {'enabled' if enabled else 'disabled'} configured={configured} "
-                f"connection={connection_meta.get('id','')} type={provider_meta.get('type','')} model={model} "
+                f"connection={connection_meta.get('id','')} provider={provider_meta.get('type','')} model={model} "
                 f"base={base_url} brokerUrl={broker_meta.get('url','')} key={key_masked}"
             ),
         )
         self.state.status = "Model broker"
 
+    def _recommended_provider_defaults(self, provider_type: str, current: dict) -> dict:
+        normalized = str(provider_type or "").strip().lower()
+        provider_meta = current.get("provider") if isinstance(current.get("provider"), dict) else {}
+        if normalized == "zai":
+            return {
+                "type": "zai",
+                "baseUrl": str(provider_meta.get("baseUrl", "")).strip() or ZAI_CODING_BASE_URL,
+                "defaultModel": str(provider_meta.get("defaultModel", "")).strip() or ZAI_GLM47_MODEL,
+                "timeoutSec": int(provider_meta.get("timeoutSec", 20) or 20),
+            }
+        return {
+            "type": normalized or str(provider_meta.get("type", "openai-compatible")).strip() or "openai-compatible",
+            "baseUrl": str(provider_meta.get("baseUrl", "")).strip(),
+            "defaultModel": str(provider_meta.get("defaultModel", "")).strip(),
+            "timeoutSec": int(provider_meta.get("timeoutSec", 20) or 20),
+        }
+
+    def save_glm47_preset(self, screen):
+        current = self.state.home.get("modelProvider") if isinstance(self.state.home.get("modelProvider"), dict) else {}
+        provider = self._recommended_provider_defaults("zai", current)
+        api_key = self.prompt(screen, "Z.ai API key (blank keeps existing)", default="")
+        if api_key is None:
+            return
+        out = self.client.save_model_provider(
+            enabled=True,
+            provider=provider,
+            api_key=None if not str(api_key).strip() else str(api_key).strip(),
+        )
+        self.refresh_home()
+        if out.get("saved"):
+            self.add_local_event(
+                "system",
+                f'Saved Z.ai preset {provider["defaultModel"]} at {provider["baseUrl"]}. Run /model test next.',
+            )
+            self.state.status = "glm-4.7 preset saved"
+            return
+        self.add_local_event("error", f"GLM-4.7 preset failed: {json.dumps(out, ensure_ascii=False)[:180]}")
+        self.state.status = "glm-4.7 preset failed"
+
     def setup_model_provider(self, screen):
         current = self.state.home.get("modelProvider") if isinstance(self.state.home.get("modelProvider"), dict) else {}
         provider_meta = current.get("provider") if isinstance(current.get("provider"), dict) else {}
-        provider_type = self.prompt(screen, "Provider type", default=str(provider_meta.get("type", "openai-compatible")).strip() or "openai-compatible")
+        provider_type = self.prompt(screen, "Provider type", default=str(provider_meta.get("type", "zai")).strip() or "zai")
         if provider_type is None:
             return
-        base_url = self.prompt(screen, "Base URL", default=str(provider_meta.get("baseUrl", "")).strip())
+        provider_type = str(provider_type).strip().lower() or "zai"
+        if provider_type not in {"zai", "openai-compatible"}:
+            self.add_local_event("error", f"Unsupported provider type: {provider_type}")
+            self.state.status = "Model setup failed"
+            return
+        recommended = self._recommended_provider_defaults(provider_type, current)
+        if provider_type == "zai":
+            self.add_local_event(
+                "system",
+                f'Recommended Z.ai preset: base={recommended["baseUrl"]} model={recommended["defaultModel"]}',
+            )
+        base_url = self.prompt(screen, "Base URL", default=str(recommended.get("baseUrl", "")).strip())
         if base_url is None:
             return
-        model = self.prompt(screen, "Default model", default=str(provider_meta.get("defaultModel", "")).strip())
+        model = self.prompt(screen, "Default model", default=str(recommended.get("defaultModel", "")).strip())
         if model is None:
             return
-        timeout_raw = self.prompt(screen, "Timeout seconds", default=str(provider_meta.get("timeoutSec", 20) or 20))
+        timeout_raw = self.prompt(screen, "Timeout seconds", default=str(recommended.get("timeoutSec", 20) or 20))
         if timeout_raw is None:
             return
         api_key = self.prompt(screen, "API key (blank keeps existing)", default="")
@@ -162,7 +215,7 @@ class UmbrellaTui:
         out = self.client.save_model_provider(
             enabled=True,
             provider={
-                "type": str(provider_type).strip() or "openai-compatible",
+                "type": provider_type,
                 "baseUrl": str(base_url).strip(),
                 "defaultModel": str(model).strip(),
                 "timeoutSec": timeout_sec,
@@ -171,8 +224,8 @@ class UmbrellaTui:
         )
         self.refresh_home()
         if out.get("saved"):
-            self.add_local_event("system", "Saved model broker connection.")
-            self.state.status = "Model broker saved"
+            self.add_local_event("system", f"Saved {provider_type} model broker connection.")
+            self.state.status = f"{provider_type} broker saved"
             return
         self.add_local_event("error", f"Model setup failed: {json.dumps(out, ensure_ascii=False)[:180]}")
         self.state.status = "Model broker setup failed"
@@ -265,6 +318,13 @@ class UmbrellaTui:
             content = self.prompt(screen, f"Message to {target}", default="") or ""
         if not content.strip():
             return
+        heartbeat = self.client.heartbeat_session(session_id=self.state.selected_session_id, seen_by="system")
+        if isinstance(heartbeat, dict) and heartbeat.get("error"):
+            error = heartbeat.get("error") if isinstance(heartbeat.get("error"), dict) else {}
+            message = str(error.get("message", "")).strip() or json.dumps(heartbeat, ensure_ascii=False)[:180]
+            self.add_local_event("error", f"Heartbeat failed: {message}")
+            self.state.status = "Heartbeat failed"
+            return
         out = self.client.converse(session_id=self.state.selected_session_id, target=target, content=content.strip())
         if out.get("ok"):
             self.state.active_target = str(out.get("target", target)).strip() or target
@@ -274,8 +334,12 @@ class UmbrellaTui:
             if reply and not any(str(msg.get("content", "")).strip() == reply for msg in self.state.local_transcript[-2:]):
                 self.add_local_event("system", f"{self.state.active_target} replied.")
             return
-        self.add_local_event("error", f'Conversation failed: {json.dumps(out, ensure_ascii=False)[:180]}')
-        self.state.status = "Conversation failed"
+        error = out.get("error") if isinstance(out, dict) and isinstance(out.get("error"), dict) else {}
+        message = str(error.get("message", "")).strip()
+        if not message:
+            message = json.dumps(out, ensure_ascii=False)[:180]
+        self.add_local_event("error", f"Conversation failed: {message}")
+        self.state.status = f"Conversation failed: {message[:80]}"
 
     def handle_command(self, screen, raw: str):
         command = str(raw or "").strip()
@@ -290,7 +354,7 @@ class UmbrellaTui:
         if name in {"help", "h", "?"}:
             self.add_local_event(
                 "system",
-                "Commands: /help /status /new [title] /sessions /session <id|n> /agent <id> /shops /workers /model /model setup /model test /model use <model> /model disable /refresh /start [full|core] /stop /quit",
+                "Commands: /help /status /new [title] /sessions /session <id|n> /agent <id> /shops /workers /model /model setup /model glm47 /model test /model use <model> /model disable /refresh /start [full|core] /stop /quit",
             )
             self.state.status = "Help"
             return
@@ -351,6 +415,9 @@ class UmbrellaTui:
             if sub == "setup":
                 self.setup_model_provider(screen)
                 return
+            if sub in {"glm47", "glm-4.7"}:
+                self.save_glm47_preset(screen)
+                return
             if sub == "test":
                 self.test_model_provider()
                 return
@@ -369,7 +436,7 @@ class UmbrellaTui:
                 provider_meta = current.get("provider") if isinstance(current.get("provider"), dict) else {}
                 out = self.client.save_model_provider(
                     provider={
-                        "type": str(provider_meta.get("type", "openai-compatible")).strip() or "openai-compatible",
+                        "type": str(provider_meta.get("type", "zai")).strip() or "zai",
                         "baseUrl": str(provider_meta.get("baseUrl", "")).strip(),
                         "defaultModel": str(args[1]).strip(),
                         "timeoutSec": int(provider_meta.get("timeoutSec", 20) or 20),
@@ -435,6 +502,8 @@ class UmbrellaTui:
                 rows.append((curses.A_DIM, line))
         for message in (session.get("messages") or [])[-80:]:
             role = str(message.get("role", "message")).lower()
+            if role == "tool":
+                continue
             metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
             target = str(metadata.get("target", "")).strip()
             label = role
@@ -494,7 +563,8 @@ class UmbrellaTui:
         provider_meta = model_provider.get("provider") if isinstance(model_provider.get("provider"), dict) else {}
         configured = "configured" if model_provider.get("configured") else "missing"
         model_name = str(provider_meta.get("defaultModel", "")).strip() or "unset"
-        screen.addstr(line, x, _clip(f"Model: {configured} {model_name}", sidebar_w))
+        provider_name = str(provider_meta.get("type", "")).strip() or "unset"
+        screen.addstr(line, x, _clip(f"Model: {provider_name} / {model_name} ({configured})", sidebar_w))
         line += 2
         screen.addstr(line, x, "Agents", curses.A_BOLD)
         line += 1

@@ -18,6 +18,7 @@ class TuiClient:
         self.manifest = {}
         self.platform_manifest = {}
         self.services = {}
+        self.service_overrides = {}
         self.default_urls = {
             "policy": "http://127.0.0.1:8788",
             "catalog": "http://127.0.0.1:8786",
@@ -58,10 +59,16 @@ class TuiClient:
 
     def service_url(self, name: str) -> str:
         self.reload_manifests()
+        override = self.service_overrides.get(name)
+        if str(override or "").strip():
+            return str(override).rstrip("/")
         row = self.services.get(name)
         if isinstance(row, dict) and str(row.get("url", "")).strip():
             return str(row.get("url", "")).rstrip("/")
         return self.default_urls.get(name, "").rstrip("/")
+
+    def set_service_url(self, name: str, url: str) -> None:
+        self.service_overrides[str(name).strip()] = str(url).rstrip("/")
 
     def _mesh_token(self) -> str:
         token_path = self.root / "control-plane" / "runtime" / "platform-token.txt"
@@ -141,6 +148,14 @@ class TuiClient:
             "POST",
             f"{base}/v1/sessions",
             {"agentId": agent_id, "title": title},
+        )["json"]
+
+    def heartbeat_session(self, *, session_id: str, seen_by: str = "tui") -> dict:
+        base = self.service_url("session")
+        return self._request(
+            "POST",
+            f"{base}/v1/sessions/{urllib.parse.quote(session_id)}/heartbeat",
+            {"seenBy": seen_by},
         )["json"]
 
     def append_message(self, *, session_id: str, role: str, content: str) -> dict:

@@ -59,9 +59,9 @@ cat >"$BROKER_CONFIG_PATH" <<JSON
     "allowFallback": true
   },
   "providers": {
-    "openai-compatible": {
-      "id": "openai-compatible",
-      "type": "openai-compatible",
+    "zai": {
+      "id": "zai",
+      "type": "zai",
       "supportsApiKey": true,
       "supportsOAuth": false
     }
@@ -69,12 +69,12 @@ cat >"$BROKER_CONFIG_PATH" <<JSON
   "connections": {
     "default": {
       "id": "default",
-      "providerId": "openai-compatible",
+      "providerId": "zai",
       "authMode": "api_key",
-      "label": "Test Broker Connection",
+      "label": "Z.ai Test Broker Connection",
       "enabled": true,
       "baseUrl": "$FAKE_URL",
-      "defaultModel": "gpt-fake",
+      "defaultModel": "glm-fake",
       "timeoutSec": 10
     }
   },
@@ -82,9 +82,9 @@ cat >"$BROKER_CONFIG_PATH" <<JSON
     "defaultConnectionId": "default",
     "allowFallback": true,
     "packageDefaults": {
-      "umbrella.mayor.v1": {"model": "gpt-fake"},
-      "umbrella.originator.v1": {"model": "gpt-fake"},
-      "umbrella.programming-agent.v1": {"model": "gpt-fake"}
+      "umbrella.mayor.v1": {"model": "glm-fake"},
+      "umbrella.originator.v1": {"model": "glm-fake"},
+      "umbrella.programming-agent.v1": {"model": "glm-fake"}
     }
   }
 }
@@ -106,15 +106,15 @@ cat >"$CONFIG_PATH" <<JSON
   "enabled": true,
   "provider": {
     "id": "default",
-    "type": "openai-compatible",
+    "type": "zai",
     "baseUrl": "$FAKE_URL",
-    "defaultModel": "gpt-fake",
+    "defaultModel": "glm-fake",
     "timeoutSec": 10
   },
   "agentDefaults": {
-    "umbrella.mayor.v1": {"model": "gpt-fake"},
-    "umbrella.originator.v1": {"model": "gpt-fake"},
-    "umbrella.programming-agent.v1": {"model": "gpt-fake"}
+    "umbrella.mayor.v1": {"model": "glm-fake"},
+    "umbrella.originator.v1": {"model": "glm-fake"},
+    "umbrella.programming-agent.v1": {"model": "glm-fake"}
   }
 }
 JSON
@@ -138,9 +138,11 @@ class Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(n)
         payload = json.loads(raw.decode('utf-8') or '{}')
         model = payload.get('model', '')
+        auth = self.headers.get('Authorization', '')
+        assert auth == 'Bearer sk-fake-provider', auth
         body = {
             'choices': [
-                {'message': {'content': json.dumps({'reply': f'provider:{model}', 'mode': 'direct'})}}
+                {'message': {'content': json.dumps({'reply': f'zai-provider:{model}', 'mode': 'direct'})}}
             ]
         }
         out = json.dumps(body).encode('utf-8')
@@ -222,7 +224,7 @@ assert provider.get('secrets', {}).get('apiKeyPresent') is True, provider
 assert provider.get('broker', {}).get('url') == broker_url, provider
 
 broker_models = get(broker_url + '/v1/models')
-assert 'gpt-fake' in (broker_models.get('models') or []), broker_models
+assert 'glm-fake' in (broker_models.get('models') or []), broker_models
 
 created = post(session_url + '/v1/sessions', {'agentId': 'mayor', 'title': 'Mayor'})
 session = created.get('session') or {}
@@ -231,9 +233,10 @@ assert session_id, created
 
 reply = post(session_url + f'/v1/sessions/{session_id}/converse', {'target': 'mayor', 'content': 'hello'})
 assert reply.get('ok') is True, reply
-assert reply.get('reply') == 'provider:gpt-fake', reply
+assert reply.get('reply') == 'zai-provider:glm-fake', reply
 assert reply.get('providerUsed') is True, reply
-assert reply.get('modelUsed') == 'gpt-fake', reply
+assert reply.get('providerType') == 'zai', reply
+assert reply.get('modelUsed') == 'glm-fake', reply
 assert reply.get('fallbackUsed') is False, reply
 assert reply.get('connectionUsed') == 'default', reply
 
@@ -243,7 +246,8 @@ messages = session_payload.get('messages') or []
 assistant = [m for m in messages if m.get('role') == 'assistant'][-1]
 meta = assistant.get('metadata') if isinstance(assistant.get('metadata'), dict) else {}
 assert meta.get('providerUsed') is True, assistant
-assert meta.get('modelUsed') == 'gpt-fake', assistant
+assert meta.get('providerType') == 'zai', assistant
+assert meta.get('modelUsed') == 'glm-fake', assistant
 assert meta.get('fallbackUsed') is False, assistant
 print('session converse provider configured PASS')
 PY

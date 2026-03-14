@@ -22,6 +22,7 @@ Current endpoints:
 - `POST /v1/chat/respond`
 
 Current provider support:
+- `zai`
 - `openai-compatible`
 
 The broker is intended to be the only service that talks to provider APIs directly.

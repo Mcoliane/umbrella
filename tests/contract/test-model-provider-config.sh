@@ -74,21 +74,22 @@ def post(url, payload):
         return json.loads(resp.read().decode('utf-8'))
 
 before = get(session_url + '/v1/runtime/model-provider')
-assert before.get('provider', {}).get('type') == 'openai-compatible', before
+assert before.get('provider', {}).get('type') in {'zai', 'openai-compatible'}, before
 
 saved = post(session_url + '/v1/runtime/model-provider', {
     'enabled': True,
     'provider': {
-        'type': 'openai-compatible',
+        'type': 'zai',
         'baseUrl': 'http://127.0.0.1:19999/v1',
-        'defaultModel': 'gpt-test',
+        'defaultModel': 'glm-test',
         'timeoutSec': 9,
     },
     'apiKey': 'sk-test-1234567890',
 })
 assert saved.get('saved') is True, saved
 assert saved.get('enabled') is True, saved
-assert saved.get('provider', {}).get('defaultModel') == 'gpt-test', saved
+assert saved.get('provider', {}).get('type') == 'zai', saved
+assert saved.get('provider', {}).get('defaultModel') == 'glm-test', saved
 assert saved.get('secrets', {}).get('apiKeyPresent') is True, saved
 assert saved.get('secrets', {}).get('apiKeyMasked', '').startswith('sk-t'), saved
 assert '1234567890' not in json.dumps(saved), saved

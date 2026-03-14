@@ -1,11 +1,11 @@
 {
   "version": "umbrella.model-provider.v1",
-  "enabled": false,
+  "enabled": true,
   "provider": {
     "id": "default",
-    "type": "openai-compatible",
-    "baseUrl": "",
-    "defaultModel": "",
+    "type": "zai",
+    "baseUrl": "https://api.z.ai/api/coding/paas/v4",
+    "defaultModel": "glm-4.7",
     "timeoutSec": 20
   },
   "agentDefaults": {

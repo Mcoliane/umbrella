@@ -3,10 +3,31 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 MANIFEST="$ROOT/tmp/platform-stack-manifest.json"
+LIST_REPO_PIDS="$ROOT/tmp/platform-stack-repo-pids.py"
+
+cat >"$LIST_REPO_PIDS" <<'PY'
+import subprocess
+import sys
+from pathlib import Path
+
+root = str(Path(sys.argv[1]).resolve())
+out = subprocess.check_output(["ps", "-axo", "pid=,command="], text=True)
+for line in out.splitlines():
+    raw = line.strip()
+    if not raw:
+        continue
+    parts = raw.split(None, 1)
+    if len(parts) != 2:
+        continue
+    pid, command = parts
+    if f"{root}/services/" in command and "app.py --host 127.0.0.1 --port" in command:
+        print(pid)
+PY
 
 cleanup() {
-  python3 "$ROOT/scripts/control-plane/manage-platform-stack" shutdown --umbrella-root "$ROOT" --manifest "$MANIFEST" >/dev/null 2>&1 || true
+  "$ROOT/scripts/control-plane/manage-platform-stack" shutdown --umbrella-root "$ROOT" --manifest "$MANIFEST" >/dev/null 2>&1 || true
   rm -f "$MANIFEST"
+  rm -f "$LIST_REPO_PIDS"
 }
 trap cleanup EXIT
 
@@ -33,3 +54,19 @@ print('platform stack launcher PASS')
 PY
 
 echo "umbrella0.4 platform stack launcher PASS"
+
+"$ROOT/scripts/control-plane/manage-platform-stack" shutdown --umbrella-root "$ROOT" --manifest "$MANIFEST" >/tmp/umbrella-platform-stack-shutdown.out
+
+python3 - "$ROOT" "$LIST_REPO_PIDS" <<'PY'
+import subprocess
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve()
+script = Path(sys.argv[2])
+out = subprocess.check_output(["python3", str(script), str(root)], text=True).strip().splitlines()
+assert out == [] or out == [''], out
+print('platform stack shutdown cleanup PASS')
+PY
+
+echo "umbrella0.4 platform stack shutdown cleanup PASS"

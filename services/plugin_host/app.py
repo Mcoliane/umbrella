@@ -23,7 +23,7 @@ DEFAULT_INPUT_BYTES = 32768
 DEFAULT_OUTPUT_BYTES = 4096
 DEFAULT_TIMEOUT_SEC = 30
 ALLOWED_FS_POLICIES = {'scratch-only', 'install-root'}
-ALLOWED_NETWORK_POLICIES = {'none'}
+ALLOWED_NETWORK_POLICIES = {'none', 'http-outbound'}
 ALLOWED_ISOLATION_PROFILES = {'process-default', 'shell-restricted', 'python-restricted', 'http-outbound', 'container-default', 'container-restricted'}
 
 

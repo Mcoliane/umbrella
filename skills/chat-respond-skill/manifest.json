@@ -33,7 +33,7 @@
       "UMBRELLA_CHAT_PROVIDER",
       "UMBRELLA_CHAT_TIMEOUT_SEC"
     ],
-    "network": "none",
+    "network": "http-outbound",
     "fs": "scratch-only",
     "maxRuntimeSec": 20,
     "maxOutputBytes": 4096,
@@ -56,7 +56,7 @@
         "riskClass": "low",
         "approvalMode": "none",
         "memoryAccess": "session",
-        "networkAccess": "none",
+        "networkAccess": "http-outbound",
         "fsAccess": "scratch-only",
         "processAccess": "restricted-subprocess"
       },

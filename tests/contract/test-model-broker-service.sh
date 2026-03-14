@@ -40,9 +40,9 @@ cat >"$CONFIG_PATH" <<JSON
     "allowFallback": true
   },
   "providers": {
-    "openai-compatible": {
-      "id": "openai-compatible",
-      "type": "openai-compatible",
+    "zai": {
+      "id": "zai",
+      "type": "zai",
       "supportsApiKey": true,
       "supportsOAuth": false
     }
@@ -50,12 +50,12 @@ cat >"$CONFIG_PATH" <<JSON
   "connections": {
     "default": {
       "id": "default",
-      "providerId": "openai-compatible",
+      "providerId": "zai",
       "authMode": "api_key",
-      "label": "Broker Test",
+      "label": "Z.ai Broker Test",
       "enabled": true,
       "baseUrl": "$FAKE_URL",
-      "defaultModel": "gpt-broker",
+      "defaultModel": "glm-broker",
       "timeoutSec": 10
     }
   },
@@ -63,7 +63,7 @@ cat >"$CONFIG_PATH" <<JSON
     "defaultConnectionId": "default",
     "allowFallback": true,
     "packageDefaults": {
-      "umbrella.mayor.v1": {"model": "gpt-broker"}
+      "umbrella.mayor.v1": {"model": "glm-broker"}
     }
   }
 }
@@ -89,7 +89,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path != '/v1/models':
             self.send_response(404); self.end_headers(); return
-        body = json.dumps({'data': [{'id': 'gpt-broker'}]}).encode('utf-8')
+        body = json.dumps({'data': [{'id': 'glm-broker'}]}).encode('utf-8')
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(body)))
@@ -102,7 +102,9 @@ class Handler(BaseHTTPRequestHandler):
         n = int(self.headers.get('Content-Length', '0') or '0')
         payload = json.loads(self.rfile.read(n).decode('utf-8') or '{}')
         model = payload.get('model', '')
-        body = json.dumps({'choices': [{'message': {'content': json.dumps({'reply': f'broker:{model}', 'mode': 'direct'})}}]}).encode('utf-8')
+        auth = self.headers.get('Authorization', '')
+        assert auth == 'Bearer sk-broker-test', auth
+        body = json.dumps({'choices': [{'message': {'content': json.dumps({'reply': f'zai:{model}', 'mode': 'direct'})}}]}).encode('utf-8')
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(body)))
@@ -161,17 +163,18 @@ def post(url, payload):
         return json.loads(resp.read().decode('utf-8'))
 
 providers = get(broker_url + '/v1/providers')
-assert any(row.get('id') == 'openai-compatible' for row in providers.get('providers', [])), providers
+assert any(row.get('id') == 'zai' for row in providers.get('providers', [])), providers
 
 connections = get(broker_url + '/v1/connections')
 assert connections.get('defaultConnectionId') == 'default', connections
-assert any(row.get('id') == 'default' and row.get('secrets', {}).get('apiKeyPresent') is True for row in connections.get('connections', [])), connections
+assert any(row.get('id') == 'default' and row.get('providerType') == 'zai' and row.get('secrets', {}).get('apiKeyPresent') is True for row in connections.get('connections', [])), connections
 
 models = get(broker_url + '/v1/models')
-assert 'gpt-broker' in (models.get('models') or []), models
+assert 'glm-broker' in (models.get('models') or []), models
 
 tested = post(broker_url + '/v1/connections/test', {'connectionId': 'default'})
 assert tested.get('test', {}).get('ok') is True, tested
+assert tested.get('test', {}).get('providerType') == 'zai', tested
 
 reply = post(broker_url + '/v1/chat/respond', {
     'agentPackageId': 'umbrella.mayor.v1',
@@ -183,7 +186,8 @@ reply = post(broker_url + '/v1/chat/respond', {
     'availableShops': []
 })
 assert reply.get('ok') is True, reply
-assert reply.get('reply') == 'broker:gpt-broker', reply
+assert reply.get('reply') == 'zai:glm-broker', reply
+assert reply.get('providerType') == 'zai', reply
 assert reply.get('connectionUsed') == 'default', reply
 print('model broker service PASS')
 PY

@@ -84,6 +84,59 @@ spawn_service() {
   echo $!
 }
 
+repo_service_pids() {
+  python3 - "$ROOT" <<'PY'
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+root = str(Path(sys.argv[1]).resolve())
+try:
+    out = subprocess.check_output(["ps", "-axo", "pid=,command="], text=True)
+except Exception:
+    print("")
+    raise SystemExit(0)
+
+needles = [
+    f"{root}/services/",
+    "app.py --host 127.0.0.1 --port",
+]
+pids = []
+for line in out.splitlines():
+    raw = line.strip()
+    if not raw:
+        continue
+    parts = raw.split(None, 1)
+    if len(parts) != 2:
+        continue
+    pid_raw, command = parts
+    try:
+        pid = int(pid_raw)
+    except Exception:
+        continue
+    if pid == os.getpid():
+        continue
+    if all(token in command for token in needles):
+        pids.append(str(pid))
+print(" ".join(pids))
+PY
+}
+
+kill_pid_list() {
+  local pids="$1"
+  if [[ -z "$pids" ]]; then
+    return 0
+  fi
+  kill $pids >/dev/null 2>&1 || true
+  sleep 0.5
+  for pid in $pids; do
+    if kill -0 "$pid" >/dev/null 2>&1; then
+      kill -9 "$pid" >/dev/null 2>&1 || true
+    fi
+  done
+}
+
 wait_health() {
   local url="$1"
   local token="${2:-}"
@@ -201,28 +254,28 @@ PY
 }
 
 shutdown_impl() {
-  if [[ ! -f "$MANIFEST" ]]; then
-    echo "{\"ok\":true,\"stopped\":[],\"manifest\":\"$MANIFEST\",\"note\":\"manifest_not_found\"}"
-    return 0
-  fi
-  local pids
-  pids="$(python3 - "$MANIFEST" <<'PY'
+  local manifest_pids=""
+  if [[ -f "$MANIFEST" ]]; then
+    manifest_pids="$(python3 - "$MANIFEST" <<'PY'
 import json, sys
 from pathlib import Path
 m=json.loads(Path(sys.argv[1]).read_text())
 print(' '.join(str(s.get('pid', 0)) for s in m.get('services', {}).values() if int(s.get('pid', 0)) > 0))
 PY
 )"
-  if [[ -n "$pids" ]]; then
-    kill $pids >/dev/null 2>&1 || true
-    sleep 0.5
-    for pid in $pids; do
-      if kill -0 "$pid" >/dev/null 2>&1; then
-        kill -9 "$pid" >/dev/null 2>&1 || true
-      fi
-    done
   fi
-  python3 - "$MANIFEST" <<'PY'
+  local discovered_pids
+  discovered_pids="$(repo_service_pids)"
+  local all_pids
+  all_pids="$(printf '%s\n%s\n' "$manifest_pids" "$discovered_pids" | tr ' ' '\n' | awk 'NF && !seen[$0]++' | tr '\n' ' ' | xargs echo -n)"
+  kill_pid_list "$all_pids"
+
+  if [[ ! -f "$MANIFEST" ]]; then
+    echo "{\"ok\":true,\"stopped\":[${all_pids:+\"$all_pids\"}],\"manifest\":\"$MANIFEST\",\"note\":\"manifest_not_found\"}"
+    return 0
+  fi
+
+  python3 - "$MANIFEST" "$all_pids" <<'PY'
 import json, sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -232,11 +285,12 @@ obj['stoppedAt']=datetime.now(timezone.utc).isoformat()
 for s in obj.get('services', {}).values():
     s['pid']=0
 p.write_text(json.dumps(obj, indent=2) + '\n', encoding='utf-8')
-print(json.dumps({'ok': True, 'manifest': str(p), 'stoppedAt': obj['stoppedAt']}, indent=2))
+print(json.dumps({'ok': True, 'manifest': str(p), 'stoppedAt': obj['stoppedAt'], 'stoppedPids': [pid for pid in sys.argv[2].split() if pid]}, indent=2))
 PY
 }
 
 bringup_impl() {
+  shutdown_impl >/dev/null 2>&1 || true
   if [[ -f "$MANIFEST" ]]; then
     set +e
     status_impl >/dev/null 2>&1

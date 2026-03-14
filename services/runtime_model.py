@@ -77,7 +77,7 @@ def _normalize_legacy_provider(config: dict, secrets: dict, root: Path) -> dict:
         "enabled": bool(config.get("enabled", False)),
         "provider": {
             "id": str(provider.get("id", "")).strip() or "default",
-            "type": str(provider.get("type", "")).strip() or "openai-compatible",
+            "type": str(provider.get("type", "")).strip() or "zai",
             "baseUrl": str(provider.get("baseUrl", "")).strip(),
             "defaultModel": str(provider.get("defaultModel", "")).strip(),
             "timeoutSec": int(provider.get("timeoutSec", 20) or 20),
@@ -103,6 +103,12 @@ def _default_broker_config() -> dict:
             "allowFallback": True,
         },
         "providers": {
+            "zai": {
+                "id": "zai",
+                "type": "zai",
+                "supportsApiKey": True,
+                "supportsOAuth": False,
+            },
             "openai-compatible": {
                 "id": "openai-compatible",
                 "type": "openai-compatible",
@@ -113,9 +119,9 @@ def _default_broker_config() -> dict:
         "connections": {
             "default": {
                 "id": "default",
-                "providerId": "openai-compatible",
+                "providerId": "zai",
                 "authMode": "api_key",
-                "label": "Default OpenAI-Compatible",
+                "label": "Default Z.ai",
                 "enabled": False,
                 "baseUrl": "",
                 "defaultModel": "",
@@ -166,7 +172,7 @@ def _normalize_broker(config: dict, secrets: dict, root: Path) -> dict:
             continue
         normalized_connections[cid] = {
             "id": cid,
-            "providerId": str(row.get("providerId", "")).strip() or "openai-compatible",
+            "providerId": str(row.get("providerId", "")).strip() or "zai",
             "authMode": str(row.get("authMode", "api_key")).strip() or "api_key",
             "label": str(row.get("label", "")).strip() or cid,
             "enabled": bool(row.get("enabled", False)),
@@ -226,7 +232,7 @@ def _legacy_to_broker(provider: dict) -> dict:
     normalized["connections"] = {
         connection_id: {
             "id": connection_id,
-            "providerId": str(provider_meta.get("type", "openai-compatible")).strip() or "openai-compatible",
+            "providerId": str(provider_meta.get("type", "zai")).strip() or "zai",
             "authMode": "api_key",
             "label": "Migrated Model Provider",
             "enabled": bool(provider.get("enabled", False)),
@@ -302,7 +308,7 @@ def load_model_provider(root: Path) -> dict:
     root = Path(root).resolve()
     broker = load_model_broker(root)
     connection = default_connection(broker)
-    provider_id = str(connection.get("providerId", "openai-compatible")).strip() or "openai-compatible"
+    provider_id = str(connection.get("providerId", "zai")).strip() or "zai"
     providers = broker.get("providers") if isinstance(broker.get("providers"), dict) else {}
     provider_meta = providers.get(provider_id) if isinstance(providers.get(provider_id), dict) else {}
     connection_id = str(connection.get("id", _default_connection_id(broker))).strip() or "default"
@@ -340,7 +346,7 @@ def save_model_provider(root: Path, *, config: dict | None = None, secrets: dict
     current["routing"]["defaultConnectionId"] = connection_id
     current["routing"]["packageDefaults"] = dict(normalized_provider.get("agentDefaults") if isinstance(normalized_provider.get("agentDefaults"), dict) else {})
     provider_meta = normalized_provider.get("provider") if isinstance(normalized_provider.get("provider"), dict) else {}
-    provider_type = str(provider_meta.get("type", "openai-compatible")).strip() or "openai-compatible"
+    provider_type = str(provider_meta.get("type", "zai")).strip() or "zai"
     providers = current.get("providers") if isinstance(current.get("providers"), dict) else {}
     if provider_type not in providers:
         providers[provider_type] = {
@@ -484,13 +490,35 @@ def discover_broker_url(root: Path, broker: dict | None = None) -> str:
     payload = broker if isinstance(broker, dict) else load_model_broker(root)
     broker_meta = payload.get("broker") if isinstance(payload.get("broker"), dict) else {}
     configured = str(broker_meta.get("url", "")).strip()
-    if configured:
-        return configured.rstrip("/")
     manifest = _load_json(platform_manifest_path(root), {})
     services = manifest.get("services") if isinstance(manifest.get("services"), dict) else {}
     row = services.get("model-broker")
-    if isinstance(row, dict) and str(row.get("url", "")).strip():
-        return str(row.get("url", "")).rstrip("/")
+    manifest_url = str(row.get("url", "")).strip() if isinstance(row, dict) else ""
+
+    def healthy(base_url: str) -> bool:
+        candidate = str(base_url or "").strip().rstrip("/")
+        if not candidate:
+            return False
+        req = urllib.request.Request(
+            candidate + "/v1/model-broker/health",
+            headers=broker_headers(root),
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            return payload.get("status") == "ok"
+        except Exception:
+            return False
+
+    if configured and healthy(configured):
+        return configured.rstrip("/")
+    if manifest_url and healthy(manifest_url):
+        return manifest_url.rstrip("/")
+    if configured:
+        return configured.rstrip("/")
+    if manifest_url:
+        return manifest_url.rstrip("/")
     return "http://127.0.0.1:8796"
 
 

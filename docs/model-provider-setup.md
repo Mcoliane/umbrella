@@ -7,6 +7,7 @@ That means:
 - `skill.chat.respond` no longer talks to provider APIs directly
 - the broker owns provider connections and normalized inference
 - browser login state is still not reused directly
+- the preferred live provider is now `Z.ai`
 
 ## Files
 
@@ -24,9 +25,17 @@ From Town Hall:
 
 - `/model` shows current provider status
 - `/model setup` writes provider config and API key
+- `/model glm47` applies the recommended Z.ai coding preset
 - `/model test` sends a small test request
 - `/model use <model>` changes the default model
 - `/model disable` disables provider-backed conversation
+
+Fastest path for Z.ai:
+
+1. `/model glm47`
+2. paste your Z.ai key
+3. `/model test`
+4. talk to `mayor`
 
 ## Compatibility config shape
 
@@ -35,14 +44,14 @@ From Town Hall:
   "version": "umbrella.model-provider.v1",
   "enabled": true,
   "provider": {
-    "type": "openai-compatible",
-    "baseUrl": "https://api.openai.com/v1",
-    "defaultModel": "gpt-4.1-mini",
+    "type": "zai",
+    "baseUrl": "https://api.z.ai/api/coding/paas/v4",
+    "defaultModel": "glm-4.7",
     "timeoutSec": 20
   },
   "agentDefaults": {
-    "umbrella.mayor.v1": { "model": "gpt-4.1" },
-    "umbrella.originator.v1": { "model": "gpt-4.1-mini" }
+    "umbrella.mayor.v1": { "model": "glm-4.7" },
+    "umbrella.originator.v1": { "model": "glm-4.5-air" }
   }
 }
 ```
@@ -66,11 +75,16 @@ Secrets:
     "defaultConnectionId": "default",
     "allowFallback": true
   },
+  "providers": {
+    "zai": {
+      "type": "zai"
+    }
+  },
   "connections": {
     "default": {
-      "providerId": "openai-compatible",
-      "baseUrl": "https://api.openai.com/v1",
-      "defaultModel": "gpt-4.1-mini",
+      "providerId": "zai",
+      "baseUrl": "https://api.z.ai/api/coding/paas/v4",
+      "defaultModel": "glm-4.7",
       "enabled": true
     }
   }
@@ -79,10 +93,14 @@ Secrets:
 
 ## Behavior
 
-- If a configured broker connection is enabled, `skill.chat.respond` uses the broker.
+- If a configured `zai` broker connection is enabled, `skill.chat.respond` uses the broker.
 - If no provider is configured, conversation falls back to deterministic local replies.
 - Conversation metadata records whether fallback was used.
 
-## Why not OAuth
+## Current provider story
 
-Umbrella runtime calls models as a platform service. That means it should use API-style provider credentials or a local compatible gateway, not a borrowed chat login session.
+- preferred active path: `Z.ai` with API key auth
+- secondary compatibility path: `openai-compatible`
+- deferred path: OpenAI OAuth reuse through an upstream gateway or separate broker connection model
+
+Umbrella runtime calls models as a platform service. That means it should use API-style provider credentials or a broker-managed gateway, not a borrowed chat login session.
