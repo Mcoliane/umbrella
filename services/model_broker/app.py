@@ -65,6 +65,38 @@ def parse_json_content_block(content: str) -> dict | None:
     return None
 
 
+def summarize_history(rows: list[dict], limit: int = 8) -> str:
+    lines: list[str] = []
+    for row in rows[-limit:]:
+        if not isinstance(row, dict):
+            continue
+        role = str(row.get("role", "")).strip().lower()
+        if role not in {"user", "assistant"}:
+            continue
+        content = str(row.get("content", "")).strip()
+        if not content:
+            continue
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
+def summarize_shops(rows: list[dict], limit: int = 8) -> str:
+    parts: list[str] = []
+    for row in rows[:limit]:
+        if not isinstance(row, dict):
+            continue
+        shop_id = str(row.get("shopId", "")).strip()
+        name = str(row.get("name", "")).strip() or shop_id
+        shop_type = str(row.get("shopType", "")).strip() or "shop"
+        actions = [str(x).strip() for x in (row.get("enabledActionIds") or []) if str(x).strip()]
+        action_text = ", ".join(actions[:4])
+        if action_text:
+            parts.append(f"{name} ({shop_type}, id={shop_id}, actions={action_text})")
+        else:
+            parts.append(f"{name} ({shop_type}, id={shop_id})")
+    return "\n".join(parts)
+
+
 class BrokerEngine:
     def __init__(self, root: Path):
         self.root = Path(root).resolve()
@@ -343,7 +375,10 @@ class BrokerEngine:
         message = str(request.get("message", "")).strip()
         town_context = request.get("townContext") if isinstance(request.get("townContext"), dict) else {}
         available_shops = request.get("availableShops") if isinstance(request.get("availableShops"), list) else []
+        conversation_history = request.get("conversationHistory") if isinstance(request.get("conversationHistory"), list) else []
+        agent_package_metadata = request.get("agentPackageMetadata") if isinstance(request.get("agentPackageMetadata"), dict) else {}
         package_name = str(request.get("agentPackageId", "")).strip() or str(request.get("agentId", "agent")).strip() or "agent"
+        agent_id = str(request.get("agentId", "")).strip() or "agent"
         model_hint = str(request.get("model", "")).strip()
         package_defaults = (broker.get("routing") or {}).get("packageDefaults", {})
         package_default = package_defaults.get(package_name) if isinstance(package_defaults.get(package_name), dict) else {}
@@ -352,6 +387,19 @@ class BrokerEngine:
             return {"ok": False, "error": {"message": "default model is not configured"}}
         temperature = float(request.get("temperature") if request.get("temperature") is not None else request.get("temperatureDefault", 0.2) or 0.2)
         max_tokens = int(request.get("maxTokens") if request.get("maxTokens") is not None else request.get("maxTokensDefault", 300) or 300)
+        history_text = summarize_history(conversation_history)
+        shops_text = summarize_shops(available_shops)
+        context_lines = [
+            f"Agent package: {package_name}",
+            f"Agent id: {agent_id}",
+            f"Town title: {str(town_context.get('title', '')).strip() or 'Town Hall'}",
+            f"Session id: {str(town_context.get('sessionId', '')).strip()}",
+            f"Mayor agent id: {str(town_context.get('mayorAgentId', '')).strip()}",
+            f"Worker shop count: {len(available_shops)}",
+            f"Conversation style: {str(agent_package_metadata.get('conversationStyle', '')).strip() or 'default'}",
+            f"Default mode: {str(agent_package_metadata.get('defaultMode', '')).strip() or 'direct'}",
+            f"Delegation policy: {str(agent_package_metadata.get('delegationPolicy', '')).strip() or 'delegate only when needed'}",
+        ]
         provider_payload = {
             "model": model,
             "messages": [
@@ -360,11 +408,18 @@ class BrokerEngine:
                 {
                     "role": "system",
                     "content": (
-                        f"Agent package: {package_name}. "
-                        f"Town title: {str(town_context.get('title', '')).strip() or 'Town Hall'}. "
-                        f"Worker shops available: {len(available_shops)}. "
-                        "Always respond with JSON containing reply and mode."
+                        "\n".join(context_lines)
+                        + "\nAlways respond with JSON containing reply and mode."
+                        + "\nDo not answer with generic filler if the user asked a concrete question."
                     ),
+                },
+                {
+                    "role": "system",
+                    "content": "Available worker shops:\n" + (shops_text or "none"),
+                },
+                {
+                    "role": "system",
+                    "content": "Recent conversation:\n" + (history_text or "none"),
                 },
                 {"role": "user", "content": message},
             ],
