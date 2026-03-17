@@ -2,22 +2,26 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-mkdir -p "$ROOT/tmp"
+source "$ROOT/tests/contract/helpers/runtime-root.sh"
+TEST_TMP="$(contract_make_tmpdir "$ROOT" service-auth-mesh)"
+RUNTIME_ROOT="$(contract_make_runtime_root "$ROOT" service-auth-mesh-runtime)"
+export UMBRELLA_RUNTIME_ROOT="$RUNTIME_ROOT"
 MGR="$ROOT/scripts/control-plane/manage-service-mesh"
 RUNNER="$ROOT/scripts/control-plane/run-umbrella-control-plane"
 PLAN="control-plane/planner/plans/service-mesh-smoke.json"
-MANIFEST="$ROOT/tmp/service-auth-mesh.manifest.json"
-RUN_BAD="run-auth-mesh-bad-$(date +%s)"
-RUN_GOOD="run-auth-mesh-good-$(date +%s)"
+MANIFEST="$TEST_TMP/service-auth-mesh.manifest.json"
+RUN_BAD="run-auth-mesh-bad-$(date +%s)-$$"
+RUN_GOOD="run-auth-mesh-good-$(date +%s)-$$"
 
 rm -f "$MANIFEST"
 
 cleanup() {
   "$MGR" shutdown --umbrella-root "$ROOT" --manifest "$MANIFEST" >/dev/null 2>&1 || true
+  rm -rf "$RUNTIME_ROOT" "$TEST_TMP"
 }
 trap cleanup EXIT
 
-"$MGR" bringup --umbrella-root "$ROOT" --manifest "$MANIFEST" >"$ROOT/tmp/umbrella04-auth-bringup.out"
+"$MGR" bringup --umbrella-root "$ROOT" --manifest "$MANIFEST" >"$TEST_TMP/umbrella04-auth-bringup.out"
 
 python3 - "$MANIFEST" <<'PY'
 import json, sys, urllib.request, urllib.error
@@ -71,7 +75,7 @@ set +e
   --execution-url "$(python3 -c "import json;print(json.load(open('$MANIFEST'))['services']['execution']['url'])")" \
   --approval-url "$(python3 -c "import json;print(json.load(open('$MANIFEST'))['services']['approval']['url'])")" \
   --orchestrator-url "$(python3 -c "import json;print(json.load(open('$MANIFEST'))['services']['orchestrator']['url'])")" \
-  >"$ROOT/tmp/umbrella04-auth-runner-bad.out" 2>"$ROOT/tmp/umbrella04-auth-runner-bad.err"
+  >"$TEST_TMP/umbrella04-auth-runner-bad.out" 2>"$TEST_TMP/umbrella04-auth-runner-bad.err"
 RC_BAD=$?
 set -e
 if [[ "$RC_BAD" -eq 0 ]]; then
@@ -81,7 +85,7 @@ fi
 
 # runner with token should succeed
 # shellcheck disable=SC2086
-"$RUNNER" --umbrella-root "$ROOT" --plan "$PLAN" --run-id "$RUN_GOOD" $ARGS >"$ROOT/tmp/umbrella04-auth-runner-good.out"
+"$RUNNER" --umbrella-root "$ROOT" --plan "$PLAN" --run-id "$RUN_GOOD" $ARGS >"$TEST_TMP/umbrella04-auth-runner-good.out"
 
 ROOT="$ROOT" RUN_ID="$RUN_GOOD" python3 - <<'PY'
 import json, os

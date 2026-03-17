@@ -2,7 +2,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-mkdir -p "$ROOT/tmp"
+source "$ROOT/tests/contract/helpers/runtime-root.sh"
+TEST_TMP="$(contract_make_tmpdir "$ROOT" session-converse-provider)"
+RUNTIME_ROOT="$(contract_make_runtime_root "$ROOT" session-converse-provider-runtime)"
+export UMBRELLA_RUNTIME_ROOT="$RUNTIME_ROOT"
 
 free_port() {
   python3 - <<'PY'
@@ -27,25 +30,14 @@ PLUGIN_HOST_URL="http://127.0.0.1:$PLUGIN_HOST_PORT"
 EXEC_URL="http://127.0.0.1:$EXEC_PORT"
 SESSION_URL="http://127.0.0.1:$SESSION_PORT"
 
-CONFIG_PATH="$ROOT/control-plane/runtime/model-provider.json"
-SECRETS_PATH="$ROOT/control-plane/runtime/model-provider.secrets.json"
-BROKER_CONFIG_PATH="$ROOT/control-plane/runtime/model-broker.json"
-BROKER_SECRETS_PATH="$ROOT/control-plane/runtime/model-broker.secrets.json"
-CONFIG_BAK="$ROOT/tmp/model-provider-configured.json.bak"
-SECRETS_BAK="$ROOT/tmp/model-provider-configured.secrets.bak"
-BROKER_CONFIG_BAK="$ROOT/tmp/model-broker-configured.json.bak"
-BROKER_SECRETS_BAK="$ROOT/tmp/model-broker-configured.secrets.bak"
-[[ -f "$CONFIG_PATH" ]] && cp "$CONFIG_PATH" "$CONFIG_BAK" || true
-[[ -f "$SECRETS_PATH" ]] && cp "$SECRETS_PATH" "$SECRETS_BAK" || true
-[[ -f "$BROKER_CONFIG_PATH" ]] && cp "$BROKER_CONFIG_PATH" "$BROKER_CONFIG_BAK" || true
-[[ -f "$BROKER_SECRETS_PATH" ]] && cp "$BROKER_SECRETS_PATH" "$BROKER_SECRETS_BAK" || true
+CONFIG_PATH="$RUNTIME_ROOT/control-plane/runtime/model-provider.json"
+SECRETS_PATH="$RUNTIME_ROOT/control-plane/runtime/model-provider.secrets.json"
+BROKER_CONFIG_PATH="$RUNTIME_ROOT/control-plane/runtime/model-broker.json"
+BROKER_SECRETS_PATH="$RUNTIME_ROOT/control-plane/runtime/model-broker.secrets.json"
 
 cleanup() {
-  kill "$P0" "$PB" "$P1" "$P2" "$P3" "$P4" "$P5" >/dev/null 2>&1 || true
-  if [[ -f "$CONFIG_BAK" ]]; then cp "$CONFIG_BAK" "$CONFIG_PATH"; fi
-  if [[ -f "$SECRETS_BAK" ]]; then cp "$SECRETS_BAK" "$SECRETS_PATH"; else rm -f "$SECRETS_PATH"; fi
-  if [[ -f "$BROKER_CONFIG_BAK" ]]; then cp "$BROKER_CONFIG_BAK" "$BROKER_CONFIG_PATH"; fi
-  if [[ -f "$BROKER_SECRETS_BAK" ]]; then cp "$BROKER_SECRETS_BAK" "$BROKER_SECRETS_PATH"; else rm -f "$BROKER_SECRETS_PATH"; fi
+  contract_kill_pids "$P0" "$PB" "$P1" "$P2" "$P3" "$P4" "$P5"
+  rm -rf "$RUNTIME_ROOT" "$TEST_TMP"
 }
 trap cleanup EXIT
 
@@ -124,7 +116,7 @@ cat >"$SECRETS_PATH" <<JSON
 }
 JSON
 
-python3 - "$FAKE_PORT" >"$ROOT/tmp/umbrella04-fake-provider.out" 2>"$ROOT/tmp/umbrella04-fake-provider.err" <<'PY' &
+python3 - "$FAKE_PORT" >"$TEST_TMP/umbrella04-fake-provider.out" 2>"$TEST_TMP/umbrella04-fake-provider.err" <<'PY' &
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json, sys
 
@@ -159,18 +151,18 @@ ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
 PY
 P0=$!
 
-python3 "$ROOT/services/model_broker/app.py" --host 127.0.0.1 --port "$BROKER_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-broker.out" 2>"$ROOT/tmp/umbrella04-broker.err" &
+python3 "$ROOT/services/model_broker/app.py" --host 127.0.0.1 --port "$BROKER_PORT" --umbrella-root "$ROOT" >"$TEST_TMP/umbrella04-broker.out" 2>"$TEST_TMP/umbrella04-broker.err" &
 PB=$!
 
-python3 "$ROOT/services/policy/app.py" --host 127.0.0.1 --port "$POLICY_PORT" --umbrella-root "$ROOT" --catalog-url "$CATALOG_URL" >"$ROOT/tmp/umbrella04-prov-policy.out" 2>"$ROOT/tmp/umbrella04-prov-policy.err" &
+python3 "$ROOT/services/policy/app.py" --host 127.0.0.1 --port "$POLICY_PORT" --umbrella-root "$ROOT" --catalog-url "$CATALOG_URL" >"$TEST_TMP/umbrella04-prov-policy.out" 2>"$TEST_TMP/umbrella04-prov-policy.err" &
 P1=$!
-python3 "$ROOT/services/catalog/app.py" --host 127.0.0.1 --port "$CATALOG_PORT" --umbrella-root "$ROOT" --registry "$ROOT/tmp/session-provider-catalog.json" >"$ROOT/tmp/umbrella04-prov-catalog.out" 2>"$ROOT/tmp/umbrella04-prov-catalog.err" &
+python3 "$ROOT/services/catalog/app.py" --host 127.0.0.1 --port "$CATALOG_PORT" --umbrella-root "$ROOT" --registry "$TEST_TMP/session-provider-catalog.json" >"$TEST_TMP/umbrella04-prov-catalog.out" 2>"$TEST_TMP/umbrella04-prov-catalog.err" &
 P2=$!
-python3 "$ROOT/services/plugin_host/app.py" --host 127.0.0.1 --port "$PLUGIN_HOST_PORT" --umbrella-root "$ROOT" --catalog-url "$CATALOG_URL" >"$ROOT/tmp/umbrella04-prov-plugin-host.out" 2>"$ROOT/tmp/umbrella04-prov-plugin-host.err" &
+python3 "$ROOT/services/plugin_host/app.py" --host 127.0.0.1 --port "$PLUGIN_HOST_PORT" --umbrella-root "$ROOT" --catalog-url "$CATALOG_URL" >"$TEST_TMP/umbrella04-prov-plugin-host.out" 2>"$TEST_TMP/umbrella04-prov-plugin-host.err" &
 P3=$!
-python3 "$ROOT/services/execution/app.py" --host 127.0.0.1 --port "$EXEC_PORT" --umbrella-root "$ROOT" --policy-url "$POLICY_URL" --catalog-url "$CATALOG_URL" --plugin-host-url "$PLUGIN_HOST_URL" >"$ROOT/tmp/umbrella04-prov-execution.out" 2>"$ROOT/tmp/umbrella04-prov-execution.err" &
+python3 "$ROOT/services/execution/app.py" --host 127.0.0.1 --port "$EXEC_PORT" --umbrella-root "$ROOT" --policy-url "$POLICY_URL" --catalog-url "$CATALOG_URL" --plugin-host-url "$PLUGIN_HOST_URL" >"$TEST_TMP/umbrella04-prov-execution.out" 2>"$TEST_TMP/umbrella04-prov-execution.err" &
 P4=$!
-python3 "$ROOT/services/session/app.py" --host 127.0.0.1 --port "$SESSION_PORT" --umbrella-root "$ROOT" --catalog-url "$CATALOG_URL" --execution-url "$EXEC_URL" >"$ROOT/tmp/umbrella04-prov-session.out" 2>"$ROOT/tmp/umbrella04-prov-session.err" &
+python3 "$ROOT/services/session/app.py" --host 127.0.0.1 --port "$SESSION_PORT" --umbrella-root "$ROOT" --catalog-url "$CATALOG_URL" --execution-url "$EXEC_URL" >"$TEST_TMP/umbrella04-prov-session.out" 2>"$TEST_TMP/umbrella04-prov-session.err" &
 P5=$!
 
 wait_health() {

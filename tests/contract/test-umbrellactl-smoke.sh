@@ -2,30 +2,36 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-mkdir -p "$ROOT/tmp"
+source "$ROOT/tests/contract/helpers/runtime-root.sh"
+TEST_TMP="$(contract_make_tmpdir "$ROOT" umbrellactl-smoke)"
+RUNTIME_ROOT="$(contract_make_runtime_root "$ROOT" umbrellactl-smoke-runtime)"
+export UMBRELLA_RUNTIME_ROOT="$RUNTIME_ROOT"
 MGR="$ROOT/scripts/control-plane/manage-service-mesh"
 CTL="$ROOT/scripts/umbrellactl"
-MANIFEST="$ROOT/tmp/umbrellactl-smoke.manifest.json"
-PLAN="$ROOT/tmp/umbrellactl-approval.plan.json"
-RUN_ID="run-umbrellactl-smoke-$(date +%s)"
-APPROVAL_KEY="umbrellactl-approval-key-$(date +%s)"
+MANIFEST="$TEST_TMP/umbrellactl-smoke.manifest.json"
+PLAN="$TEST_TMP/umbrellactl-approval.plan.json"
+RUN_ID="run-umbrellactl-smoke-$(date +%s)-$$"
+APPROVAL_KEY="umbrellactl-approval-key-$(date +%s)-$$"
 
 rm -f "$MANIFEST" "$PLAN"
 
 cleanup() {
   "$MGR" shutdown --umbrella-root "$ROOT" --manifest "$MANIFEST" >/dev/null 2>&1 || true
+  rm -rf "$RUNTIME_ROOT" "$TEST_TMP"
 }
 trap cleanup EXIT
 
-"$MGR" bringup --umbrella-root "$ROOT" --manifest "$MANIFEST" >"$ROOT/tmp/umbrella04-ctl-bringup.out"
+"$MGR" bringup --umbrella-root "$ROOT" --manifest "$MANIFEST" >"$TEST_TMP/umbrella04-ctl-bringup.out"
 
 # memory put/get via CLI
-"$CTL" --umbrella-root "$ROOT" --manifest "$MANIFEST" memory put --namespace team --key ctl-smoke --value '{"v":"ok"}' >"$ROOT/tmp/umbrella04-ctl-mem-put.out"
-"$CTL" --umbrella-root "$ROOT" --manifest "$MANIFEST" memory get --namespace team --key ctl-smoke >"$ROOT/tmp/umbrella04-ctl-mem-get.out"
-python3 - <<'PY'
+"$CTL" --umbrella-root "$ROOT" --manifest "$MANIFEST" memory put --namespace team --key ctl-smoke --value '{"v":"ok"}' >"$TEST_TMP/umbrella04-ctl-mem-put.out"
+"$CTL" --umbrella-root "$ROOT" --manifest "$MANIFEST" memory get --namespace team --key ctl-smoke >"$TEST_TMP/umbrella04-ctl-mem-get.out"
+python3 - "$TEST_TMP" <<'PY'
 import json
+import sys
 from pathlib import Path
-obj=json.loads(Path('tmp/umbrella04-ctl-mem-get.out').read_text())
+tmp=Path(sys.argv[1])
+obj=json.loads((tmp/'umbrella04-ctl-mem-get.out').read_text())
 assert obj.get('ok') is True and obj.get('exists') is True, obj
 assert (obj.get('memory') or {}).get('value') == {'v':'ok'}, obj
 print('umbrellactl memory get/put PASS')
@@ -51,7 +57,12 @@ cat > "$PLAN" <<JSON
 JSON
 
 set +e
-"$CTL" --umbrella-root "$ROOT" --manifest "$MANIFEST" run --plan "tmp/$(basename "$PLAN")" --run-id "$RUN_ID" >"$ROOT/tmp/umbrella04-ctl-run1.out"
+"$CTL" --umbrella-root "$ROOT" --manifest "$MANIFEST" run --plan "$(python3 - "$PLAN" <<'PY'
+import sys
+from pathlib import Path
+print(Path(sys.argv[1]).resolve().as_posix())
+PY
+)" --run-id "$RUN_ID" >"$TEST_TMP/umbrella04-ctl-run1.out"
 RC1=$?
 set -e
 if [[ "$RC1" -ne 3 ]]; then
@@ -59,25 +70,34 @@ if [[ "$RC1" -ne 3 ]]; then
   exit 1
 fi
 
-"$CTL" --umbrella-root "$ROOT" --manifest "$MANIFEST" run-status --approval-key "$APPROVAL_KEY" >"$ROOT/tmp/umbrella04-ctl-status1.out"
-python3 - <<'PY'
+"$CTL" --umbrella-root "$ROOT" --manifest "$MANIFEST" run-status --approval-key "$APPROVAL_KEY" >"$TEST_TMP/umbrella04-ctl-status1.out"
+python3 - "$TEST_TMP" <<'PY'
 import json
+import sys
 from pathlib import Path
-obj=json.loads(Path('tmp/umbrella04-ctl-status1.out').read_text())
+tmp=Path(sys.argv[1])
+obj=json.loads((tmp/'umbrella04-ctl-status1.out').read_text())
 state=((obj.get('status') or {}).get('state'))
 assert state == 'BLOCKED', obj
 print('umbrellactl run-status BLOCKED PASS')
 PY
 
-"$CTL" --umbrella-root "$ROOT" --manifest "$MANIFEST" approve --approval-key "$APPROVAL_KEY" --by qa --note 'approved via umbrellactl' >"$ROOT/tmp/umbrella04-ctl-approve.out"
+"$CTL" --umbrella-root "$ROOT" --manifest "$MANIFEST" approve --approval-key "$APPROVAL_KEY" --by qa --note 'approved via umbrellactl' >"$TEST_TMP/umbrella04-ctl-approve.out"
 
-"$CTL" --umbrella-root "$ROOT" --manifest "$MANIFEST" resume --plan "tmp/$(basename "$PLAN")" --run-id "$RUN_ID" --approval-key "$APPROVAL_KEY" >"$ROOT/tmp/umbrella04-ctl-resume.out"
-
-"$CTL" --umbrella-root "$ROOT" --manifest "$MANIFEST" run-status --approval-key "$APPROVAL_KEY" >"$ROOT/tmp/umbrella04-ctl-status2.out"
-python3 - <<'PY'
-import json
+"$CTL" --umbrella-root "$ROOT" --manifest "$MANIFEST" resume --plan "$(python3 - "$PLAN" <<'PY'
+import sys
 from pathlib import Path
-obj=json.loads(Path('tmp/umbrella04-ctl-status2.out').read_text())
+print(Path(sys.argv[1]).resolve().as_posix())
+PY
+)" --run-id "$RUN_ID" --approval-key "$APPROVAL_KEY" >"$TEST_TMP/umbrella04-ctl-resume.out"
+
+"$CTL" --umbrella-root "$ROOT" --manifest "$MANIFEST" run-status --approval-key "$APPROVAL_KEY" >"$TEST_TMP/umbrella04-ctl-status2.out"
+python3 - "$TEST_TMP" <<'PY'
+import json
+import sys
+from pathlib import Path
+tmp=Path(sys.argv[1])
+obj=json.loads((tmp/'umbrella04-ctl-status2.out').read_text())
 state=((obj.get('status') or {}).get('state'))
 assert state == 'SUCCEEDED', obj
 print('umbrellactl approval flow PASS')

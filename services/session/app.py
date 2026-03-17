@@ -1040,7 +1040,7 @@ class SessionEngine:
             action_id=action_id,
             inputs=inputs,
             metadata={
-                'timeoutSec': 20,
+                'timeoutSec': 120,
                 'role': str((self._agent_map(session).get(agent_id) or {}).get('role', '')).strip(),
                 **(invocation_metadata if isinstance(invocation_metadata, dict) else {}),
             },
@@ -1065,6 +1065,31 @@ class SessionEngine:
             'invocation': invocation,
             'pluginResult': plugin_result,
         }
+
+    def _conversation_reply_or_error(self, direct: dict, *, fallback_error: str) -> tuple[str, str | None]:
+        reply = str(direct.get('reply', '')).strip()
+        if reply:
+            return reply, None
+        plugin_result = direct.get('pluginResult') if isinstance(direct.get('pluginResult'), dict) else {}
+        error_bits: list[str] = []
+        provider_type = str(direct.get('providerType', '')).strip()
+        model_used = str(direct.get('modelUsed', '')).strip()
+        if provider_type:
+            error_bits.append(provider_type)
+        if model_used:
+            error_bits.append(model_used)
+        invocation = direct.get('invocation') if isinstance(direct.get('invocation'), dict) else {}
+        result_payload = invocation.get('result') if isinstance(invocation.get('result'), dict) else {}
+        result_error = result_payload.get('error') if isinstance(result_payload.get('error'), dict) else {}
+        plugin_error = plugin_result.get('error') if isinstance(plugin_result.get('error'), dict) else {}
+        message = (
+            str(plugin_error.get('message', '')).strip()
+            or str(result_error.get('message', '')).strip()
+            or fallback_error
+        )
+        if error_bits:
+            message = f"{message} ({' / '.join(error_bits)})"
+        return '', message
 
     def create_session(self, agent_id: str, title: str, metadata: dict | None = None) -> dict:
         agent_id = validate_identifier(agent_id, 'agentId')
@@ -1354,7 +1379,19 @@ class SessionEngine:
                     'fallbackUsed': bool(direct.get('fallbackUsed', False)),
                     'latencyMs': int(direct.get('latencyMs', 0) or 0),
                 }
-            reply = str(direct.get('reply', '')).strip() or 'I’m ready to help.'
+            reply, reply_error = self._conversation_reply_or_error(
+                direct,
+                fallback_error='The mayor conversation returned an empty reply',
+            )
+            if reply_error:
+                return {
+                    'ok': False,
+                    'target': target,
+                    'agentId': agent_id,
+                    'shopId': shop_id,
+                    'error': {'message': reply_error},
+                    'invocation': direct.get('invocation'),
+                }
             session = self.store.get(session_id) or session
             message = self._append_message_row(
                 session,
@@ -1406,7 +1443,19 @@ class SessionEngine:
         )
         if not direct.get('ok', False):
             return {'ok': False, 'target': target, 'agentId': agent_id, 'shopId': shop_id, 'error': {'message': 'conversation action failed'}, 'invocation': direct.get('invocation')}
-        reply = str(direct.get('reply', '')).strip() or 'Acknowledged.'
+        reply, reply_error = self._conversation_reply_or_error(
+            direct,
+            fallback_error='The conversation action returned an empty reply',
+        )
+        if reply_error:
+            return {
+                'ok': False,
+                'target': target,
+                'agentId': agent_id,
+                'shopId': shop_id,
+                'error': {'message': reply_error},
+                'invocation': direct.get('invocation'),
+            }
         session = self.store.get(session_id) or session
         message = self._append_message_row(
             session,

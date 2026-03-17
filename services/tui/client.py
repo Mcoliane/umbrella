@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 class TuiClient:
-    def __init__(self, *, root: Path, manifest_path: Path | None = None, timeout: float = 3.0):
+    def __init__(self, *, root: Path, manifest_path: Path | None = None, timeout: float = 5.0):
         self.root = root
         self.timeout = timeout
         self.platform_manifest_path = root / "control-plane" / "runtime" / "platform-manifest.json"
@@ -79,7 +79,14 @@ class TuiClient:
         except Exception:
             return ""
 
-    def _request(self, method: str, url: str, payload: dict | None = None, headers: dict | None = None):
+    def _request(
+        self,
+        method: str,
+        url: str,
+        payload: dict | None = None,
+        headers: dict | None = None,
+        timeout: float | None = None,
+    ):
         request_headers = {"Content-Type": "application/json"}
         if isinstance(headers, dict):
             request_headers.update(headers)
@@ -88,7 +95,7 @@ class TuiClient:
             data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(url, method=method, headers=request_headers, data=data)
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=(timeout if timeout is not None else self.timeout)) as resp:
                 body = resp.read().decode("utf-8")
                 return {"ok": True, "status": resp.status, "json": json.loads(body) if body else {}}
         except urllib.error.HTTPError as exc:
@@ -139,7 +146,7 @@ class TuiClient:
 
     def get_session(self, session_id: str) -> dict:
         base = self.service_url("session")
-        out = self._request("GET", f"{base}/v1/sessions/{urllib.parse.quote(session_id)}")
+        out = self._request("GET", f"{base}/v1/sessions/{urllib.parse.quote(session_id)}", timeout=15.0)
         return out["json"]
 
     def create_session(self, *, agent_id: str, title: str) -> dict:
@@ -148,6 +155,7 @@ class TuiClient:
             "POST",
             f"{base}/v1/sessions",
             {"agentId": agent_id, "title": title},
+            timeout=20.0,
         )["json"]
 
     def heartbeat_session(self, *, session_id: str, seen_by: str = "tui") -> dict:
@@ -156,6 +164,7 @@ class TuiClient:
             "POST",
             f"{base}/v1/sessions/{urllib.parse.quote(session_id)}/heartbeat",
             {"seenBy": seen_by},
+            timeout=10.0,
         )["json"]
 
     def append_message(self, *, session_id: str, role: str, content: str) -> dict:
@@ -212,6 +221,7 @@ class TuiClient:
                 "target": target,
                 "content": content,
             },
+            timeout=180.0,
         )["json"]
 
     def list_agent_packages(self) -> dict:
@@ -220,11 +230,11 @@ class TuiClient:
 
     def model_provider_status(self) -> dict:
         base = self.service_url("session")
-        return self._request("GET", f"{base}/v1/runtime/model-provider")["json"]
+        return self._request("GET", f"{base}/v1/runtime/model-provider", timeout=15.0)["json"]
 
     def test_model_provider(self) -> dict:
         base = self.service_url("session")
-        return self._request("POST", f"{base}/v1/runtime/model-provider/test", {})["json"]
+        return self._request("POST", f"{base}/v1/runtime/model-provider/test", {}, timeout=90.0)["json"]
 
     def save_model_provider(self, *, enabled: bool | None = None, provider: dict | None = None, api_key: str | None = None) -> dict:
         base = self.service_url("session")
@@ -235,7 +245,7 @@ class TuiClient:
             payload["provider"] = provider
         if api_key is not None:
             payload["apiKey"] = api_key
-        return self._request("POST", f"{base}/v1/runtime/model-provider", payload)["json"]
+        return self._request("POST", f"{base}/v1/runtime/model-provider", payload, timeout=20.0)["json"]
 
     def runtime_capabilities(self) -> dict:
         base = self.service_url("router")

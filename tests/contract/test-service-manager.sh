@@ -2,21 +2,25 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-mkdir -p "$ROOT/tmp"
+source "$ROOT/tests/contract/helpers/runtime-root.sh"
+TEST_TMP="$(contract_make_tmpdir "$ROOT" service-manager)"
+RUNTIME_ROOT="$(contract_make_runtime_root "$ROOT" service-manager-runtime)"
+export UMBRELLA_RUNTIME_ROOT="$RUNTIME_ROOT"
 MGR="$ROOT/scripts/control-plane/manage-service-mesh"
 RUNNER="$ROOT/scripts/control-plane/run-umbrella-control-plane"
 PLAN="control-plane/planner/plans/service-mesh-smoke.json"
-MANIFEST="$ROOT/tmp/service-manager.manifest.json"
-RUN_ID="run-service-manager-smoke-$(date +%s)"
+MANIFEST="$TEST_TMP/service-manager.manifest.json"
+RUN_ID="run-service-manager-smoke-$(date +%s)-$$"
 
 rm -f "$MANIFEST"
 
 cleanup() {
   "$MGR" shutdown --umbrella-root "$ROOT" --manifest "$MANIFEST" >/dev/null 2>&1 || true
+  rm -rf "$RUNTIME_ROOT" "$TEST_TMP"
 }
 trap cleanup EXIT
 
-"$MGR" bringup --umbrella-root "$ROOT" --manifest "$MANIFEST" >"$ROOT/tmp/umbrella04-smgr-bringup.out"
+"$MGR" bringup --umbrella-root "$ROOT" --manifest "$MANIFEST" >"$TEST_TMP/umbrella04-smgr-bringup.out"
 
 python3 - "$MANIFEST" <<'PY'
 import json, sys
@@ -34,7 +38,7 @@ for name,row in services.items():
 print('service manager manifest PASS')
 PY
 
-"$MGR" status --umbrella-root "$ROOT" --manifest "$MANIFEST" >"$ROOT/tmp/umbrella04-smgr-status1.out"
+"$MGR" status --umbrella-root "$ROOT" --manifest "$MANIFEST" >"$TEST_TMP/umbrella04-smgr-status1.out"
 
 ARGS="$(python3 - "$MANIFEST" <<'PY'
 import json, sys
@@ -55,7 +59,7 @@ PY
 )"
 
 # shellcheck disable=SC2086
-"$RUNNER" --umbrella-root "$ROOT" --plan "$PLAN" --run-id "$RUN_ID" $ARGS >"$ROOT/tmp/umbrella04-smgr-runner.out"
+"$RUNNER" --umbrella-root "$ROOT" --plan "$PLAN" --run-id "$RUN_ID" $ARGS >"$TEST_TMP/umbrella04-smgr-runner.out"
 
 ROOT="$ROOT" RUN_ID="$RUN_ID" python3 - <<'PY'
 import json, os
@@ -67,10 +71,10 @@ assert summary['state']=='SUCCEEDED', summary
 print('service manager runner integration PASS')
 PY
 
-"$MGR" shutdown --umbrella-root "$ROOT" --manifest "$MANIFEST" >"$ROOT/tmp/umbrella04-smgr-shutdown.out"
+"$MGR" shutdown --umbrella-root "$ROOT" --manifest "$MANIFEST" >"$TEST_TMP/umbrella04-smgr-shutdown.out"
 
 set +e
-"$MGR" status --umbrella-root "$ROOT" --manifest "$MANIFEST" >"$ROOT/tmp/umbrella04-smgr-status2.out"
+"$MGR" status --umbrella-root "$ROOT" --manifest "$MANIFEST" >"$TEST_TMP/umbrella04-smgr-status2.out"
 RC=$?
 set -e
 if [[ "$RC" -eq 0 ]]; then

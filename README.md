@@ -301,12 +301,12 @@ Current direction:
 - mayor conversations can answer directly or orchestrate worker shops and return a mayor summary
 - conversation uses the internal model broker when a real provider connection is configured
 - the recommended real-model path is a `zai` broker connection configured through `/model setup`
-- the fastest Z.ai path is `/model glm47`, which presets the coding endpoint and `glm-4.7`
+- the fastest Z.ai path is `/model glm5`, which presets the general endpoint and `glm-5-turbo`
 
 Current controls:
 - `Enter` send a message to the current target
 - `/` open slash-command mode
-- `/model`, `/model setup`, `/model glm47`, `/model test`, `/model use <model>`, `/model disable`
+- `/model`, `/model setup`, `/model glm5`, `/model test`, `/model use <model>`, `/model disable`
 - `Tab` cycle the current target
 - `s` choose a session
 - `n` create a new town

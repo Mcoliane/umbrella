@@ -3,14 +3,19 @@ from __future__ import annotations
 import argparse
 import curses
 import json
+import threading
 import textwrap
+import time
 from pathlib import Path
 
 from services.tui.client import TuiClient
 from services.tui.state import PlatformState
 
-ZAI_CODING_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
+ZAI_GLM5_CODING_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
+ZAI_GLM5_TURBO_MODEL = "glm-5-turbo"
+ZAI_GLM47_CODING_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
 ZAI_GLM47_MODEL = "glm-4.7"
+SPINNER_FRAMES = ("|", "/", "-", "\\")
 
 
 def _clip(value: str, width: int) -> str:
@@ -24,11 +29,89 @@ class UmbrellaTui:
         self.root = root
         self.client = TuiClient(root=root, manifest_path=manifest)
         self.state = PlatformState(selected_session_id=session_id)
+        self.initial_session_id = session_id.strip()
         self.session_cursor = 0
+        self._pending_lock = threading.Lock()
+        self._pending_result: dict | None = None
 
     def add_local_event(self, role: str, content: str):
         self.state.local_transcript.append({"role": role, "content": content})
         self.state.local_transcript = self.state.local_transcript[-30:]
+
+    def _pending_elapsed_sec(self) -> int:
+        if not self.state.pending_request or self.state.pending_started_at <= 0:
+            return 0
+        return max(0, int(time.time() - self.state.pending_started_at))
+
+    def _pending_spinner(self) -> str:
+        return SPINNER_FRAMES[self.state.pending_spinner_index % len(SPINNER_FRAMES)]
+
+    def _begin_pending(self, *, target: str, content: str) -> None:
+        self.state.pending_request = True
+        self.state.pending_target = target
+        self.state.pending_content = content
+        self.state.pending_started_at = time.time()
+        self.state.pending_spinner_index = 0
+        self.state.status = f"{target} is thinking..."
+
+    def _clear_pending(self) -> None:
+        self.state.pending_request = False
+        self.state.pending_target = ""
+        self.state.pending_content = ""
+        self.state.pending_started_at = 0.0
+        self.state.pending_spinner_index = 0
+
+    def _conversation_worker(self, *, session_id: str, target: str, content: str) -> None:
+        try:
+            heartbeat = self.client.heartbeat_session(session_id=session_id, seen_by="system")
+            if isinstance(heartbeat, dict) and heartbeat.get("error"):
+                error = heartbeat.get("error") if isinstance(heartbeat.get("error"), dict) else {}
+                message = str(error.get("message", "")).strip() or json.dumps(heartbeat, ensure_ascii=False)[:180]
+                outcome = {"ok": False, "stage": "heartbeat", "message": message}
+            else:
+                out = self.client.converse(session_id=session_id, target=target, content=content.strip())
+                outcome = {"ok": bool(out.get("ok")), "stage": "converse", "payload": out}
+        except Exception as exc:
+            outcome = {"ok": False, "stage": "exception", "message": str(exc)}
+        with self._pending_lock:
+            self._pending_result = outcome
+
+    def _drain_pending_result(self) -> None:
+        if not self.state.pending_request:
+            return
+        with self._pending_lock:
+            outcome = self._pending_result
+            if outcome is None:
+                self.state.pending_spinner_index += 1
+                return
+            self._pending_result = None
+        target = self.state.pending_target or self.state.active_target or "agent"
+        elapsed = self._pending_elapsed_sec()
+        self._clear_pending()
+        if outcome.get("ok"):
+            out = outcome.get("payload") if isinstance(outcome.get("payload"), dict) else {}
+            self.state.active_target = str(out.get("target", target)).strip() or target
+            self.refresh_session()
+            self.state.status = f"Talked to {self.state.active_target} in {elapsed}s"
+            reply = str(out.get("reply", "")).strip()
+            if reply and not any(str(msg.get("content", "")).strip() == reply for msg in self.state.local_transcript[-2:]):
+                self.add_local_event("system", f"{self.state.active_target} replied in {elapsed}s.")
+            return
+        if outcome.get("stage") == "heartbeat":
+            message = str(outcome.get("message", "")).strip() or "heartbeat failed"
+            self.add_local_event("error", f"Heartbeat failed: {message}")
+            self.state.status = f"Heartbeat failed: {message[:70]}"
+            return
+        if outcome.get("stage") == "converse":
+            out = outcome.get("payload") if isinstance(outcome.get("payload"), dict) else {}
+            error = out.get("error") if isinstance(out.get("error"), dict) else {}
+            message = str(error.get("message", "")).strip() or json.dumps(out, ensure_ascii=False)[:180]
+            self.add_local_event("error", f"Conversation failed: {message}")
+            self.state.status = f"Conversation failed: {message[:70]}"
+            return
+        message = str(outcome.get("message", "")).strip() or "conversation failed"
+        self.add_local_event("error", f"Conversation failed: {message}")
+        self.state.status = f"Conversation failed: {message[:70]}"
 
     def refresh_home(self):
         self.state.home = self.client.home_snapshot()
@@ -36,8 +119,12 @@ class UmbrellaTui:
         if sessions:
             session_ids = [str(row.get("sessionId", "")) for row in sessions]
             if self.state.selected_session_id not in session_ids:
-                self.session_cursor = 0
-                self.state.selected_session_id = session_ids[0]
+                if self.initial_session_id and self.initial_session_id in session_ids:
+                    self.session_cursor = max(0, session_ids.index(self.initial_session_id))
+                    self.state.selected_session_id = self.initial_session_id
+                else:
+                    self.session_cursor = 0
+                    self.state.selected_session_id = ""
             else:
                 self.session_cursor = max(0, session_ids.index(self.state.selected_session_id))
         else:
@@ -144,21 +231,48 @@ class UmbrellaTui:
         if normalized == "zai":
             return {
                 "type": "zai",
-                "baseUrl": str(provider_meta.get("baseUrl", "")).strip() or ZAI_CODING_BASE_URL,
-                "defaultModel": str(provider_meta.get("defaultModel", "")).strip() or ZAI_GLM47_MODEL,
-                "timeoutSec": int(provider_meta.get("timeoutSec", 20) or 20),
+                "baseUrl": str(provider_meta.get("baseUrl", "")).strip() or ZAI_GLM5_CODING_BASE_URL,
+                "defaultModel": str(provider_meta.get("defaultModel", "")).strip() or ZAI_GLM5_TURBO_MODEL,
+                "timeoutSec": int(provider_meta.get("timeoutSec", 120) or 120),
             }
         return {
             "type": normalized or str(provider_meta.get("type", "openai-compatible")).strip() or "openai-compatible",
             "baseUrl": str(provider_meta.get("baseUrl", "")).strip(),
             "defaultModel": str(provider_meta.get("defaultModel", "")).strip(),
-            "timeoutSec": int(provider_meta.get("timeoutSec", 20) or 20),
+            "timeoutSec": int(provider_meta.get("timeoutSec", 120) or 120),
         }
+
+    def save_glm5_preset(self, screen):
+        current = self.state.home.get("modelProvider") if isinstance(self.state.home.get("modelProvider"), dict) else {}
+        provider = self._recommended_provider_defaults("zai", current)
+        api_key = self.prompt(screen, "Z.ai API key (blank keeps existing)", default="", secret=True)
+        if api_key is None:
+            return
+        out = self.client.save_model_provider(
+            enabled=True,
+            provider=provider,
+            api_key=None if not str(api_key).strip() else str(api_key).strip(),
+        )
+        self.refresh_home()
+        if out.get("saved"):
+            self.add_local_event(
+                "system",
+                f'Saved Z.ai preset {provider["defaultModel"]} at {provider["baseUrl"]}. Run /model test next.',
+            )
+            self.state.status = "glm-5-turbo preset saved"
+            return
+        self.add_local_event("error", f"GLM-5-Turbo preset failed: {json.dumps(out, ensure_ascii=False)[:180]}")
+        self.state.status = "glm-5-turbo preset failed"
 
     def save_glm47_preset(self, screen):
         current = self.state.home.get("modelProvider") if isinstance(self.state.home.get("modelProvider"), dict) else {}
-        provider = self._recommended_provider_defaults("zai", current)
-        api_key = self.prompt(screen, "Z.ai API key (blank keeps existing)", default="")
+        provider = {
+            "type": "zai",
+            "baseUrl": ZAI_GLM47_CODING_BASE_URL,
+            "defaultModel": ZAI_GLM47_MODEL,
+            "timeoutSec": int(((current.get("provider") or {}).get("timeoutSec", 120)) or 120),
+        }
+        api_key = self.prompt(screen, "Z.ai API key (blank keeps existing)", default="", secret=True)
         if api_key is None:
             return
         out = self.client.save_model_provider(
@@ -203,7 +317,7 @@ class UmbrellaTui:
         timeout_raw = self.prompt(screen, "Timeout seconds", default=str(recommended.get("timeoutSec", 20) or 20))
         if timeout_raw is None:
             return
-        api_key = self.prompt(screen, "API key (blank keeps existing)", default="")
+        api_key = self.prompt(screen, "API key (blank keeps existing)", default="", secret=True)
         if api_key is None:
             return
         try:
@@ -240,9 +354,18 @@ class UmbrellaTui:
         self.add_local_event("error", f'Model test failed: {result.get("message","not configured")}')
         self.state.status = "Model test failed"
 
-    def prompt(self, screen, label: str, default: str = "") -> str | None:
-        curses.echo()
+    def prompt(self, screen, label: str, default: str = "", secret: bool = False) -> str | None:
+        previous_cursor = None
+        if not secret:
+            curses.echo()
+        else:
+            curses.noecho()
         try:
+            try:
+                previous_cursor = curses.curs_set(1)
+            except curses.error:
+                previous_cursor = None
+            screen.timeout(-1)
             height, width = screen.getmaxyx()
             prompt = label
             if default:
@@ -259,6 +382,12 @@ class UmbrellaTui:
         except KeyboardInterrupt:
             return None
         finally:
+            screen.timeout(100)
+            if previous_cursor is not None:
+                try:
+                    curses.curs_set(previous_cursor)
+                except curses.error:
+                    pass
             curses.noecho()
 
     def choose_session(self, screen):
@@ -309,6 +438,9 @@ class UmbrellaTui:
         self.state.status = f"Target: {self.state.active_target}"
 
     def talk(self, screen, content_override: str = "", target_override: str = ""):
+        if self.state.pending_request:
+            self.state.status = f"{self.state.pending_target or 'Agent'} is still working..."
+            return
         if not self.state.selected_session_id:
             self.state.status = "Open a town first"
             return
@@ -318,28 +450,13 @@ class UmbrellaTui:
             content = self.prompt(screen, f"Message to {target}", default="") or ""
         if not content.strip():
             return
-        heartbeat = self.client.heartbeat_session(session_id=self.state.selected_session_id, seen_by="system")
-        if isinstance(heartbeat, dict) and heartbeat.get("error"):
-            error = heartbeat.get("error") if isinstance(heartbeat.get("error"), dict) else {}
-            message = str(error.get("message", "")).strip() or json.dumps(heartbeat, ensure_ascii=False)[:180]
-            self.add_local_event("error", f"Heartbeat failed: {message}")
-            self.state.status = "Heartbeat failed"
-            return
-        out = self.client.converse(session_id=self.state.selected_session_id, target=target, content=content.strip())
-        if out.get("ok"):
-            self.state.active_target = str(out.get("target", target)).strip() or target
-            self.refresh_session()
-            reply = str(out.get("reply", "")).strip()
-            self.state.status = f"Talked to {self.state.active_target}"
-            if reply and not any(str(msg.get("content", "")).strip() == reply for msg in self.state.local_transcript[-2:]):
-                self.add_local_event("system", f"{self.state.active_target} replied.")
-            return
-        error = out.get("error") if isinstance(out, dict) and isinstance(out.get("error"), dict) else {}
-        message = str(error.get("message", "")).strip()
-        if not message:
-            message = json.dumps(out, ensure_ascii=False)[:180]
-        self.add_local_event("error", f"Conversation failed: {message}")
-        self.state.status = f"Conversation failed: {message[:80]}"
+        self._begin_pending(target=target, content=content.strip())
+        worker = threading.Thread(
+            target=self._conversation_worker,
+            kwargs={"session_id": self.state.selected_session_id, "target": target, "content": content.strip()},
+            daemon=True,
+        )
+        worker.start()
 
     def handle_command(self, screen, raw: str):
         command = str(raw or "").strip()
@@ -354,7 +471,7 @@ class UmbrellaTui:
         if name in {"help", "h", "?"}:
             self.add_local_event(
                 "system",
-                "Commands: /help /status /new [title] /sessions /session <id|n> /agent <id> /shops /workers /model /model setup /model glm47 /model test /model use <model> /model disable /refresh /start [full|core] /stop /quit",
+                "Commands: /help /status /new [title] /sessions /session <id|n> /agent <id> /shops /workers /model /model setup /model glm47 /model glm5 /model test /model use <model> /model disable /refresh /start [full|core] /stop /quit",
             )
             self.state.status = "Help"
             return
@@ -415,8 +532,11 @@ class UmbrellaTui:
             if sub == "setup":
                 self.setup_model_provider(screen)
                 return
-            if sub in {"glm47", "glm-4.7"}:
+            if sub in {"glm47", "glm-4.7", "glm4.7", "glm-4_7"}:
                 self.save_glm47_preset(screen)
+                return
+            if sub in {"glm5", "glm-5", "glm-5-turbo"}:
+                self.save_glm5_preset(screen)
                 return
             if sub == "test":
                 self.test_model_provider()
@@ -439,7 +559,7 @@ class UmbrellaTui:
                         "type": str(provider_meta.get("type", "zai")).strip() or "zai",
                         "baseUrl": str(provider_meta.get("baseUrl", "")).strip(),
                         "defaultModel": str(args[1]).strip(),
-                        "timeoutSec": int(provider_meta.get("timeoutSec", 20) or 20),
+                        "timeoutSec": int(provider_meta.get("timeoutSec", 120) or 120),
                     }
                 )
                 self.refresh_home()
@@ -486,7 +606,10 @@ class UmbrellaTui:
     def draw_footer(self, screen):
         height, width = screen.getmaxyx()
         footer = "enter message | / command | tab target | s sessions | n new town | S/F5 full | c/F6 core | x/F7 stop | q quit"
-        line = f"{self.state.status} | {footer}"
+        status = self.state.status
+        if self.state.pending_request:
+            status = f'{self._pending_spinner()} {self.state.pending_target or "agent"} thinking {self._pending_elapsed_sec()}s'
+        line = f"{status} | {footer}"
         screen.attron(curses.A_REVERSE)
         screen.addstr(height - 1, 0, " " * max(1, width - 1))
         screen.addstr(height - 1, 0, _clip(line, width - 1))
@@ -519,6 +642,10 @@ class UmbrellaTui:
                 attr = curses.A_DIM
             for line in textwrap.wrap(f"{label}: {content}", max(12, width)):
                 rows.append((attr, line))
+        if self.state.pending_request:
+            pending = f'{self.state.pending_target or "agent"} is thinking {self._pending_spinner()} {self._pending_elapsed_sec()}s'
+            for line in textwrap.wrap(pending, max(12, width)):
+                rows.append((curses.A_DIM, line))
         return rows[-200:]
 
     def draw_transcript(self, screen):
@@ -537,7 +664,7 @@ class UmbrellaTui:
             screen.addstr(y, 2, _clip(line, transcript_w - 1), attr)
             y += 1
         if not visible:
-            screen.addstr(4, 2, "No transcript yet. Create or open a town and press Enter to speak.")
+            screen.addstr(4, 2, "No town selected. Press n to create a town or s to open one.")
 
     def draw_sidebar(self, screen):
         height, width = screen.getmaxyx()
@@ -566,6 +693,9 @@ class UmbrellaTui:
         provider_name = str(provider_meta.get("type", "")).strip() or "unset"
         screen.addstr(line, x, _clip(f"Model: {provider_name} / {model_name} ({configured})", sidebar_w))
         line += 2
+        if self.state.pending_request:
+            screen.addstr(line, x, _clip(f'Pending: {self.state.pending_target} {self._pending_spinner()} {self._pending_elapsed_sec()}s', sidebar_w))
+            line += 2
         screen.addstr(line, x, "Agents", curses.A_BOLD)
         line += 1
         for agent in (session.get("agents") or [])[: max(1, (height // 3) - 3)]:
@@ -599,18 +729,25 @@ class UmbrellaTui:
     def run(self, screen):
         curses.curs_set(0)
         screen.keypad(True)
+        screen.timeout(100)
         self.refresh_home()
         if self.state.selected_session_id:
             self.refresh_session()
         else:
-            self.add_local_event("system", "Welcome to Town Hall. Start the platform with /start full, then create a town with /new.")
+            self.add_local_event("system", "No town selected. Press n to create a town or s to open one.")
         while True:
+            self._drain_pending_result()
             screen.erase()
             self.draw_town(screen)
             screen.refresh()
             key = screen.getch()
+            if key == -1:
+                continue
             if key in (ord("q"), ord("Q")):
                 break
+            if self.state.pending_request:
+                self.state.status = f'{self.state.pending_target or "agent"} is still working...'
+                continue
             if key in (ord("S"), curses.KEY_F5):
                 self.start_platform("full")
                 continue
@@ -637,7 +774,7 @@ class UmbrellaTui:
                 self.talk(screen)
                 continue
             if key == ord("/"):
-                raw = self.prompt(screen, "Command", default="/help")
+                raw = self.prompt(screen, "Command", default="")
                 if raw is None:
                     continue
                 try:

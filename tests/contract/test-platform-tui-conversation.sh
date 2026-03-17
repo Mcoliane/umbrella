@@ -2,7 +2,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-mkdir -p "$ROOT/tmp"
+source "$ROOT/tests/contract/helpers/runtime-root.sh"
+TEST_TMP="$(contract_make_tmpdir "$ROOT" platform-tui-conversation)"
+RUNTIME_ROOT="$(contract_make_runtime_root "$ROOT" platform-tui-conversation-runtime)"
+export UMBRELLA_RUNTIME_ROOT="$RUNTIME_ROOT"
 
 free_port() {
   python3 - <<'PY'
@@ -23,19 +26,20 @@ PLUGIN_HOST_URL="http://127.0.0.1:$PLUGIN_HOST_PORT"
 EXEC_URL="http://127.0.0.1:$EXEC_PORT"
 SESSION_URL="http://127.0.0.1:$SESSION_PORT"
 
-python3 "$ROOT/services/policy/app.py" --host 127.0.0.1 --port "$POLICY_PORT" --umbrella-root "$ROOT" --catalog-url "$CATALOG_URL" >"$ROOT/tmp/umbrella04-tuiconv-policy.out" 2>"$ROOT/tmp/umbrella04-tuiconv-policy.err" &
+python3 "$ROOT/services/policy/app.py" --host 127.0.0.1 --port "$POLICY_PORT" --umbrella-root "$ROOT" --catalog-url "$CATALOG_URL" >"$TEST_TMP/umbrella04-tuiconv-policy.out" 2>"$TEST_TMP/umbrella04-tuiconv-policy.err" &
 P1=$!
-python3 "$ROOT/services/catalog/app.py" --host 127.0.0.1 --port "$CATALOG_PORT" --umbrella-root "$ROOT" --registry "$ROOT/tmp/platform-tui-conversation-catalog.json" >"$ROOT/tmp/umbrella04-tuiconv-catalog.out" 2>"$ROOT/tmp/umbrella04-tuiconv-catalog.err" &
+python3 "$ROOT/services/catalog/app.py" --host 127.0.0.1 --port "$CATALOG_PORT" --umbrella-root "$ROOT" --registry "$TEST_TMP/platform-tui-conversation-catalog.json" >"$TEST_TMP/umbrella04-tuiconv-catalog.out" 2>"$TEST_TMP/umbrella04-tuiconv-catalog.err" &
 P2=$!
-python3 "$ROOT/services/plugin_host/app.py" --host 127.0.0.1 --port "$PLUGIN_HOST_PORT" --umbrella-root "$ROOT" --catalog-url "$CATALOG_URL" >"$ROOT/tmp/umbrella04-tuiconv-plugin-host.out" 2>"$ROOT/tmp/umbrella04-tuiconv-plugin-host.err" &
+python3 "$ROOT/services/plugin_host/app.py" --host 127.0.0.1 --port "$PLUGIN_HOST_PORT" --umbrella-root "$ROOT" --catalog-url "$CATALOG_URL" >"$TEST_TMP/umbrella04-tuiconv-plugin-host.out" 2>"$TEST_TMP/umbrella04-tuiconv-plugin-host.err" &
 P3=$!
-python3 "$ROOT/services/execution/app.py" --host 127.0.0.1 --port "$EXEC_PORT" --umbrella-root "$ROOT" --policy-url "$POLICY_URL" --catalog-url "$CATALOG_URL" --plugin-host-url "$PLUGIN_HOST_URL" >"$ROOT/tmp/umbrella04-tuiconv-execution.out" 2>"$ROOT/tmp/umbrella04-tuiconv-execution.err" &
+python3 "$ROOT/services/execution/app.py" --host 127.0.0.1 --port "$EXEC_PORT" --umbrella-root "$ROOT" --policy-url "$POLICY_URL" --catalog-url "$CATALOG_URL" --plugin-host-url "$PLUGIN_HOST_URL" >"$TEST_TMP/umbrella04-tuiconv-execution.out" 2>"$TEST_TMP/umbrella04-tuiconv-execution.err" &
 P4=$!
-python3 "$ROOT/services/session/app.py" --host 127.0.0.1 --port "$SESSION_PORT" --umbrella-root "$ROOT" --catalog-url "$CATALOG_URL" --execution-url "$EXEC_URL" >"$ROOT/tmp/umbrella04-tuiconv-session.out" 2>"$ROOT/tmp/umbrella04-tuiconv-session.err" &
+python3 "$ROOT/services/session/app.py" --host 127.0.0.1 --port "$SESSION_PORT" --umbrella-root "$ROOT" --catalog-url "$CATALOG_URL" --execution-url "$EXEC_URL" >"$TEST_TMP/umbrella04-tuiconv-session.out" 2>"$TEST_TMP/umbrella04-tuiconv-session.err" &
 P5=$!
 
 cleanup() {
-  kill "$P1" "$P2" "$P3" "$P4" "$P5" >/dev/null 2>&1 || true
+  contract_kill_pids "$P1" "$P2" "$P3" "$P4" "$P5"
+  rm -rf "$RUNTIME_ROOT" "$TEST_TMP"
 }
 trap cleanup EXIT
 

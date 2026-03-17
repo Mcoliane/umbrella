@@ -2,21 +2,25 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-mkdir -p "$ROOT/tmp"
+source "$ROOT/tests/contract/helpers/runtime-root.sh"
+TEST_TMP="$(contract_make_tmpdir "$ROOT" bootstrap-register-agent)"
+RUNTIME_ROOT="$(contract_make_runtime_root "$ROOT" bootstrap-register-agent-runtime)"
+export UMBRELLA_RUNTIME_ROOT="$RUNTIME_ROOT"
 MGR="$ROOT/scripts/control-plane/manage-service-mesh"
 BOOTSTRAP="$ROOT/scripts/bootstrap/register-agent"
-MANIFEST="$ROOT/tmp/bootstrap-service-manifest.json"
-OUT="$ROOT/tmp/bootstrap-agent-config.json"
-AGENT_ID="bootstrap-agent-$(date +%s)"
+MANIFEST="$TEST_TMP/bootstrap-service-manifest.json"
+OUT="$TEST_TMP/bootstrap-agent-config.json"
+AGENT_ID="bootstrap-agent-$(date +%s)-$$"
 
 rm -f "$MANIFEST" "$OUT"
 
 cleanup() {
   "$MGR" shutdown --umbrella-root "$ROOT" --manifest "$MANIFEST" >/dev/null 2>&1 || true
+  rm -rf "$RUNTIME_ROOT" "$TEST_TMP"
 }
 trap cleanup EXIT
 
-"$MGR" bringup --umbrella-root "$ROOT" --manifest "$MANIFEST" >"$ROOT/tmp/umbrella04-bootstrap-bringup.out"
+"$MGR" bringup --umbrella-root "$ROOT" --manifest "$MANIFEST" >"$TEST_TMP/umbrella04-bootstrap-bringup.out"
 
 "$BOOTSTRAP" \
   --umbrella-root "$ROOT" \
@@ -25,7 +29,7 @@ trap cleanup EXIT
   --capability memory.write \
   --capability memory.read \
   --out "$OUT" \
-  >"$ROOT/tmp/umbrella04-bootstrap-register.out"
+  >"$TEST_TMP/umbrella04-bootstrap-register.out"
 
 python3 - "$OUT" "$AGENT_ID" <<'PY'
 import json, sys
@@ -68,6 +72,6 @@ assert out.get('allowed') is True and out.get('ok') is True, out
 print('bootstrap policy authorization PASS')
 PY
 
-"$MGR" shutdown --umbrella-root "$ROOT" --manifest "$MANIFEST" >"$ROOT/tmp/umbrella04-bootstrap-shutdown.out"
+"$MGR" shutdown --umbrella-root "$ROOT" --manifest "$MANIFEST" >"$TEST_TMP/umbrella04-bootstrap-shutdown.out"
 
 echo "umbrella0.4 bootstrap register-agent contract PASS"

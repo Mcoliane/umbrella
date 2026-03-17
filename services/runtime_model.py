@@ -8,6 +8,13 @@ import urllib.request
 from pathlib import Path
 
 
+def _runtime_root(root: Path) -> Path:
+    override = os.environ.get("UMBRELLA_RUNTIME_ROOT", "").strip()
+    if override:
+        return Path(override).resolve()
+    return Path(root).resolve()
+
+
 def _load_json(path: Path, default):
     if not path.exists():
         return default
@@ -23,27 +30,27 @@ def _write_json(path: Path, payload: dict) -> None:
 
 
 def model_provider_path(root: Path) -> Path:
-    return root / "control-plane" / "runtime" / "model-provider.json"
+    return _runtime_root(root) / "control-plane" / "runtime" / "model-provider.json"
 
 
 def model_provider_secrets_path(root: Path) -> Path:
-    return root / "control-plane" / "runtime" / "model-provider.secrets.json"
+    return _runtime_root(root) / "control-plane" / "runtime" / "model-provider.secrets.json"
 
 
 def model_broker_path(root: Path) -> Path:
-    return root / "control-plane" / "runtime" / "model-broker.json"
+    return _runtime_root(root) / "control-plane" / "runtime" / "model-broker.json"
 
 
 def model_broker_secrets_path(root: Path) -> Path:
-    return root / "control-plane" / "runtime" / "model-broker.secrets.json"
+    return _runtime_root(root) / "control-plane" / "runtime" / "model-broker.secrets.json"
 
 
 def platform_manifest_path(root: Path) -> Path:
-    return root / "control-plane" / "runtime" / "platform-manifest.json"
+    return _runtime_root(root) / "control-plane" / "runtime" / "platform-manifest.json"
 
 
 def platform_token_path(root: Path) -> Path:
-    return root / "control-plane" / "runtime" / "platform-token.txt"
+    return _runtime_root(root) / "control-plane" / "runtime" / "platform-token.txt"
 
 
 def platform_mesh_token(root: Path) -> str:
@@ -80,7 +87,7 @@ def _normalize_legacy_provider(config: dict, secrets: dict, root: Path) -> dict:
             "type": str(provider.get("type", "")).strip() or "zai",
             "baseUrl": str(provider.get("baseUrl", "")).strip(),
             "defaultModel": str(provider.get("defaultModel", "")).strip(),
-            "timeoutSec": int(provider.get("timeoutSec", 20) or 20),
+            "timeoutSec": int(provider.get("timeoutSec", 120) or 120),
         },
         "agentDefaults": agent_defaults,
         "secrets": {
@@ -125,7 +132,7 @@ def _default_broker_config() -> dict:
                 "enabled": False,
                 "baseUrl": "",
                 "defaultModel": "",
-                "timeoutSec": 20,
+                "timeoutSec": 120,
             }
         },
         "routing": {
@@ -178,7 +185,7 @@ def _normalize_broker(config: dict, secrets: dict, root: Path) -> dict:
             "enabled": bool(row.get("enabled", False)),
             "baseUrl": str(row.get("baseUrl", "")).strip(),
             "defaultModel": str(row.get("defaultModel", "")).strip(),
-            "timeoutSec": int(row.get("timeoutSec", 20) or 20),
+            "timeoutSec": int(row.get("timeoutSec", 120) or 120),
         }
     if not normalized_connections:
         normalized_connections = dict(base["connections"])
@@ -238,7 +245,7 @@ def _legacy_to_broker(provider: dict) -> dict:
             "enabled": bool(provider.get("enabled", False)),
             "baseUrl": str(provider_meta.get("baseUrl", "")).strip(),
             "defaultModel": str(provider_meta.get("defaultModel", "")).strip(),
-            "timeoutSec": int(provider_meta.get("timeoutSec", 20) or 20),
+            "timeoutSec": int(provider_meta.get("timeoutSec", 120) or 120),
         }
     }
     normalized["routing"]["packageDefaults"] = dict(provider.get("agentDefaults") if isinstance(provider.get("agentDefaults"), dict) else {})
@@ -321,7 +328,7 @@ def load_model_provider(root: Path) -> dict:
             "type": str(provider_meta.get("type", provider_id)).strip() or provider_id,
             "baseUrl": str(connection.get("baseUrl", "")).strip(),
             "defaultModel": str(connection.get("defaultModel", "")).strip(),
-            "timeoutSec": int(connection.get("timeoutSec", 20) or 20),
+            "timeoutSec": int(connection.get("timeoutSec", 120) or 120),
         },
         "agentDefaults": dict((broker.get("routing") or {}).get("packageDefaults", {})),
         "secrets": {
@@ -365,7 +372,7 @@ def save_model_provider(root: Path, *, config: dict | None = None, secrets: dict
         "enabled": bool(normalized_provider.get("enabled", False)),
         "baseUrl": str(provider_meta.get("baseUrl", "")).strip(),
         "defaultModel": str(provider_meta.get("defaultModel", "")).strip(),
-        "timeoutSec": int(provider_meta.get("timeoutSec", 20) or 20),
+        "timeoutSec": int(provider_meta.get("timeoutSec", 120) or 120),
     }
     current["connections"] = connections
     secret_connections = current.get("secrets", {}).get("connections", {}) if isinstance(current.get("secrets", {}).get("connections", {}), dict) else {}
@@ -431,7 +438,7 @@ def test_model_provider(provider: dict, *, timeout_sec: int | None = None) -> di
     if not provider_enabled(provider):
         return {"ok": False, "configured": False, "message": "model provider is not configured"}
     provider_meta = provider.get("provider") if isinstance(provider.get("provider"), dict) else {}
-    timeout = int(timeout_sec or provider_meta.get("timeoutSec", 20) or 20)
+    timeout = int(timeout_sec or provider_meta.get("timeoutSec", 120) or 120)
     body = {
         "model": str(provider_meta.get("defaultModel", "")).strip(),
         "messages": [
@@ -494,27 +501,6 @@ def discover_broker_url(root: Path, broker: dict | None = None) -> str:
     services = manifest.get("services") if isinstance(manifest.get("services"), dict) else {}
     row = services.get("model-broker")
     manifest_url = str(row.get("url", "")).strip() if isinstance(row, dict) else ""
-
-    def healthy(base_url: str) -> bool:
-        candidate = str(base_url or "").strip().rstrip("/")
-        if not candidate:
-            return False
-        req = urllib.request.Request(
-            candidate + "/v1/model-broker/health",
-            headers=broker_headers(root),
-            method="GET",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=1.5) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-            return payload.get("status") == "ok"
-        except Exception:
-            return False
-
-    if configured and healthy(configured):
-        return configured.rstrip("/")
-    if manifest_url and healthy(manifest_url):
-        return manifest_url.rstrip("/")
     if configured:
         return configured.rstrip("/")
     if manifest_url:
@@ -562,7 +548,7 @@ def env_provider_fallback() -> dict:
             "type": os.environ.get("UMBRELLA_CHAT_PROVIDER", "openai-compatible").strip() or "openai-compatible",
             "baseUrl": base_url,
             "defaultModel": model,
-            "timeoutSec": int((os.environ.get("UMBRELLA_CHAT_TIMEOUT_SEC", "20").strip() or "20")),
+            "timeoutSec": int((os.environ.get("UMBRELLA_CHAT_TIMEOUT_SEC", "120").strip() or "120")),
         },
         "agentDefaults": {},
         "secrets": {"apiKey": os.environ.get("UMBRELLA_CHAT_API_KEY", "").strip()},

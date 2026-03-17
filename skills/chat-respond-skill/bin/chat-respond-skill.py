@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from services.runtime_model import call_model_broker, load_model_broker
+from services.runtime_model import broker_enabled, call_model_broker, load_model_broker
 
 
 def _last_user_facts(history: list[dict]) -> str:
@@ -161,10 +161,44 @@ def _provider_response(inputs: dict) -> dict | None:
         "maxTokens": inputs.get("maxTokens"),
     }
     try:
-        response = call_model_broker(ROOT, "/v1/chat/respond", broker_request, timeout_sec=20.0)
-    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, json.JSONDecodeError):
+        response = call_model_broker(ROOT, "/v1/chat/respond", broker_request, timeout_sec=120.0)
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, json.JSONDecodeError) as exc:
+        if broker_enabled(broker):
+            return {
+                "ok": True,
+                "mode": "direct",
+                "reply": f"The configured model backend is unavailable right now ({exc}). Run /model test or /model glm5.",
+                "providerUsed": False,
+                "modelUsed": "",
+                "fallbackUsed": False,
+                "providerError": True,
+            }
         return None
-    if not isinstance(response, dict) or not response.get("ok"):
+    if not isinstance(response, dict):
+        if broker_enabled(broker):
+            return {
+                "ok": True,
+                "mode": "direct",
+                "reply": "The configured model backend returned an invalid response. Run /model test or /model glm5.",
+                "providerUsed": False,
+                "modelUsed": "",
+                "fallbackUsed": False,
+                "providerError": True,
+            }
+        return None
+    if not response.get("ok"):
+        if broker_enabled(broker):
+            error = response.get("error") if isinstance(response.get("error"), dict) else {}
+            message = str(error.get("message", "")).strip() or "provider request failed"
+            return {
+                "ok": True,
+                "mode": "direct",
+                "reply": f"The configured model backend is unavailable right now ({message}). Run /model test or /model glm5.",
+                "providerUsed": False,
+                "modelUsed": "",
+                "fallbackUsed": False,
+                "providerError": True,
+            }
         return None
     return response
 

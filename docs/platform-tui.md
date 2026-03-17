@@ -148,7 +148,7 @@ Primary interaction:
 - `Tab` to cycle targets
 - `/model` to inspect broker-backed model status
 - `/model setup` to configure the default broker connection
-- `/model glm47` to apply the recommended Z.ai `glm-4.7` coding preset
+- `/model glm5` to apply the recommended Z.ai `glm-5-turbo` general-chat preset
 - `/model test` to test the configured backend
 - the preferred live provider path is `zai`
 

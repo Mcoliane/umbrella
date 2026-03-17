@@ -153,7 +153,7 @@ class BrokerEngine:
             "enabled": bool(connection.get("enabled", False)),
             "baseUrl": str(connection.get("baseUrl", "")).strip(),
             "defaultModel": str(connection.get("defaultModel", "")).strip(),
-            "timeoutSec": int(connection.get("timeoutSec", 20) or 20),
+            "timeoutSec": int(connection.get("timeoutSec", 120) or 120),
             "secrets": {
                 "apiKeyPresent": bool(str(secret.get("apiKey", "")).strip()),
                 "apiKeyMasked": mask_secret(str(secret.get("apiKey", "")).strip()),
@@ -241,7 +241,7 @@ class BrokerEngine:
             "enabled": bool(current.get("enabled", False) if enabled is None else enabled),
             "baseUrl": str(current.get("baseUrl", "") if base_url is None else base_url).strip(),
             "defaultModel": str(current.get("defaultModel", "") if default_model is None else default_model).strip(),
-            "timeoutSec": int(current.get("timeoutSec", 20) if timeout_sec is None else timeout_sec or 20),
+            "timeoutSec": int(current.get("timeoutSec", 120) if timeout_sec is None else timeout_sec or 120),
         }
         broker["connections"] = connections
         routing = broker.get("routing") if isinstance(broker.get("routing"), dict) else {}
@@ -292,7 +292,7 @@ class BrokerEngine:
         model = str(connection.get("defaultModel", "")).strip()
         if not base_url or not model:
             return {"ok": False, "configured": False, "connectionId": cid, "message": "connection not configured"}
-        timeout_sec = float(connection.get("timeoutSec", 20) or 20)
+        timeout_sec = float(connection.get("timeoutSec", 120) or 120)
         try:
             provider_type = str(provider.get("type", "")).strip() or str(connection.get("providerId", "")).strip() or "zai"
             adapter = self._provider_adapter(provider_type)
@@ -345,7 +345,7 @@ class BrokerEngine:
                 payload = adapter.list_models(
                     base_url=str(connection.get("baseUrl", "")).strip(),
                     api_key=str(secret.get("apiKey", "")).strip(),
-                    timeout_sec=float(connection.get("timeoutSec", 20) or 20),
+                    timeout_sec=float(connection.get("timeoutSec", 120) or 120),
                 )
                 rows = payload.get("data") if isinstance(payload.get("data"), list) else []
                 models.extend(str(row.get("id", "")).strip() for row in rows if isinstance(row, dict) and str(row.get("id", "")).strip())
@@ -435,7 +435,7 @@ class BrokerEngine:
                 base_url=str(connection.get("baseUrl", "")).strip(),
                 api_key=str(secret.get("apiKey", "")).strip(),
                 payload=provider_payload,
-                timeout_sec=float(connection.get("timeoutSec", 20) or 20),
+                    timeout_sec=float(connection.get("timeoutSec", 120) or 120),
             )
         except urllib.error.HTTPError as exc:
             return {"ok": False, "error": {"message": f"HTTP {exc.code}"}}
@@ -454,6 +454,12 @@ class BrokerEngine:
         parsed["ok"] = True
         parsed["reply"] = str(parsed.get("reply", "")).strip()
         parsed["mode"] = str(parsed.get("mode", "direct")).strip() or "direct"
+        if not parsed["reply"] and parsed["mode"] != "delegate":
+            return {"ok": False, "error": {"message": "provider returned empty reply"}}
+        if parsed["mode"] == "delegate":
+            delegation_plan = parsed.get("delegationPlan")
+            if not isinstance(delegation_plan, list) or not delegation_plan:
+                return {"ok": False, "error": {"message": "provider requested delegation without a delegation plan"}}
         parsed["providerUsed"] = True
         parsed["fallbackUsed"] = False
         parsed["providerType"] = provider_type
@@ -505,7 +511,7 @@ def handler_factory(engine: BrokerEngine, token: str):
                         enabled=body.get("enabled") if isinstance(body.get("enabled"), bool) else None,
                         base_url=str(body.get("baseUrl", "")).strip() if "baseUrl" in body else None,
                         default_model=str(body.get("defaultModel", "")).strip() if "defaultModel" in body else None,
-                        timeout_sec=int(body.get("timeoutSec", 20) or 20) if "timeoutSec" in body else None,
+                        timeout_sec=int(body.get("timeoutSec", 120) or 120) if "timeoutSec" in body else None,
                         api_key=body.get("apiKey") if "apiKey" in body else None,
                         make_default=bool(body.get("makeDefault", False)),
                         package_defaults=body.get("packageDefaults") if isinstance(body.get("packageDefaults"), dict) else None,

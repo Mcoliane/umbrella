@@ -25,14 +25,14 @@ From Town Hall:
 
 - `/model` shows current provider status
 - `/model setup` writes provider config and API key
-- `/model glm47` applies the recommended Z.ai coding preset
+- `/model glm5` applies the recommended Z.ai general-chat preset
 - `/model test` sends a small test request
 - `/model use <model>` changes the default model
 - `/model disable` disables provider-backed conversation
 
 Fastest path for Z.ai:
 
-1. `/model glm47`
+1. `/model glm5`
 2. paste your Z.ai key
 3. `/model test`
 4. talk to `mayor`
@@ -45,12 +45,12 @@ Fastest path for Z.ai:
   "enabled": true,
   "provider": {
     "type": "zai",
-    "baseUrl": "https://api.z.ai/api/coding/paas/v4",
-    "defaultModel": "glm-4.7",
-    "timeoutSec": 20
+    "baseUrl": "https://api.z.ai/api/paas/v4",
+    "defaultModel": "glm-5-turbo",
+    "timeoutSec": 30
   },
   "agentDefaults": {
-    "umbrella.mayor.v1": { "model": "glm-4.7" },
+    "umbrella.mayor.v1": { "model": "glm-5-turbo" },
     "umbrella.originator.v1": { "model": "glm-4.5-air" }
   }
 }
@@ -83,8 +83,8 @@ Secrets:
   "connections": {
     "default": {
       "providerId": "zai",
-      "baseUrl": "https://api.z.ai/api/coding/paas/v4",
-      "defaultModel": "glm-4.7",
+      "baseUrl": "https://api.z.ai/api/paas/v4",
+      "defaultModel": "glm-5-turbo",
       "enabled": true
     }
   }

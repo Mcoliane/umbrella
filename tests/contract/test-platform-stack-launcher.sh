@@ -2,8 +2,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-MANIFEST="$ROOT/tmp/platform-stack-manifest.json"
-LIST_REPO_PIDS="$ROOT/tmp/platform-stack-repo-pids.py"
+source "$ROOT/tests/contract/helpers/runtime-root.sh"
+TEST_TMP="$(contract_make_tmpdir "$ROOT" platform-stack-launcher)"
+RUNTIME_ROOT="$(contract_make_runtime_root "$ROOT" platform-stack-launcher-runtime)"
+export UMBRELLA_RUNTIME_ROOT="$RUNTIME_ROOT"
+MANIFEST="$TEST_TMP/platform-stack-manifest.json"
+LIST_REPO_PIDS="$TEST_TMP/platform-stack-repo-pids.py"
 
 cat >"$LIST_REPO_PIDS" <<'PY'
 import subprocess
@@ -26,15 +30,14 @@ PY
 
 cleanup() {
   "$ROOT/scripts/control-plane/manage-platform-stack" shutdown --umbrella-root "$ROOT" --manifest "$MANIFEST" >/dev/null 2>&1 || true
-  rm -f "$MANIFEST"
-  rm -f "$LIST_REPO_PIDS"
+  rm -rf "$RUNTIME_ROOT" "$TEST_TMP"
 }
 trap cleanup EXIT
 
-"$ROOT/scripts/control-plane/manage-platform-stack" bringup --umbrella-root "$ROOT" --manifest "$MANIFEST" --profile full >/tmp/umbrella-platform-stack.out
-"$ROOT/scripts/control-plane/manage-platform-stack" status --umbrella-root "$ROOT" --manifest "$MANIFEST" >/tmp/umbrella-platform-stack-status.out
+"$ROOT/scripts/control-plane/manage-platform-stack" bringup --umbrella-root "$ROOT" --manifest "$MANIFEST" --profile full >"$TEST_TMP/umbrella-platform-stack.out"
+"$ROOT/scripts/control-plane/manage-platform-stack" status --umbrella-root "$ROOT" --manifest "$MANIFEST" >"$TEST_TMP/umbrella-platform-stack-status.out"
 
-python3 - "$MANIFEST" /tmp/umbrella-platform-stack-status.out <<'PY'
+python3 - "$MANIFEST" "$TEST_TMP/umbrella-platform-stack-status.out" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -55,7 +58,7 @@ PY
 
 echo "umbrella0.4 platform stack launcher PASS"
 
-"$ROOT/scripts/control-plane/manage-platform-stack" shutdown --umbrella-root "$ROOT" --manifest "$MANIFEST" >/tmp/umbrella-platform-stack-shutdown.out
+"$ROOT/scripts/control-plane/manage-platform-stack" shutdown --umbrella-root "$ROOT" --manifest "$MANIFEST" >"$TEST_TMP/umbrella-platform-stack-shutdown.out"
 
 python3 - "$ROOT" "$LIST_REPO_PIDS" <<'PY'
 import subprocess

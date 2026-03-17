@@ -1,12 +1,12 @@
 {
   "version": "umbrella.model-provider.v1",
-  "enabled": true,
+  "enabled": false,
   "provider": {
     "id": "default",
     "type": "zai",
-    "baseUrl": "https://api.z.ai/api/coding/paas/v4",
-    "defaultModel": "glm-4.7",
-    "timeoutSec": 20
+    "baseUrl": "",
+    "defaultModel": "",
+    "timeoutSec": 120
   },
   "agentDefaults": {
     "umbrella.mayor.v1": {

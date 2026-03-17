@@ -12,3 +12,8 @@ class PlatformState:
     home: dict = field(default_factory=dict)
     session: dict = field(default_factory=dict)
     local_transcript: list[dict] = field(default_factory=list)
+    pending_request: bool = False
+    pending_target: str = ""
+    pending_content: str = ""
+    pending_started_at: float = 0.0
+    pending_spinner_index: int = 0

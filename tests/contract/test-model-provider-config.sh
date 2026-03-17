@@ -2,7 +2,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-mkdir -p "$ROOT/tmp"
+source "$ROOT/tests/contract/helpers/runtime-root.sh"
+TEST_TMP="$(contract_make_tmpdir "$ROOT" model-provider-config)"
+RUNTIME_ROOT="$(contract_make_runtime_root "$ROOT" model-provider-config-runtime)"
+export UMBRELLA_RUNTIME_ROOT="$RUNTIME_ROOT"
 
 free_port() {
   python3 - <<'PY'
@@ -14,22 +17,16 @@ PY
 SESSION_PORT="${SESSION_PORT:-$(free_port)}"
 SESSION_URL="http://127.0.0.1:$SESSION_PORT"
 
-CONFIG_PATH="$ROOT/control-plane/runtime/model-provider.json"
-SECRETS_PATH="$ROOT/control-plane/runtime/model-provider.secrets.json"
-CONFIG_BAK="$ROOT/tmp/model-provider.json.bak"
-SECRETS_BAK="$ROOT/tmp/model-provider.secrets.json.bak"
-
-[[ -f "$CONFIG_PATH" ]] && cp "$CONFIG_PATH" "$CONFIG_BAK" || true
-[[ -f "$SECRETS_PATH" ]] && cp "$SECRETS_PATH" "$SECRETS_BAK" || true
+CONFIG_PATH="$RUNTIME_ROOT/control-plane/runtime/model-provider.json"
+SECRETS_PATH="$RUNTIME_ROOT/control-plane/runtime/model-provider.secrets.json"
 
 cleanup() {
-  kill "$P1" >/dev/null 2>&1 || true
-  if [[ -f "$CONFIG_BAK" ]]; then cp "$CONFIG_BAK" "$CONFIG_PATH"; fi
-  if [[ -f "$SECRETS_BAK" ]]; then cp "$SECRETS_BAK" "$SECRETS_PATH"; else rm -f "$SECRETS_PATH"; fi
+  contract_kill_pids "$P1"
+  rm -rf "$RUNTIME_ROOT" "$TEST_TMP"
 }
 trap cleanup EXIT
 
-python3 "$ROOT/services/session/app.py" --host 127.0.0.1 --port "$SESSION_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-modelcfg-session.out" 2>"$ROOT/tmp/umbrella04-modelcfg-session.err" &
+python3 "$ROOT/services/session/app.py" --host 127.0.0.1 --port "$SESSION_PORT" --umbrella-root "$ROOT" >"$TEST_TMP/umbrella04-modelcfg-session.out" 2>"$TEST_TMP/umbrella04-modelcfg-session.err" &
 P1=$!
 
 wait_health() {

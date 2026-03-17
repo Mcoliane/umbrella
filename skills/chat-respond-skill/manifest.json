@@ -27,6 +27,7 @@
     "envAllowlist": [
       "UMBRELLA_MODEL_BROKER_URL",
       "UMBRELLA_MODEL_BROKER_TOKEN",
+      "UMBRELLA_RUNTIME_ROOT",
       "UMBRELLA_CHAT_BASE_URL",
       "UMBRELLA_CHAT_API_KEY",
       "UMBRELLA_CHAT_MODEL",
@@ -35,7 +36,7 @@
     ],
     "network": "http-outbound",
     "fs": "scratch-only",
-    "maxRuntimeSec": 20,
+    "maxRuntimeSec": 180,
     "maxOutputBytes": 4096,
     "maxInputBytes": 32768,
     "isolationProfile": "python-restricted"

@@ -20,6 +20,7 @@ shift || true
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 MANIFEST=""
 MESH_TOKEN=""
+RUNTIME_ROOT="${UMBRELLA_RUNTIME_ROOT:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -48,8 +49,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 ROOT="$(cd "$ROOT" && pwd)"
+if [[ -n "$RUNTIME_ROOT" ]]; then
+  RUNTIME_ROOT="$(cd "$RUNTIME_ROOT" && pwd)"
+else
+  RUNTIME_ROOT="$ROOT"
+fi
 if [[ -z "$MANIFEST" ]]; then
-  MANIFEST="$ROOT/control-plane/runtime/service-manifest.json"
+  MANIFEST="$RUNTIME_ROOT/control-plane/runtime/service-manifest.json"
 fi
 RUNTIME_DIR="$(dirname "$MANIFEST")"
 LOG_DIR="$RUNTIME_DIR/logs"
