@@ -167,7 +167,7 @@ def _provider_response(inputs: dict) -> dict | None:
             return {
                 "ok": True,
                 "mode": "direct",
-                "reply": f"The configured model backend is unavailable right now ({exc}). Run /model test or /model glm5.",
+                "reply": f"The configured model backend is unavailable right now ({exc}). Run /model test.",
                 "providerUsed": False,
                 "modelUsed": "",
                 "fallbackUsed": False,
@@ -179,7 +179,7 @@ def _provider_response(inputs: dict) -> dict | None:
             return {
                 "ok": True,
                 "mode": "direct",
-                "reply": "The configured model backend returned an invalid response. Run /model test or /model glm5.",
+                "reply": "The configured model backend returned an invalid response. Run /model test.",
                 "providerUsed": False,
                 "modelUsed": "",
                 "fallbackUsed": False,
@@ -193,7 +193,7 @@ def _provider_response(inputs: dict) -> dict | None:
             return {
                 "ok": True,
                 "mode": "direct",
-                "reply": f"The configured model backend is unavailable right now ({message}). Run /model test or /model glm5.",
+                "reply": f"The configured model backend is unavailable right now ({message}). Run /model test.",
                 "providerUsed": False,
                 "modelUsed": "",
                 "fallbackUsed": False,
