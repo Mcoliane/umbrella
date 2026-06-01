@@ -367,4 +367,12 @@ See [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) for the current list.
 
 ## License
 
-This project is licensed under the [Umbrella Testing License](LICENSE). Use is limited to express-approved users for testing Emcom Umbrella only.
+Copyright (C) 2026 Emcom Umbrella Contributors
+
+Umbrella is free software: you can redistribute it and/or modify it under the terms of the **GNU Affero General Public License, version 3** (AGPL-3.0) as published by the Free Software Foundation. See [LICENSE](LICENSE) for the full text.
+
+Umbrella is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+If you run a modified version of Umbrella on a server that users interact with over a network, AGPL-3.0 requires you to offer those users access to the corresponding source. See §13 of the license.
+
+"Emcom" and "Umbrella" names and marks are not licensed under AGPL-3.0; the AGPL covers the source code only.
