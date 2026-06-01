@@ -152,10 +152,10 @@ class RouterEngine:
         for r in rules:
             match_action = str(r.get('matchAction', '')).strip()
             if match_action and action == match_action:
-                return str(r.get('runtime', self.config.get('defaultRuntime', 'removed'))), f'matched_action:{match_action}'
+                return str(r.get('runtime', self.config.get('defaultRuntime', ''))), f'matched_action:{match_action}'
             prefix = str(r.get('matchStepPrefix', '')).strip()
             if prefix and (step_id.startswith(prefix) or action.startswith(prefix)):
-                return str(r.get('runtime', self.config.get('defaultRuntime', 'removed'))), f'matched_prefix:{prefix}'
+                return str(r.get('runtime', self.config.get('defaultRuntime', ''))), f'matched_prefix:{prefix}'
         return '', ''
 
     def _fallback_runtimes(self, requested_runtime: str) -> list[str]:
@@ -196,7 +196,7 @@ class RouterEngine:
                 candidate_runtime = action_info.get('preferredRuntime') or supported_runtimes[0]
                 candidate_reason = f'capability_family:{action_family or "unknown"}'
             if not candidate_runtime:
-                candidate_runtime = str(self.config.get('defaultRuntime', 'removed'))
+                candidate_runtime = str(self.config.get('defaultRuntime', ''))
                 candidate_reason = 'default_runtime'
 
         runtime_supported = True
@@ -295,7 +295,7 @@ def handler_factory(engine: RouterEngine, token: str):
 
             if path == '/v1/router/reroute-step':
                 step = body.get('step') or {}
-                from_runtime = str(body.get('fromRuntime', 'removed'))
+                from_runtime = str(body.get('fromRuntime', ''))
                 out = engine.reroute_step(from_runtime=from_runtime, step=step)
                 return json_response(self, 200, out)
 

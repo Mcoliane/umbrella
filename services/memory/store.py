@@ -332,56 +332,6 @@ class MemoryStore:
             next_cursor = rows[-1]['event_id'] if rows else cursor
             return {'events': rows, 'next_cursor': next_cursor}
 
-    def import_removed(self, namespace: str, canonical_path: Path, actor: str, request_id: str = '') -> dict:
-        with self._lock:
-            if not self.get_namespace(namespace):
-                raise ValueError('namespace does not exist')
-            data = json.loads(canonical_path.read_text(encoding='utf-8'))
-            imported = 0
-            updated = 0
-            restored = 0
-            for e in data.get('elements', []):
-                node_id = f"setup:{e.get('applyRelPath','')}"
-                payload = {
-                    'node_id': node_id,
-                    'namespace': namespace,
-                    'kind': 'artifact_ref',
-                    'title': str(e.get('applyRelPath', 'setup-element')),
-                    'content': {
-                        'lane': e.get('lane'),
-                        'class': e.get('class'),
-                        'mode': e.get('mode'),
-                        'sha256': e.get('sha256'),
-                        'sourceRel': e.get('sourceRel'),
-                    },
-                    'tags': ['removed', 'setup'],
-                    'source': 'import',
-                }
-                existing = self.get_node(node_id, include_deleted=True)
-                if not existing:
-                    self.create_node(payload, actor=actor, request_id=request_id)
-                    imported += 1
-                elif existing.get('deleted_at') is not None:
-                    out, problem = self.restore_node(node_id, payload, actor=actor, request_id=request_id)
-                    if problem:
-                        raise ValueError(f'import restore failed: {problem}')
-                    restored += 1
-                else:
-                    out, problem = self.update_node(node_id, payload, if_match=existing['etag'], actor=actor, request_id=request_id)
-                    if problem:
-                        raise ValueError(f'import update failed: {problem}')
-                    updated += 1
-            self.log_event(
-                namespace=namespace,
-                op='import',
-                node_id=None,
-                actor=actor,
-                request_id=request_id,
-                payload={'canonicalPath': str(canonical_path), 'imported': imported, 'updated': updated, 'restored': restored},
-            )
-            self.conn.commit()
-            return {'namespace': namespace, 'imported': imported, 'updated': updated, 'restored': restored}
-
     def promote_from_memory_core(self, req: dict, actor: str, request_id: str = '') -> dict:
         with self._lock:
             source = req.get('source') if isinstance(req.get('source'), dict) else {}

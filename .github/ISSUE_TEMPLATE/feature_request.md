@@ -14,13 +14,12 @@ assignees: ''
 
 <!-- Sketch the smallest change that solves the problem. -->
 
-## Runtime ownership
+## Dispatch ownership
 
-Which runtime should own this?
+Which path should own this?
 
 - [ ] `native` (platform / memory boundary)
 - [ ] `umbrella-agent-runtime` (catalog / session / shop / sub-agent)
-- [ ] `removed` (compatibility action family)
 - [ ] Cross-cutting (control plane / router / policy / approval)
 
 ## Alternatives considered
@@ -29,5 +28,4 @@ Which runtime should own this?
 
 - New action families:
 - New capabilities to declare in `control-plane/router/runtime-capabilities.json`:
-- Doc updates needed in `docs/runtime-matrix.md`:
 - Contract test additions:

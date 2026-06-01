@@ -15,7 +15,7 @@ assignees: ''
 - Umbrella version (from `VERSION`):
 - OS / shell:
 - Python version:
-- Runtime class involved (`native` / `umbrella-agent-runtime` / `removed`):
+- Dispatch path involved (`native` / `umbrella-agent-runtime`):
 - Services running (`umbrella-manage status` output):
 
 ## Steps to reproduce

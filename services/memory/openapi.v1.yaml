@@ -129,8 +129,3 @@ paths:
           schema: { type: integer }
       responses:
         '200': { description: Events }
-  /v1/import/removed:
-    post:
-      summary: Bulk import from canonical setup elements
-      responses:
-        '200': { description: Import report }

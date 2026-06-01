@@ -56,10 +56,6 @@ def main() -> int:
 
     cmd = args.reconcile_cmd
     resolved = shutil.which(cmd) if not Path(cmd).is_absolute() else cmd
-    if not resolved and cmd == 'memory-core-reconcile':
-        fallback = Path.home() / '.removed' / 'workspace' / 'bin' / 'memory-core-reconcile'
-        if fallback.exists():
-            resolved = str(fallback)
     if not resolved:
         print(
             json.dumps(

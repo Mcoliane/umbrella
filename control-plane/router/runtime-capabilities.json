@@ -83,54 +83,6 @@
           "actionFamily": "skill.*"
         }
       ]
-    },
-    "removed": {
-      "capabilities": [
-        "legacy.adapter.actions",
-        "removed.compatibility"
-      ],
-      "exactActions": [
-        "bootstrap.prepare",
-        "bootstrap.compile",
-        "mirror.verify",
-        "validation.canonical_entry_consistency",
-        "dist.fresh_install_sim",
-        "audit.uniqueness_vs_vanilla"
-      ],
-      "actionFamilies": [
-        "bootstrap.*",
-        "mirror.*",
-        "validation.*",
-        "dist.*",
-        "audit.*"
-      ],
-      "capabilityRules": [
-        {
-          "matchPattern": "bootstrap.*",
-          "capability": "removed.compatibility",
-          "actionFamily": "bootstrap.*"
-        },
-        {
-          "matchPattern": "mirror.*",
-          "capability": "removed.compatibility",
-          "actionFamily": "mirror.*"
-        },
-        {
-          "matchPattern": "validation.*",
-          "capability": "removed.compatibility",
-          "actionFamily": "validation.*"
-        },
-        {
-          "matchPattern": "dist.*",
-          "capability": "removed.compatibility",
-          "actionFamily": "dist.*"
-        },
-        {
-          "matchPattern": "audit.*",
-          "capability": "removed.compatibility",
-          "actionFamily": "audit.*"
-        }
-      ]
     }
   }
 }
