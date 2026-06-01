@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -567,6 +568,46 @@ class ExecutionEngine:
         action = str(step_spec.get('resolvedActionId') or step_spec.get('action', '')).strip()
         return self._invoke_plugin_action(run_id=run_id, step_id=step_id, action_id=action, step_spec=step_spec)
 
+    def submit_command(self, run_id: str, step_id: str, command: str, workdir: str, timeout_sec: int) -> dict:
+        workdir_path = (self.root / workdir).resolve() if not Path(workdir).is_absolute() else Path(workdir).resolve()
+        try:
+            proc = subprocess.run(
+                ['/bin/sh', '-c', command],
+                cwd=str(workdir_path),
+                capture_output=True,
+                text=True,
+                timeout=max(1, int(timeout_sec)),
+            )
+            timed_out = False
+        except subprocess.TimeoutExpired as ex:
+            return {
+                'ok': False,
+                'exitCode': 124,
+                'result': {'status': 'FAILED', 'kind': 'command', 'error': 'timeout', 'stdout': (ex.stdout or '')[-4000:] if isinstance(ex.stdout, str) else ''},
+                'stderr': (ex.stderr or '')[-4000:] if isinstance(ex.stderr, str) else '',
+                'command': ['sh', '-c', command],
+                'failureCategory': 'runtime',
+                'failureSource': 'execution',
+                'failureReason': 'timeout',
+            }
+        ok = proc.returncode == 0
+        out = {
+            'ok': ok,
+            'exitCode': proc.returncode,
+            'result': {
+                'status': 'SUCCESS' if ok else 'FAILED',
+                'kind': 'command',
+                'stdout': (proc.stdout or '')[-4000:],
+            },
+            'stderr': (proc.stderr or '')[-4000:],
+            'command': ['sh', '-c', command],
+        }
+        if not ok:
+            out['failureCategory'] = 'runtime'
+            out['failureSource'] = 'execution'
+            out['failureReason'] = 'command_failed'
+        return out
+
     def _runtime_capability_unsupported(self, runtime: dict, action_id: str) -> dict:
         requested = str(runtime.get('runtimeRequested', '')).strip()
         resolved = str(runtime.get('runtimeResolved', '')).strip()
@@ -708,6 +749,15 @@ def handler_factory(engine: ExecutionEngine, token: str):
                         run_id=str(body.get('runId', '')),
                         step_id=str(body.get('stepId', '')),
                         step_spec=body.get('stepSpec') or {},
+                    )
+                    return json_response(self, 200, out)
+                if path == '/v1/execution/submit-command':
+                    out = engine.submit_command(
+                        run_id=str(body.get('runId', '')),
+                        step_id=str(body.get('stepId', '')),
+                        command=str(body.get('command', '')),
+                        workdir=str(body.get('workdir', '.')),
+                        timeout_sec=int(body.get('timeoutSec', 300)),
                     )
                     return json_response(self, 200, out)
                 return json_response(self, 404, err('NOT_FOUND', 'route not found', req_id))

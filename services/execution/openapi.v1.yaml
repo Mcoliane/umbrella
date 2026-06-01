@@ -20,3 +20,8 @@ paths:
       summary: Execute a structured step spec through policy checks, native handlers, or the Umbrella agent runtime
       responses:
         '200': { description: Execution result }
+  /v1/execution/submit-command:
+    post:
+      summary: Execute a shell command for plan steps that specify a `command` field
+      responses:
+        '200': { description: Execution result }
