@@ -52,6 +52,7 @@ Boundary ownership:
 - `GET /v1/execution/health`
 - `GET /v1/execution/runtime-support`
 - `POST /v1/execution/submit-step-spec`
+- `POST /v1/execution/submit-command` (direct shell-step execution for plan steps with a `command` field)
 
 Failure responses are structured enough to distinguish:
 - `failureCategory` such as `policy`, `validation`, `dependency`, or `runtime`

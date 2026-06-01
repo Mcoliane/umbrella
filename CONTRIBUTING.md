@@ -52,7 +52,7 @@ See [docs/INSTALL.md](docs/INSTALL.md) and [docs/QUICKSTART.md](docs/QUICKSTART.
 
 - **`native`** runtime owns platform and memory-boundary actions.
 - **`umbrella-agent-runtime`** owns catalog skills, sessions, shops, sub-agents.
-- New action families should declare their runtime ownership in [`control-plane/router/runtime-capabilities.json`](control-plane/router/runtime-capabilities.json) and be reflected in [`docs/runtime-matrix.md`](docs/runtime-matrix.md).
+- New action families should declare their dispatch-path ownership in [`control-plane/router/runtime-capabilities.json`](control-plane/router/runtime-capabilities.json).
 
 ## Reporting bugs / requesting features
 
