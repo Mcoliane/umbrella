@@ -5,7 +5,6 @@ Thanks for your interest in Umbrella. This project is licensed under [AGPL-3.0](
 ## Ground rules
 
 - By submitting a contribution you agree it is licensed under AGPL-3.0.
-- Be civil; see [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 - Security-sensitive issues: do **not** open a public issue. See [SECURITY.md](SECURITY.md).
 
 ## Developer Certificate of Origin (DCO)
