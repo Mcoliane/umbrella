@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,23 +21,6 @@ def now_iso() -> str:
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).isoformat()
-
-
-def parse_payload(raw: str):
-    raw = (raw or '').strip()
-    if not raw:
-        return None
-    try:
-        return json.loads(raw)
-    except Exception:
-        pass
-    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
-    for ln in reversed(lines):
-        try:
-            return json.loads(ln)
-        except Exception:
-            continue
-    return None
 
 
 def json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict):
@@ -98,7 +80,6 @@ class ExecutionEngine:
         self.routing_config = json.loads(routing_path.read_text(encoding='utf-8')) if routing_path.exists() else {}
         self.capability_path = capability_path
         self.runtime_contract = RuntimeContract(capability_path)
-        self.adapter = self.root / 'scripts' / 'adapters' / 'removed-runtime-adapter'
         self.memory_core_url = memory_core_url.rstrip('/')
         self.memory_url = memory_url.rstrip('/')
         self.policy_url = policy_url.rstrip('/')
@@ -213,7 +194,7 @@ class ExecutionEngine:
             return 'plugin-host'
         if runtime_resolved == 'native':
             return 'native'
-        return 'removed-adapter'
+        return 'unsupported'
 
     def runtime_support_payload(self, action_id: str = '', requested_runtime: str = '') -> dict:
         info = self.runtime_contract.resolve_action(action_id)
@@ -261,8 +242,6 @@ class ExecutionEngine:
                 reason = 'catalog_action'
             elif runtime_resolved == 'native':
                 reason = 'native_action'
-            elif runtime_resolved == 'removed':
-                reason = 'legacy_runtime_adapter'
             else:
                 reason = 'unresolved_runtime'
 
@@ -271,8 +250,6 @@ class ExecutionEngine:
                 reason = 'catalog_action'
             elif runtime_resolved == 'native':
                 reason = 'native_action'
-            elif runtime_resolved == 'removed':
-                reason = 'legacy_runtime_adapter'
             else:
                 reason = 'requested_runtime'
 
@@ -590,45 +567,6 @@ class ExecutionEngine:
         action = str(step_spec.get('resolvedActionId') or step_spec.get('action', '')).strip()
         return self._invoke_plugin_action(run_id=run_id, step_id=step_id, action_id=action, step_spec=step_spec)
 
-    def _submit_removed_action(self, run_id: str, step_id: str, step_spec: dict) -> dict:
-        args = [
-            'submit_step_spec',
-            '--run-id',
-            run_id,
-            '--step-spec-json',
-            json.dumps(step_spec),
-        ]
-        if step_id:
-            args.extend(['--step-id', step_id])
-        return self._run(args)
-
-    def _run(self, args: list[str]) -> dict:
-        cmd = [str(self.adapter), '--umbrella-root', str(self.root)] + args
-        proc = subprocess.run(cmd, cwd=str(self.root), capture_output=True, text=True)
-        payload = parse_payload(proc.stdout)
-        out = {
-            'ok': proc.returncode == 0,
-            'exitCode': proc.returncode,
-            'result': payload if isinstance(payload, dict) else {'stdout': (proc.stdout or '')[-4000:]},
-            'stderr': (proc.stderr or '')[-4000:],
-            'command': cmd,
-        }
-        if not out['ok']:
-            result = out['result'] if isinstance(out.get('result'), dict) else {}
-            if bool(result.get('timedOut', False)) or int(out.get('exitCode', 1)) == 124:
-                out['failureCategory'] = 'runtime'
-                out['failureSource'] = 'adapter'
-                out['failureReason'] = 'timeout'
-            elif 'error' in result:
-                out['failureCategory'] = 'validation'
-                out['failureSource'] = 'adapter'
-                out['failureReason'] = 'execution_validation_failed'
-            else:
-                out['failureCategory'] = 'runtime'
-                out['failureSource'] = 'adapter'
-                out['failureReason'] = 'execution_runtime_failed'
-        return out
-
     def _runtime_capability_unsupported(self, runtime: dict, action_id: str) -> dict:
         requested = str(runtime.get('runtimeRequested', '')).strip()
         resolved = str(runtime.get('runtimeResolved', '')).strip()
@@ -728,36 +666,7 @@ class ExecutionEngine:
             return self._with_runtime_metadata(out or dependency_failure('execution', 'execution_validation_failed', f'unsupported native action: {action}', category='validation'), runtime)
         if runtime['runtimeResolved'] == 'umbrella-agent-runtime':
             return self._with_runtime_metadata(self._submit_umbrella_agent_runtime_action(run_id=run_id, step_id=step_id, step_spec=resolved_step_spec), runtime)
-        return self._with_runtime_metadata(self._submit_removed_action(run_id=run_id, step_id=step_id, step_spec=resolved_step_spec), runtime)
-
-    def submit_command(self, run_id: str, step_id: str, command: str, workdir: str, timeout_sec: int) -> dict:
-        return self._run(
-            [
-                'submit_step',
-                '--run-id',
-                run_id,
-                '--step-id',
-                step_id,
-                '--command',
-                command,
-                '--workdir',
-                workdir,
-                '--timeout-sec',
-                str(timeout_sec),
-            ]
-        )
-
-    def heartbeat(self, run_id: str, step_id: str) -> dict:
-        return self._run(['heartbeat', '--run-id', run_id, '--step-id', step_id])
-
-    def result(self, run_id: str, step_id: str) -> dict:
-        return self._run(['result', '--run-id', run_id, '--step-id', step_id])
-
-    def cancel(self, run_id: str, step_id: str) -> dict:
-        return self._run(['cancel', '--run-id', run_id, '--step-id', step_id])
-
-    def compensate(self, run_id: str, step_id: str, note: str) -> dict:
-        return self._run(['compensate', '--run-id', run_id, '--step-id', step_id, '--note', note])
+        return self._with_runtime_metadata(self._runtime_capability_unsupported(runtime, action), runtime)
 
 
 def handler_factory(engine: ExecutionEngine, token: str):
@@ -799,31 +708,6 @@ def handler_factory(engine: ExecutionEngine, token: str):
                         run_id=str(body.get('runId', '')),
                         step_id=str(body.get('stepId', '')),
                         step_spec=body.get('stepSpec') or {},
-                    )
-                    return json_response(self, 200, out)
-                if path == '/v1/execution/submit-command':
-                    out = engine.submit_command(
-                        run_id=str(body.get('runId', '')),
-                        step_id=str(body.get('stepId', '')),
-                        command=str(body.get('command', '')),
-                        workdir=str(body.get('workdir', '.')),
-                        timeout_sec=int(body.get('timeoutSec', 300)),
-                    )
-                    return json_response(self, 200, out)
-                if path == '/v1/execution/heartbeat':
-                    out = engine.heartbeat(run_id=str(body.get('runId', '')), step_id=str(body.get('stepId', '')))
-                    return json_response(self, 200, out)
-                if path == '/v1/execution/result':
-                    out = engine.result(run_id=str(body.get('runId', '')), step_id=str(body.get('stepId', '')))
-                    return json_response(self, 200, out)
-                if path == '/v1/execution/cancel':
-                    out = engine.cancel(run_id=str(body.get('runId', '')), step_id=str(body.get('stepId', '')))
-                    return json_response(self, 200, out)
-                if path == '/v1/execution/compensate':
-                    out = engine.compensate(
-                        run_id=str(body.get('runId', '')),
-                        step_id=str(body.get('stepId', '')),
-                        note=str(body.get('note', '')),
                     )
                     return json_response(self, 200, out)
                 return json_response(self, 404, err('NOT_FOUND', 'route not found', req_id))

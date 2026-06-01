@@ -17,27 +17,6 @@ paths:
         '200': { description: Runtime support decision }
   /v1/execution/submit-step-spec:
     post:
-      summary: Execute a structured step spec through policy checks, native handlers including memory boundary actions, the Umbrella agent runtime, or the Removed runtime adapter
+      summary: Execute a structured step spec through policy checks, native handlers, or the Umbrella agent runtime
       responses:
         '200': { description: Execution result }
-  /v1/execution/submit-command:
-    post:
-      summary: Execute a raw command through the runtime adapter
-      responses:
-        '200': { description: Execution result }
-  /v1/execution/heartbeat:
-    post:
-      responses:
-        '200': { description: Heartbeat result }
-  /v1/execution/result:
-    post:
-      responses:
-        '200': { description: Result retrieval }
-  /v1/execution/cancel:
-    post:
-      responses:
-        '200': { description: Cancel result }
-  /v1/execution/compensate:
-    post:
-      responses:
-        '200': { description: Compensation result }

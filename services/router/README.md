@@ -1,20 +1,18 @@
 # Umbrella Router Service
 
-HTTP service for runtime routing decisions.
+HTTP service for action routing decisions.
 
 When `--catalog-url` is configured, router will classify matching catalog actions as `umbrella-agent-runtime` before falling back to static prefix rules. `plugin-host` remains an internal executor used by the Umbrella-native runtime path.
 
-Legacy compatibility aliases such as `memory.get`, `memory.search`, and `memory.link` resolve to the corresponding catalog skills while preserving the original requested action id in routing metadata.
+Compatibility aliases such as `memory.get`, `memory.search`, and `memory.link` resolve to the corresponding catalog skills while preserving the original requested action id in routing metadata.
 
-Native platform ownership rules can also match exact actions, such as routing `memory.promote` and `memory.hydrate` to the `native` runtime instead of the Removed adapter.
+Native platform ownership rules match exact actions, such as routing `memory.promote` and `memory.hydrate` to the `native` dispatch path.
 
-Router now also consults a runtime capability contract in `control-plane/router/runtime-capabilities.json`. That contract is the source of truth for:
-- action-family ownership per runtime
+Router consults a capability contract in `control-plane/router/runtime-capabilities.json`. That contract is the source of truth for:
+- action-family ownership per dispatch path
 - compatibility aliases
-- supported runtimes for a resolved action
-- capability-aware reroute metadata
-
-This lets Umbrella stay runtime-agnostic without requiring `umbrella-agent-runtime` and `removed` to expose identical action families.
+- supported dispatch paths for a resolved action
+- capability metadata
 
 ## Run
 

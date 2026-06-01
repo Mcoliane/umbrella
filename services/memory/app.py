@@ -144,14 +144,6 @@ def handler_factory(store: MemoryStore, token: str, root: Path):
                 if path == '/v1/hydrations/payload':
                     out = store.hydration_payload_for_memory_core(body, actor=actor, request_id=req_id)
                     return json_response(self, 200, out)
-                if path == '/v1/import/removed':
-                    namespace = str(body.get('namespace', '')).strip()
-                    canonical_rel = str(body.get('canonical_path', 'umbrella/memory-core/canonical/removed-setup-elements.json'))
-                    canonical_path = (root / canonical_rel).resolve()
-                    if not canonical_path.exists():
-                        return json_response(self, 404, err('NOT_FOUND', 'canonical file not found', req_id))
-                    out = store.import_removed(namespace=namespace, canonical_path=canonical_path, actor=actor, request_id=req_id)
-                    return json_response(self, 200, out)
                 return json_response(self, 404, err('NOT_FOUND', 'route not found', req_id))
             except ValueError as ex:
                 return json_response(self, 400, err('VALIDATION_ERROR', str(ex), req_id))

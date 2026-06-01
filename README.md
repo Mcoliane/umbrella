@@ -1,69 +1,52 @@
-# Umbrella0.4
+# Umbrella 0.4
 
-Umbrella0.4 is a local control plane for agent runtimes.
+Umbrella is a local control plane for agent runtimes.
 
 It provides:
 - orchestration
 - policy and approval gates
 - lifecycle and terminal-state validation
 - hot-path and durable memory layers
-- runtime-aware routing and execution
+- capability-aware action dispatch
 - an Umbrella-native agent runtime for shops, sessions, skills, and sub-agents
-
-This repo is no longer just a thin Removed wrapper. It now supports multiple runtime classes and can run Umbrella-native agents under Umbrella’s own control plane.
 
 ## Status
 
 Current project state:
 - the control plane is real and usable
 - the Umbrella-native runtime is real and usable
-- Removed is still supported as an alternate runtime
-- the runtime model is capability-based, not parity-based
+- action dispatch is capability-based
 
-That means:
-- you can run your own agents under `umbrella-agent-runtime`
-- you do not need one-to-one Removed action parity to do that
-- some legacy Removed compatibility action families still belong to `removed`, and that is intentional
+You can run your own agents under `umbrella-agent-runtime` without rebuilding the governance, routing, and memory plumbing.
 
-## Runtime Model
+## Dispatch Model
 
-Umbrella currently manages three runtime classes:
+Umbrella dispatches actions along two paths, classified by the capability contract:
 
 `native`
 - first-party platform and memory-boundary actions
+- examples: `memory.promote`, `memory.hydrate`, `memoryWrite`, `memoryRead`, `memoryDelete`, `memoryList`
 
 `umbrella-agent-runtime`
-- Umbrella-native agent runtime
+- the Umbrella-native agent runtime
 - owns sessions, shops, sub-agents, catalog-managed skills, and plugin-host-backed execution
 - owns server-side conversation through `POST /v1/sessions/{id}/converse`
 - uses an internal `model-broker` service for model access
 - prefers `Z.ai` as the primary live model backend
-- keeps compatibility model config in `control-plane/runtime/model-provider.json`
-- stores broker routing and connections in `control-plane/runtime/model-broker.json`
+- model-provider config in `control-plane/runtime/model-provider.json`
+- broker routing and connections in `control-plane/runtime/model-broker.json`
 
-`removed`
-- supported alternate runtime
-- retains compatibility action families that Umbrella does not require every runtime to implement
-
-The control plane reasons about:
-- runtime identity
-- runtime capability families
-- action-family ownership
-- unsupported-capability behavior
-
-See [docs/runtime-matrix.md](docs/runtime-matrix.md) for the detailed runtime contract.
+The capability contract lives in [`control-plane/router/runtime-capabilities.json`](control-plane/router/runtime-capabilities.json) and is the source of truth for action-family ownership, compatibility aliases, and supported dispatch paths.
 
 ## What Umbrella Is For
 
 Umbrella is the layer that decides:
 - what is allowed to run
-- what runtime should execute it
+- which dispatch path should execute it
 - what approvals are required
 - how state transitions are validated
 - how run results are summarized
 - how short-term and long-term memory boundaries are enforced
-
-It is not tied to one runtime implementation.
 
 ## Architecture
 
@@ -85,19 +68,16 @@ Umbrella-native runtime services:
 
 High-level flow:
 1. a run or session action enters Umbrella
-2. router resolves runtime ownership and capability metadata
+2. router resolves dispatch path and capability metadata
 3. policy authorizes the action
-4. execution dispatches to:
-   - `native`
-   - `umbrella-agent-runtime`
-   - `removed`
-5. orchestrator/session persist runtime-aware results and summaries
+4. execution dispatches to either `native` or `umbrella-agent-runtime`
+5. orchestrator/session persist results and summaries
 
 ## Umbrella Agent Runtime
 
 `umbrella-agent-runtime` is the Umbrella-native runtime path.
 
-It currently includes:
+It includes:
 - catalog-managed skills and plugins
 - direct conversational skill routing through `skill.chat.respond`
 - plugin-host execution boundary
@@ -105,9 +85,9 @@ It currently includes:
 - shop-scoped action governance
 - turn orchestration with dependency graphs and retries
 - sub-agents and assignments
-- runtime capability aliases for migrated memory actions
+- compatibility aliases for migrated memory actions
 
-It is implemented primarily through:
+Implemented primarily through:
 - [services/catalog/app.py](services/catalog/app.py)
 - [services/plugin_host/app.py](services/plugin_host/app.py)
 - [services/session/app.py](services/session/app.py)
@@ -134,10 +114,9 @@ Sessions support:
 
 ## Agent Packages
 
-Agent packages are source-controlled runtime defaults for Umbrella-native agents.
+Agent packages are source-controlled defaults for Umbrella-native agents.
 
 They define:
-- runtime identity
 - role and title defaults
 - shop defaults
 - default enabled actions
@@ -148,12 +127,9 @@ Current built-in packages:
 - `umbrella.originator.v1`
 - `umbrella.programming-agent.v1`
 
-The civic packages now include `skill.chat.respond`, so a fresh town can answer directly before any worker shop exists.
+The civic packages include `skill.chat.respond`, so a fresh town can answer directly before any worker shop exists.
 
-These live in:
-- [control-plane/runtime/agent-packages.json](control-plane/runtime/agent-packages.json)
-
-The session service can use them to stamp out runtime-tuned agents and shops.
+They live in [`control-plane/runtime/agent-packages.json`](control-plane/runtime/agent-packages.json). The session service uses them to stamp out tuned agents and shops.
 
 ## Memory Model
 
@@ -167,11 +143,9 @@ Umbrella has two memory layers.
 - durable node/edge/event knowledge memory
 - used for explicit long-term structured knowledge
 
-Boundary actions:
+Boundary actions (owned by `native`):
 - `memory.promote`
 - `memory.hydrate`
-
-These are owned by `native`, not by Removed.
 
 Important operational note:
 - `umbrella-manage bringup` starts `memory-core`
@@ -181,7 +155,7 @@ See [docs/memory-boundary-contract.md](docs/memory-boundary-contract.md) for the
 
 ## What Runs Natively vs Where
 
-Examples owned by `native`:
+Owned by `native`:
 - `memoryWrite`
 - `memoryRead`
 - `memoryDelete`
@@ -189,22 +163,12 @@ Examples owned by `native`:
 - `memory.promote`
 - `memory.hydrate`
 
-Examples owned by `umbrella-agent-runtime`:
+Owned by `umbrella-agent-runtime`:
 - `skill.chat.respond`
 - `skill.memory.get`
 - `skill.memory.search`
 - `skill.memory.link`
 - session/shop/sub-agent actions
-
-Examples retained under `removed`:
-- `bootstrap.prepare`
-- `bootstrap.compile`
-- `mirror.verify`
-- `validation.canonical_entry_consistency`
-- `dist.fresh_install_sim`
-- `audit.uniqueness_vs_vanilla`
-
-This is not a bug. It is how runtime agnosticism works in this repo.
 
 ## Install
 
@@ -250,7 +214,7 @@ umbrella-manage shutdown
 
 ## Running Your Own Agents Under Umbrella
 
-Today, the cleanest path is:
+The cleanest path is:
 1. install or define skills in `skills/`
 2. let `catalog` discover them
 3. run them through `plugin-host`
@@ -264,8 +228,6 @@ For Umbrella-native agents, the important services are:
 - `execution`
 - `policy`
 - `router`
-
-If your goal is “my own agents in my own runtime under Umbrella,” the repo is already there architecturally.
 
 ## Key Commands
 
@@ -289,7 +251,7 @@ Quality:
 
 ## Platform TUI
 
-A working terminal UI now exists at:
+A working terminal UI exists at:
 - `python3 scripts/umbrella-tui`
 
 Current direction:
@@ -327,7 +289,7 @@ Current command set:
 - `/start [full|core]`
 - `/stop`
 
-This is still an early operator console, but it is now shaped around actual conversation with the town instead of a static dashboard. The build spec is in [docs/platform-tui.md](docs/platform-tui.md).
+The build spec is in [docs/platform-tui.md](docs/platform-tui.md).
 
 ## Main Docs
 
@@ -337,7 +299,6 @@ User/operator docs:
 - [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md)
 
 Architecture docs:
-- [docs/runtime-matrix.md](docs/runtime-matrix.md)
 - [docs/platform-tui.md](docs/platform-tui.md)
 - [docs/model-provider-setup.md](docs/model-provider-setup.md)
 - [services/model_broker/README.md](services/model_broker/README.md)

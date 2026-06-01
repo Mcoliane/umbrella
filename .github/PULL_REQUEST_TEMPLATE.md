@@ -4,7 +4,7 @@
 
 ## Scope
 
-- Runtime(s) touched: `native` / `umbrella-agent-runtime` / `removed`
+- Dispatch path(s) touched: `native` / `umbrella-agent-runtime`
 - Services touched:
 - Capability contract changes (`control-plane/router/runtime-capabilities.json`): yes / no
 - Doc updates:

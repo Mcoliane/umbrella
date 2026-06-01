@@ -21,7 +21,7 @@ The TUI should be the operator console and the first usable front end for the Um
 
 The first dashboard-heavy TUI slice was the wrong shape.
 
-The platform TUI is now being rebuilt around the actual Removed interaction model:
+The platform TUI is now being rebuilt around a transcript-first interaction model:
 - one primary transcript
 - one primary composer
 - thin status/footer controls
@@ -66,10 +66,9 @@ Instead, it should sit above them and make the platform legible.
    - sub-agents
    - turns
    - delegations
-3. Expose runtime identity clearly:
+3. Expose dispatch path clearly:
    - `native`
    - `umbrella-agent-runtime`
-   - `removed`
 4. Make approvals, failures, and policy denials visible without digging through JSON files.
 5. Preserve keyboard-first operator flow.
 6. Require no browser.
@@ -308,7 +307,6 @@ Every invocation, delegation, and result row should surface:
 
 The operator should always be able to answer:
 - did this run through `umbrella-agent-runtime`?
-- did this fall back to `removed`?
 - was this action `native`?
 - why?
 
@@ -481,7 +479,6 @@ Suggested palette:
 - steel blue for `native`
 - copper or gold accent for `town-hall`
 - slate or teal accent for `umbrella-agent-runtime`
-- gray/red accent for `removed`
 
 Typography is terminal-bound, so the main distinction will come from:
 - layout
