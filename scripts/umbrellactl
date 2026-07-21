@@ -97,8 +97,8 @@ def cmd_run(ctx: Ctx, args: argparse.Namespace) -> int:
         '--orchestrator-url', args.orchestrator_url.strip() or ctx.service_url('orchestrator'),
         '--mesh-token', args.mesh_token.strip() or ctx.token,
     ]
-    if args.reconcile_cmd.strip():
-        cmd.extend(['--reconcile-cmd', args.reconcile_cmd.strip()])
+    reconcile_cmd = args.reconcile_cmd.strip() or str(ctx.root / 'scripts' / 'tools' / 'memory-core-reconcile')
+    cmd.extend(['--reconcile-cmd', reconcile_cmd])
     if args.resume_blocked:
         cmd.append('--resume-blocked')
     if args.orchestrator_caller.strip():
@@ -152,7 +152,7 @@ def cmd_resume(ctx: Ctx, args: argparse.Namespace) -> int:
         'approvalUrl': approval_url,
         'orchestratorUrl': args.orchestrator_url.strip() or ctx.service_url('orchestrator'),
         'meshToken': args.mesh_token.strip() or ctx.token,
-        'reconcileCmd': args.reconcile_cmd,
+        'reconcileCmd': args.reconcile_cmd.strip() or str(ctx.root / 'scripts' / 'tools' / 'memory-core-reconcile'),
     }
     out = http_request('POST', f"{approval_url}/v1/approval/resume", payload, args.mesh_token.strip() or ctx.token)
     print_json(out)
@@ -204,7 +204,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument('--run-id', default='')
     p_run.add_argument('--resume-blocked', action='store_true')
     p_run.add_argument('--orchestrator-caller', default='runner')
-    p_run.add_argument('--reconcile-cmd', default='memory-core-reconcile')
+    p_run.add_argument('--reconcile-cmd', default='')
     p_run.add_argument('--policy-url', default='')
     p_run.add_argument('--lifecycle-url', default='')
     p_run.add_argument('--router-url', default='')
@@ -230,7 +230,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_rs.add_argument('--run-id', required=True)
     p_rs.add_argument('--approval-key', required=True)
     p_rs.add_argument('--idempotency-key', default='')
-    p_rs.add_argument('--reconcile-cmd', default='memory-core-reconcile')
+    p_rs.add_argument('--reconcile-cmd', default='')
     p_rs.add_argument('--policy-url', default='')
     p_rs.add_argument('--lifecycle-url', default='')
     p_rs.add_argument('--router-url', default='')

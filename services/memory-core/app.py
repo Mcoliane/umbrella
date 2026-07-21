@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import sys
 import threading
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -50,8 +52,21 @@ class MemoryStore:
         self.store_path = self.root / 'control-plane' / 'memory-core' / 'store.json'
         self._lock = threading.RLock()
         self.store_path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.store_path.exists():
-            self._write({'namespaces': {'agent': {}, 'team': {}, 'global': {}}, 'updatedAt': now_iso()})
+        with self._file_lock():
+            if not self.store_path.exists():
+                self._write({'namespaces': {'agent': {}, 'team': {}, 'global': {}}, 'updatedAt': now_iso()})
+
+    @contextmanager
+    def _file_lock(self):
+        # Cross-process exclusion for read-modify-write cycles, shared with
+        # scripts/tools/memory-core-reconcile --fix (same <store>.lock path).
+        lock_path = self.store_path.with_name(self.store_path.name + '.lock')
+        with open(lock_path, 'w') as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def _read(self) -> dict:
         try:
@@ -72,7 +87,7 @@ class MemoryStore:
             data['namespaces'][namespace] = {}
 
     def put(self, namespace: str, key: str, value, metadata: dict | None = None) -> dict:
-        with self._lock:
+        with self._lock, self._file_lock():
             data = self._read()
             self._ensure_namespace(data, namespace)
             row = {
@@ -94,7 +109,7 @@ class MemoryStore:
             return row if isinstance(row, dict) else None
 
     def delete(self, namespace: str, key: str) -> bool:
-        with self._lock:
+        with self._lock, self._file_lock():
             data = self._read()
             self._ensure_namespace(data, namespace)
             exists = key in data['namespaces'][namespace]

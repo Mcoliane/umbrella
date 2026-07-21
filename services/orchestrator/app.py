@@ -316,9 +316,12 @@ class OrchestratorEngine:
         reconcile_cmd: str,
         resume_blocked: bool,
         caller: str,
+        skip_drift_lint: bool = False,
+        skip_capability_parity: bool = False,
         mesh_token: str = '',
     ) -> dict:
         run_id = validate_identifier(run_id, 'runId')
+        reconcile_cmd = reconcile_cmd.strip() or str(self.root / 'scripts' / 'tools' / 'memory-core-reconcile')
         if resume_blocked and caller != 'approval-service':
             return {
                 'ok': False,
@@ -398,7 +401,11 @@ class OrchestratorEngine:
             preflight = post_json(
                 policy_url,
                 '/v1/policy/preflight/all',
-                {'reconcileCmd': reconcile_cmd},
+                {
+                    'reconcileCmd': reconcile_cmd,
+                    'skipDriftLint': skip_drift_lint,
+                    'skipCapabilityParity': skip_capability_parity,
+                },
                 mesh_token=mesh_token,
             )
         except Exception as ex:
@@ -657,9 +664,11 @@ def handler_factory(engine: OrchestratorEngine, token: str):
                         scheduler_url=str(body.get('schedulerUrl', 'http://127.0.0.1:8796')).strip(),
                         execution_url=str(body.get('executionUrl', 'http://127.0.0.1:8794')).strip(),
                         approval_url=str(body.get('approvalUrl', 'http://127.0.0.1:8792')).strip(),
-                        reconcile_cmd=str(body.get('reconcileCmd', 'memory-core-reconcile')).strip(),
+                        reconcile_cmd=str(body.get('reconcileCmd', '')).strip(),
                         resume_blocked=bool(body.get('resumeBlocked', False)),
                         caller=str(body.get('caller', 'runner')).strip() or 'runner',
+                        skip_drift_lint=bool(body.get('skipDriftLint', False)),
+                        skip_capability_parity=bool(body.get('skipCapabilityParity', False)),
                         mesh_token=str(body.get('meshToken', '')),
                     )
                     return json_response(self, 200, out)

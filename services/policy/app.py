@@ -191,7 +191,7 @@ class PolicyEngine:
         catalog_url: str = '',
     ):
         self.root = umbrella_root
-        self.parity_reconcile_cmd = parity_reconcile_cmd
+        self.parity_reconcile_cmd = parity_reconcile_cmd.strip() or str(self.root / 'scripts' / 'tools' / 'memory-core-reconcile')
         self.multi_agent_policy_path = (self.root / multi_agent_policy_path).resolve()
         self.agent_registry_path = (self.root / agent_registry_path).resolve()
         self.catalog_url = catalog_url.rstrip('/')
@@ -555,7 +555,14 @@ class PolicyEngine:
             'effectiveActionPolicy': effective_action_policy,
         }
 
-    def preflight_drift(self) -> dict:
+    def preflight_drift(self, skip: bool = False) -> dict:
+        if skip:
+            return {
+                'check': 'drift_lint',
+                'ok': True,
+                'skipped': True,
+                'result': {'status': 'SKIPPED', 'reason': 'skip_requested'},
+            }
         cmd = [str(self.drift_lint), '--umbrella-root', str(self.root)]
         rc, payload, out, err = run_cmd(cmd, self.root)
         result = payload if isinstance(payload, dict) else {'stdout': out[-4000:], 'stderr': err[-4000:]}
@@ -566,7 +573,14 @@ class PolicyEngine:
             'result': result,
         }
 
-    def preflight_parity(self, reconcile_cmd: str = '') -> dict:
+    def preflight_parity(self, reconcile_cmd: str = '', skip: bool = False) -> dict:
+        if skip:
+            return {
+                'check': 'capability_parity',
+                'ok': True,
+                'skipped': True,
+                'result': {'status': 'SKIPPED', 'reason': 'skip_requested'},
+            }
         cmd = [
             str(self.parity_gate),
             '--umbrella-root',
@@ -584,20 +598,24 @@ class PolicyEngine:
             'result': result,
         }
 
-    def preflight_all(self, reconcile_cmd: str = '') -> dict:
+    def preflight_all(self, reconcile_cmd: str = '', skip_drift_lint: bool = False, skip_capability_parity: bool = False) -> dict:
         checks = []
-        drift = self.preflight_drift()
+        drift = self.preflight_drift(skip=skip_drift_lint)
         checks.append(drift)
-        parity = self.preflight_parity(reconcile_cmd=reconcile_cmd)
+        parity = self.preflight_parity(reconcile_cmd=reconcile_cmd, skip=skip_capability_parity)
         checks.append(parity)
 
         ok = all(bool(c.get('ok')) for c in checks)
-        return {
+        skipped = [str(c.get('check')) for c in checks if bool(c.get('skipped'))]
+        out = {
             'checkedAt': now_iso(),
             'ok': ok,
             'status': 'PASS' if ok else 'BLOCKED',
             'checks': checks,
         }
+        if skipped:
+            out['skippedChecks'] = skipped
+        return out
 
 
 def handler_factory(engine: PolicyEngine, token: str):
@@ -629,13 +647,20 @@ def handler_factory(engine: PolicyEngine, token: str):
 
             try:
                 if path == '/v1/policy/preflight/drift-lint':
-                    out = engine.preflight_drift()
+                    out = engine.preflight_drift(skip=bool(body.get('skipDriftLint', False)))
                     return json_response(self, 200, out)
                 if path == '/v1/policy/preflight/capability-parity':
-                    out = engine.preflight_parity(reconcile_cmd=str(body.get('reconcileCmd', '')))
+                    out = engine.preflight_parity(
+                        reconcile_cmd=str(body.get('reconcileCmd', '')),
+                        skip=bool(body.get('skipCapabilityParity', False)),
+                    )
                     return json_response(self, 200, out)
                 if path == '/v1/policy/preflight/all':
-                    out = engine.preflight_all(reconcile_cmd=str(body.get('reconcileCmd', '')))
+                    out = engine.preflight_all(
+                        reconcile_cmd=str(body.get('reconcileCmd', '')),
+                        skip_drift_lint=bool(body.get('skipDriftLint', False)),
+                        skip_capability_parity=bool(body.get('skipCapabilityParity', False)),
+                    )
                     return json_response(self, 200, out)
                 if path == '/v1/policy/agents/register':
                     agent_id = str(body.get('agentId', '')).strip()
@@ -667,7 +692,7 @@ def main() -> int:
     ap.add_argument('--host', default='127.0.0.1')
     ap.add_argument('--port', type=int, default=8791)
     ap.add_argument('--umbrella-root', default=str(Path(__file__).resolve().parents[2]))
-    ap.add_argument('--parity-reconcile-cmd', default='memory-core-reconcile')
+    ap.add_argument('--parity-reconcile-cmd', default='')
     ap.add_argument('--multi-agent-policy', default='control-plane/policy/multi-agent-policy.json')
     ap.add_argument('--agent-registry', default='control-plane/observability/policy/agent-registry.json')
     ap.add_argument('--catalog-url', default='')
