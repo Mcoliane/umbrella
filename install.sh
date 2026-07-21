@@ -213,7 +213,13 @@ set -euo pipefail
 exec "$APP_DIR/scripts/control-plane/run-umbrella-control-plane" --umbrella-root "$APP_DIR" "\$@"
 EOF
 
-chmod +x "$BIN_DIR/umbrellactl" "$BIN_DIR/umbrella-manage" "$BIN_DIR/umbrella-runner"
+cat > "$BIN_DIR/umbrella-tui" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+exec python3 "$APP_DIR/scripts/umbrella-tui" --umbrella-root "$APP_DIR" "\$@"
+EOF
+
+chmod +x "$BIN_DIR/umbrellactl" "$BIN_DIR/umbrella-manage" "$BIN_DIR/umbrella-runner" "$BIN_DIR/umbrella-tui"
 
 cat > "$PREFIX/env.sh" <<EOF
 #!/usr/bin/env bash
@@ -288,3 +294,4 @@ echo ""
 echo "Then try:"
 echo "  umbrellactl --help"
 echo "  umbrella-manage bringup"
+echo "  umbrella-tui"
