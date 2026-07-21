@@ -16,7 +16,7 @@ from urllib.parse import unquote, urlparse
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from services.id_utils import validate_identifier
 from services.memory.auth import check_auth
-from services.runtime_model import discover_broker_url, load_model_broker, load_model_provider, mask_secret, save_model_provider, test_model_provider
+from services.runtime_model import call_model_broker, discover_broker_url, load_model_broker, load_model_provider, mask_secret, provider_enabled, save_model_provider
 
 LEGACY_ACTION_ALIASES = {
     'memory.get': 'skill.memory.get',
@@ -420,9 +420,43 @@ class SessionEngine:
         return self.model_provider_status() | {'saved': True}
 
     def test_model_provider(self) -> dict:
+        # Route the test through the model broker so a passing test proves the
+        # same path conversation uses, not a direct provider call.
         status = self.model_provider_status()
         provider = load_model_provider(self.root)
-        result = test_model_provider(provider)
+        if not provider_enabled(provider):
+            return status | {'test': {'ok': False, 'configured': False, 'message': 'model provider is not configured'}}
+        broker = load_model_broker(self.root)
+        broker_url = discover_broker_url(self.root, broker)
+        connection_id = str(((status.get('broker') or {}).get('defaultConnectionId', ''))).strip()
+        provider_meta = provider.get('provider') if isinstance(provider.get('provider'), dict) else {}
+        timeout_sec = float(provider_meta.get('timeoutSec', 120) or 120) + 10.0
+        try:
+            payload = call_model_broker(
+                self.root,
+                '/v1/connections/test',
+                {'connectionId': connection_id},
+                timeout_sec=timeout_sec,
+                token_override=self.mesh_token,
+            )
+        except urllib.error.HTTPError as exc:
+            return status | {'test': {
+                'ok': False,
+                'configured': True,
+                'brokerUrl': broker_url,
+                'message': f'model broker request failed at {broker_url}: HTTP {exc.code}',
+            }}
+        except Exception as exc:
+            return status | {'test': {
+                'ok': False,
+                'configured': True,
+                'brokerUrl': broker_url,
+                'message': f'model broker unreachable at {broker_url}: {exc}',
+            }}
+        result = payload.get('test') if isinstance(payload.get('test'), dict) else {}
+        if not result:
+            result = {'ok': False, 'configured': True, 'message': 'model broker returned an invalid test response'}
+        result.setdefault('brokerUrl', broker_url)
         return status | {'test': result}
 
     def model_broker_status(self) -> dict:

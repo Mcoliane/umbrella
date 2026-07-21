@@ -15,8 +15,13 @@ That means:
 - `control-plane/runtime/model-provider.secrets.json`
 - `control-plane/runtime/model-broker.json`
 - `control-plane/runtime/model-broker.secrets.json`
+- `control-plane/runtime/model-broker.example.json`
 
-The secrets files are ignored by git.
+The secrets files and `model-broker.json` are ignored by git: `model-broker.json`
+is live runtime state, created on first save. The tracked, documented template is
+`model-broker.example.json` — it ships disabled with no connections, and the
+runtime initializes from it (with `enabled=false`) when `model-broker.json` is
+missing.
 `model-provider.json` is now a compatibility template. Runtime writes go to broker config, not back into that tracked file.
 
 ## TUI setup
@@ -25,8 +30,11 @@ From Town Hall:
 
 - `/model` shows current provider status
 - `/model setup` writes provider config and API key
-- `/model glm5` applies the recommended Z.ai general-chat preset
-- `/model test` sends a small test request
+- `/model glm5` applies the recommended Z.ai general-chat preset: general
+  endpoint `https://api.z.ai/api/paas/v4` with model `glm-5-turbo`
+- `/model glm47` applies the Z.ai coding preset: coding endpoint
+  `https://api.z.ai/api/coding/paas/v4` with model `glm-4.7`
+- `/model test` sends a small test request through the model broker
 - `/model use <model>` changes the default model
 - `/model disable` disables provider-backed conversation
 
@@ -71,7 +79,7 @@ Secrets:
   "version": "umbrella.model-broker.v1",
   "enabled": true,
   "broker": {
-    "url": "http://127.0.0.1:8796",
+    "url": "http://127.0.0.1:8782",
     "defaultConnectionId": "default",
     "allowFallback": true
   },

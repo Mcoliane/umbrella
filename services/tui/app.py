@@ -11,7 +11,6 @@ from pathlib import Path
 from services.tui.client import TuiClient
 from services.tui.state import PlatformState
 
-ZAI_GLM5_CODING_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
 ZAI_GLM5_GENERAL_BASE_URL = "https://api.z.ai/api/paas/v4"
 ZAI_GLM5_TURBO_MODEL = "glm-5-turbo"
 ZAI_GLM47_CODING_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
@@ -38,6 +37,37 @@ class UmbrellaTui:
     def add_local_event(self, role: str, content: str):
         self.state.local_transcript.append({"role": role, "content": content})
         self.state.local_transcript = self.state.local_transcript[-30:]
+
+    @staticmethod
+    def _provenance_tag(row: dict) -> str:
+        if not isinstance(row, dict):
+            return ""
+        if bool(row.get("fallbackUsed", False)):
+            return "[fallback — no model]"
+        if bool(row.get("providerUsed", False)):
+            provider = str(row.get("providerType", "")).strip()
+            model = str(row.get("modelUsed", "")).strip()
+            detail = "/".join(bit for bit in (provider, model) if bit)
+            return f"[{detail}]" if detail else "[model]"
+        return ""
+
+    def _model_warning(self) -> str:
+        home = self.state.home if isinstance(self.state.home, dict) else {}
+        provider = home.get("modelProvider") if isinstance(home.get("modelProvider"), dict) else {}
+        if not provider:
+            return ""
+        broker_meta = provider.get("broker") if isinstance(provider.get("broker"), dict) else {}
+        secrets = provider.get("secrets") if isinstance(provider.get("secrets"), dict) else {}
+        if not bool(provider.get("enabled", False)) or not bool(broker_meta.get("enabled", False)):
+            return "MODEL OFF: broker disabled — replies come from the keyword fallback (/model setup)"
+        if not bool(provider.get("configured", False)):
+            return "MODEL OFF: broker unconfigured — replies come from the keyword fallback (/model setup)"
+        if not bool(secrets.get("apiKeyPresent", False)):
+            return "MODEL OFF: no API key — replies come from the keyword fallback (/model setup)"
+        for row in home.get("services") or []:
+            if isinstance(row, dict) and row.get("service") == "model-broker" and not row.get("ok"):
+                return "MODEL OFF: broker unreachable — replies come from the keyword fallback (/start full)"
+        return ""
 
     def _pending_elapsed_sec(self) -> int:
         if not self.state.pending_request or self.state.pending_started_at <= 0:
@@ -93,10 +123,12 @@ class UmbrellaTui:
             out = outcome.get("payload") if isinstance(outcome.get("payload"), dict) else {}
             self.state.active_target = str(out.get("target", target)).strip() or target
             self.refresh_session()
-            self.state.status = f"Talked to {self.state.active_target} in {elapsed}s"
+            tag = self._provenance_tag(out)
+            suffix = f" {tag}" if tag else ""
+            self.state.status = f"Talked to {self.state.active_target} in {elapsed}s{suffix}"
             reply = str(out.get("reply", "")).strip()
             if reply and not any(str(msg.get("content", "")).strip() == reply for msg in self.state.local_transcript[-2:]):
-                self.add_local_event("system", f"{self.state.active_target} replied in {elapsed}s.")
+                self.add_local_event("system", f"{self.state.active_target} replied in {elapsed}s{suffix}.")
             return
         if outcome.get("stage") == "heartbeat":
             message = str(outcome.get("message", "")).strip() or "heartbeat failed"
@@ -232,7 +264,7 @@ class UmbrellaTui:
         if normalized == "zai":
             return {
                 "type": "zai",
-                "baseUrl": str(provider_meta.get("baseUrl", "")).strip() or ZAI_GLM5_CODING_BASE_URL,
+                "baseUrl": str(provider_meta.get("baseUrl", "")).strip() or ZAI_GLM5_GENERAL_BASE_URL,
                 "defaultModel": str(provider_meta.get("defaultModel", "")).strip() or ZAI_GLM5_TURBO_MODEL,
                 "timeoutSec": int(provider_meta.get("timeoutSec", 120) or 120),
             }
@@ -616,6 +648,9 @@ class UmbrellaTui:
         if self.state.pending_request:
             status = f'{self._pending_spinner()} {self.state.pending_target or "agent"} thinking {self._pending_elapsed_sec()}s'
         line = f"{status} | {footer}"
+        warning = self._model_warning()
+        if warning:
+            line = f"!! {warning} | {line}"
         screen.attron(curses.A_REVERSE)
         screen.addstr(height - 1, 0, " " * max(1, width - 1))
         screen.addstr(height - 1, 0, _clip(line, width - 1))
@@ -634,12 +669,16 @@ class UmbrellaTui:
             if role == "tool":
                 continue
             metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
-            target = str(metadata.get("target", "")).strip()
+            target = str(metadata.get("target", "")).strip() or str(metadata.get("targetAgentId", "")).strip()
             label = role
             if role == "assistant" and target:
                 label = f"{target}"
             if role == "user":
                 label = "you"
+            if role == "assistant":
+                tag = self._provenance_tag(metadata)
+                if tag:
+                    label = f"{label} {tag}"
             content = str(message.get("content", ""))
             attr = curses.A_NORMAL
             if role == "assistant":

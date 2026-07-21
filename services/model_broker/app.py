@@ -45,6 +45,20 @@ def err(code: str, message: str, request_id: str) -> dict:
     return {"error": {"code": code, "message": message, "request_id": request_id}}
 
 
+def http_error_detail(exc: urllib.error.HTTPError, limit: int = 500) -> str:
+    # Keep the provider's own explanation (truncated) instead of reducing every
+    # failure to an opaque status code.
+    try:
+        body = exc.read().decode("utf-8", "replace").strip()
+    except Exception:
+        body = ""
+    if not body:
+        body = str(getattr(exc, "reason", "")).strip()
+    if body:
+        return f"HTTP {exc.code}: {body[:limit]}"
+    return f"HTTP {exc.code}"
+
+
 def parse_json_content_block(content: str) -> dict | None:
     raw = str(content or "").strip()
     if not raw:
@@ -316,7 +330,7 @@ class BrokerEngine:
                 "providerType": str(provider.get("type", "")).strip() or str(connection.get("providerId", "")).strip() or "zai",
                 "model": model,
                 "latencyMs": int((time.time() - started) * 1000),
-                "message": f"HTTP {exc.code}",
+                "message": http_error_detail(exc),
             }
         except Exception as exc:
             return {
@@ -338,10 +352,13 @@ class BrokerEngine:
             models.append(default_model)
         if not connection or not bool(connection.get("enabled", False)):
             return {"connectionId": cid, "models": models}
+        error_message = ""
         try:
             provider_type = str(provider.get("type", "")).strip() or str(connection.get("providerId", "")).strip() or "zai"
             adapter = self._provider_adapter(provider_type)
-            if adapter is not None:
+            if adapter is None:
+                error_message = f"unsupported provider type: {provider_type}"
+            else:
                 payload = adapter.list_models(
                     base_url=str(connection.get("baseUrl", "")).strip(),
                     api_key=str(secret.get("apiKey", "")).strip(),
@@ -349,13 +366,18 @@ class BrokerEngine:
                 )
                 rows = payload.get("data") if isinstance(payload.get("data"), list) else []
                 models.extend(str(row.get("id", "")).strip() for row in rows if isinstance(row, dict) and str(row.get("id", "")).strip())
-        except Exception:
-            pass
+        except urllib.error.HTTPError as exc:
+            error_message = http_error_detail(exc)
+        except Exception as exc:
+            error_message = str(exc)
         deduped = []
         for row in models:
             if row and row not in deduped:
                 deduped.append(row)
-        return {"connectionId": cid, "models": deduped}
+        out = {"connectionId": cid, "models": deduped}
+        if error_message:
+            out["error"] = {"message": error_message}
+        return out
 
     def chat_respond(self, payload: dict) -> dict:
         broker = self._load()
@@ -438,7 +460,7 @@ class BrokerEngine:
                     timeout_sec=float(connection.get("timeoutSec", 120) or 120),
             )
         except urllib.error.HTTPError as exc:
-            return {"ok": False, "error": {"message": f"HTTP {exc.code}"}}
+            return {"ok": False, "error": {"message": http_error_detail(exc)}}
         except Exception as exc:
             return {"ok": False, "error": {"message": str(exc)}}
         choices = raw.get("choices") if isinstance(raw.get("choices"), list) else []
@@ -535,7 +557,7 @@ def handler_factory(engine: BrokerEngine, token: str):
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8796)
+    ap.add_argument("--port", type=int, default=8782)
     ap.add_argument("--umbrella-root", default=str(Path(__file__).resolve().parents[2]))
     ap.add_argument("--token", default="")
     args = ap.parse_args(argv)

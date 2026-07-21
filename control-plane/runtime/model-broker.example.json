@@ -1,0 +1,38 @@
+{
+  "_comment": [
+    "Template for control-plane/runtime/model-broker.json.",
+    "model-broker.json is live runtime state: it is not tracked by git, and the",
+    "platform creates it (together with model-broker.secrets.json) on first save.",
+    "To configure a provider, use the TUI (/model setup, /model glm5, /model glm47)",
+    "or POST /v1/connections on the model-broker service; do not put API keys here.",
+    "This template ships disabled with no connections: enabled stays false until a",
+    "connection is saved and enabled."
+  ],
+  "version": "umbrella.model-broker.v1",
+  "enabled": false,
+  "broker": {
+    "url": "",
+    "defaultConnectionId": "default",
+    "allowFallback": true
+  },
+  "providers": {
+    "zai": {
+      "id": "zai",
+      "type": "zai",
+      "supportsApiKey": true,
+      "supportsOAuth": false
+    },
+    "openai-compatible": {
+      "id": "openai-compatible",
+      "type": "openai-compatible",
+      "supportsApiKey": true,
+      "supportsOAuth": false
+    }
+  },
+  "connections": {},
+  "routing": {
+    "defaultConnectionId": "default",
+    "allowFallback": true,
+    "packageDefaults": {}
+  }
+}
