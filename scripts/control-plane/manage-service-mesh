@@ -100,6 +100,38 @@ PY
   return 1
 }
 
+BRINGUP_PIDS=()
+
+cleanup_failed_bringup() {
+  local rc=$?
+  if [[ "$rc" -ne 0 && "${#BRINGUP_PIDS[@]}" -gt 0 ]]; then
+    echo "bringup failed (rc=$rc); stopping spawned services: ${BRINGUP_PIDS[*]}" >&2
+    kill "${BRINGUP_PIDS[@]}" >/dev/null 2>&1 || true
+    sleep 0.4
+    local pid
+    for pid in "${BRINGUP_PIDS[@]}"; do
+      if kill -0 "$pid" >/dev/null 2>&1; then
+        kill -9 "$pid" >/dev/null 2>&1 || true
+      fi
+    done
+    # Mark the manifest stopped so a later shutdown takes the already_stopped
+    # path instead of treating the dead bringup as a live mesh.
+    if [[ -f "$MANIFEST" ]]; then
+      python3 - "$MANIFEST" <<'PY' >/dev/null 2>&1 || true
+import json, sys
+from datetime import datetime, timezone
+from pathlib import Path
+p=Path(sys.argv[1])
+obj=json.loads(p.read_text())
+obj['stoppedAt']=datetime.now(timezone.utc).isoformat()
+for s in obj.get('services', {}).values():
+  s['pid']=0
+p.write_text(json.dumps(obj, indent=2) + '\n', encoding='utf-8')
+PY
+    fi
+  fi
+}
+
 build_manifest() {
   python3 - "$MANIFEST" "$ROOT" "$LOG_DIR" "$TOKEN_PATH" "$POLICY_PORT" "$LIFECYCLE_PORT" "$ROUTER_PORT" "$SCHEDULER_PORT" "$MEMORY_CORE_PORT" "$EXECUTION_PORT" "$APPROVAL_PORT" "$ORCHESTRATOR_PORT" "$P1" "$P2" "$P3" "$P4" "$P5" "$P6" "$P7" "$P8" <<'PY'
 import json, sys
@@ -236,7 +268,8 @@ print(secrets.token_hex(24))
 PY
 )"
   fi
-  printf '%s\n' "$MESH_TOKEN" > "$TOKEN_PATH"
+  (umask 077; printf '%s\n' "$MESH_TOKEN" > "$TOKEN_PATH")
+  chmod 600 "$TOKEN_PATH"
 
   POLICY_PORT="${POLICY_PORT:-$(free_port)}"
   LIFECYCLE_PORT="${LIFECYCLE_PORT:-$(free_port)}"
@@ -255,14 +288,24 @@ PY
   EXECUTION_URL="http://127.0.0.1:$EXECUTION_PORT"
   APPROVAL_URL="http://127.0.0.1:$APPROVAL_PORT"
 
+  trap cleanup_failed_bringup EXIT
+
   python3 "$ROOT/services/policy/app.py" --host 127.0.0.1 --port "$POLICY_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN" >"$LOG_DIR/policy.out" 2>"$LOG_DIR/policy.err" & P1=$!
+  BRINGUP_PIDS+=("$P1")
   python3 "$ROOT/services/lifecycle/app.py" --host 127.0.0.1 --port "$LIFECYCLE_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN" >"$LOG_DIR/lifecycle.out" 2>"$LOG_DIR/lifecycle.err" & P2=$!
+  BRINGUP_PIDS+=("$P2")
   python3 "$ROOT/services/router/app.py" --host 127.0.0.1 --port "$ROUTER_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN" >"$LOG_DIR/router.out" 2>"$LOG_DIR/router.err" & P3=$!
+  BRINGUP_PIDS+=("$P3")
   python3 "$ROOT/services/scheduler/app.py" --host 127.0.0.1 --port "$SCHEDULER_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN" >"$LOG_DIR/scheduler.out" 2>"$LOG_DIR/scheduler.err" & P4=$!
+  BRINGUP_PIDS+=("$P4")
   python3 "$ROOT/services/memory-core/app.py" --host 127.0.0.1 --port "$MEMORY_CORE_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN" >"$LOG_DIR/memory-core.out" 2>"$LOG_DIR/memory-core.err" & P5=$!
+  BRINGUP_PIDS+=("$P5")
   python3 "$ROOT/services/execution/app.py" --host 127.0.0.1 --port "$EXECUTION_PORT" --umbrella-root "$ROOT" --memory-core-url "$MEMORY_CORE_URL" --policy-url "$POLICY_URL" --mesh-token "$MESH_TOKEN" --token "$MESH_TOKEN" >"$LOG_DIR/execution.out" 2>"$LOG_DIR/execution.err" & P6=$!
+  BRINGUP_PIDS+=("$P6")
   python3 "$ROOT/services/approval/app.py" --host 127.0.0.1 --port "$APPROVAL_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN" >"$LOG_DIR/approval.out" 2>"$LOG_DIR/approval.err" & P7=$!
+  BRINGUP_PIDS+=("$P7")
   python3 "$ROOT/services/orchestrator/app.py" --host 127.0.0.1 --port "$ORCHESTRATOR_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN" >"$LOG_DIR/orchestrator.out" 2>"$LOG_DIR/orchestrator.err" & P8=$!
+  BRINGUP_PIDS+=("$P8")
 
   build_manifest >/dev/null
 
@@ -275,6 +318,12 @@ PY
   wait_health "$APPROVAL_URL/v1/approval/health" "$MESH_TOKEN"
   wait_health "http://127.0.0.1:$ORCHESTRATOR_PORT/v1/orchestrator/health" "$MESH_TOKEN"
 
+  # Bringup is committed: disarm the failure cleanup so a nonzero exit from
+  # the final status report (e.g. SIGPIPE on piped output) cannot tear down
+  # a healthy mesh.
+  trap - EXIT
+  BRINGUP_PIDS=()
+
   status_impl
 }
 
@@ -284,8 +333,27 @@ shutdown_impl() {
     return 0
   fi
 
+  local stopped_at
+  stopped_at="$(python3 - "$MANIFEST" <<'PY'
+import json, sys
+from pathlib import Path
+obj=json.loads(Path(sys.argv[1]).read_text())
+print(str(obj.get('stoppedAt','')).strip())
+PY
+)"
+  if [[ -n "$stopped_at" ]]; then
+    echo "{\"ok\":true,\"stopped\":[],\"manifest\":\"$MANIFEST\",\"note\":\"already_stopped\",\"stoppedAt\":\"$stopped_at\"}"
+    return 0
+  fi
+
   local pids
-  pids="$(load_manifest_field pids)"
+  pids="$(python3 - "$MANIFEST" <<'PY'
+import json, sys
+from pathlib import Path
+m=json.loads(Path(sys.argv[1]).read_text())
+print(' '.join(str(s.get('pid', 0)) for s in m.get('services', {}).values() if int(s.get('pid', 0)) > 0))
+PY
+)"
   if [[ -n "$pids" ]]; then
     kill $pids >/dev/null 2>&1 || true
     sleep 0.4
