@@ -33,6 +33,8 @@ class UmbrellaTui:
         self.session_cursor = 0
         self._pending_lock = threading.Lock()
         self._pending_result: dict | None = None
+        self.has_color = False
+        self._inflight: dict[str, dict] = {}  # turnId -> {shop, target, started} for live activity
 
     def add_local_event(self, role: str, content: str):
         self.state.local_transcript.append({"role": role, "content": content})
@@ -137,8 +139,10 @@ class UmbrellaTui:
             reply = str(out.get("reply", "")).strip()
             if str(out.get("delegationStatus", "")).strip() == "running":
                 shop = str(out.get("shopId", "a shop")).strip() or "a shop"
+                turn_id = str(out.get("turnId", "")).strip()
+                if turn_id:
+                    self._inflight[turn_id] = {"shop": shop, "target": self.state.active_target, "started": time.time()}
                 self.state.status = f"Delegated to {shop} — running in background"
-                self.add_local_event("system", f"⏳ {reply}")
                 return
             self.state.status = f"Talked to {self.state.active_target} in {elapsed}s{suffix}"
             if reply and not any(str(msg.get("content", "")).strip() == reply for msg in self.state.local_transcript[-2:]):
@@ -198,6 +202,12 @@ class UmbrellaTui:
         valid_targets = [str(agent.get("agentId", "")).strip() for agent in agents if str(agent.get("agentId", "")).strip()]
         if self.state.active_target not in valid_targets and valid_targets:
             self.state.active_target = valid_targets[0]
+        # Clear in-flight delegations whose result has now landed.
+        if self._inflight:
+            for msg in (session.get("messages") or [])[-30:]:
+                md = msg.get("metadata") if isinstance(msg.get("metadata"), dict) else {}
+                if str(md.get("delegationStatus", "")).strip() in {"completed", "failed"}:
+                    self._inflight.pop(str(md.get("turnId", "")).strip(), None)
         self.state.status = f"Town loaded: {self.state.selected_session_id}"
 
     @property
@@ -669,151 +679,228 @@ class UmbrellaTui:
             raise SystemExit(0)
         self.add_local_event("error", f"Unknown command: {command}")
 
+    # ------------------------------------------------------------------ #
+    # Rendering
+    # ------------------------------------------------------------------ #
+    def _init_colors(self) -> None:
+        self.has_color = False
+        try:
+            curses.start_color()
+            curses.use_default_colors()
+            curses.init_pair(1, curses.COLOR_CYAN, -1)     # you
+            curses.init_pair(2, curses.COLOR_GREEN, -1)    # agent / ok
+            curses.init_pair(3, curses.COLOR_YELLOW, -1)   # system / warn
+            curses.init_pair(4, curses.COLOR_RED, -1)      # error
+            curses.init_pair(5, curses.COLOR_MAGENTA, -1)  # delegation / activity
+            curses.init_pair(6, curses.COLOR_WHITE, curses.COLOR_BLUE)  # header bar
+            curses.init_pair(7, curses.COLOR_BLUE, -1)     # accent / headings
+            self.has_color = True
+        except curses.error:
+            self.has_color = False
+
+    def _c(self, pair: int, extra: int = 0) -> int:
+        return (curses.color_pair(pair) if self.has_color else 0) | extra
+
+    def _put(self, screen, y: int, x: int, text: str, attr: int = 0) -> None:
+        h, w = screen.getmaxyx()
+        if not (0 <= y < h) or x >= w - 1:
+            return
+        try:
+            screen.addstr(y, x, _clip(text, w - x - 1), attr)
+        except curses.error:
+            pass
+
+    @staticmethod
+    def _seconds_ago(ts: str) -> int:
+        from datetime import datetime, timezone
+        try:
+            t = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            return max(0, int((datetime.now(timezone.utc) - t).total_seconds()))
+        except Exception:
+            return 0
+
+    def _sidebar_w(self, width: int) -> int:
+        return max(30, min(46, width // 3))
+
     def draw_header(self, screen):
-        height, width = screen.getmaxyx()
+        h, w = screen.getmaxyx()
         session = self.session_payload
         title = str(session.get("title", "Town Hall")).strip() or "Town Hall"
-        session_id = self.state.selected_session_id or "no-town"
         approvals = str((self.state.home or {}).get("autonomyMode", "")).strip() or "?"
-        header = (
-            f" Umbrella Town Hall | {title} | {session_id} | "
-            f"target={self.state.active_target} | model={self._active_model_label()} | approvals={approvals} "
-        )
-        screen.attron(curses.A_REVERSE)
-        screen.addstr(0, 0, " " * max(1, width - 1))
-        screen.addstr(0, 0, _clip(header, width - 1))
-        screen.attroff(curses.A_REVERSE)
+        model_off = bool(self._model_warning())
+        model = "off" if model_off else self._active_model_label()
+        bar = self._c(6) if self.has_color else curses.A_REVERSE
+        self._put(screen, 0, 0, " " * (w - 1), bar)
+        self._put(screen, 0, 1, f"◆ Umbrella · {title} · @{self.state.active_target}", bar | curses.A_BOLD)
+        dot = "●" if not model_off else "○"
+        right = f"{dot} model:{model}  approvals:{approvals} "
+        self._put(screen, 0, max(1, w - 1 - len(right)), right, bar)
 
     def draw_footer(self, screen):
-        height, width = screen.getmaxyx()
-        footer = "enter message | / command | tab target | s sessions | n new town | S/F5 full | c/F6 core | x/F7 stop | q quit"
+        h, w = screen.getmaxyx()
+        warning = self._model_warning()
+        keys = "type + ⏎ send · / cmd · ⇥ target · n new · s open · S full · x stop · q quit"
         status = self.state.status
         if self.state.pending_request:
             status = f'{self._pending_spinner()} {self.state.pending_target or "agent"} thinking {self._pending_elapsed_sec()}s'
-        line = f"{status} | {footer}"
-        warning = self._model_warning()
+        # A model-off warning row sits just above the key row, in red.
         if warning:
-            line = f"!! {warning} | {line}"
-        screen.attron(curses.A_REVERSE)
-        screen.addstr(height - 1, 0, " " * max(1, width - 1))
-        screen.addstr(height - 1, 0, _clip(line, width - 1))
-        screen.attroff(curses.A_REVERSE)
+            self._put(screen, h - 2, 0, " " * (w - 1), self._c(4, curses.A_REVERSE))
+            self._put(screen, h - 2, 1, "⚠ " + warning, self._c(4, curses.A_REVERSE | curses.A_BOLD))
+        bar = self._c(6) if self.has_color else curses.A_REVERSE
+        self._put(screen, h - 1, 0, " " * (w - 1), bar)
+        self._put(screen, h - 1, 1, _clip(status, max(10, w // 2)), bar | curses.A_BOLD)
+        self._put(screen, h - 1, max(1, w - 1 - len(keys)), keys, bar)
 
-    def _transcript_rows(self, width: int) -> list[tuple[int, str]]:
-        rows: list[tuple[int, str]] = []
+    def _conversation_lines(self, width: int) -> list[tuple[int, str]]:
+        """A single ordered, spaced, color-differentiated stream:
+        speaker header on its own line, wrapped body indented, blank spacer."""
+        lines: list[tuple[int, str]] = []
+        wrap = max(10, width - 2)
+
+        def bubble(header: str, header_attr: int, body: str, body_attr: int) -> None:
+            lines.append((header_attr, header))
+            for wl in (textwrap.wrap(body, wrap) or [""]):
+                lines.append((body_attr, "  " + wl))
+            lines.append((0, ""))
+
         session = self.session_payload
-        for event in self.state.local_transcript[-10:]:
-            prefix = str(event.get("role", "system")).upper()
-            content = str(event.get("content", ""))
-            for line in textwrap.wrap(f"{prefix}: {content}", max(12, width)):
-                rows.append((curses.A_DIM, line))
-        for message in (session.get("messages") or [])[-80:]:
-            role = str(message.get("role", "message")).lower()
+        for message in (session.get("messages") or [])[-60:]:
+            role = str(message.get("role", "")).lower()
             if role == "tool":
                 continue
-            metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
-            target = str(metadata.get("target", "")).strip() or str(metadata.get("targetAgentId", "")).strip()
-            label = role
-            if role == "assistant" and target:
-                label = f"{target}"
+            content = str(message.get("content", "")).strip()
+            if not content:
+                continue
+            md = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
             if role == "user":
-                label = "you"
-            if role == "assistant":
-                tag = self._provenance_tag(metadata)
-                if tag:
-                    label = f"{label} {tag}"
-            content = str(message.get("content", ""))
-            attr = curses.A_NORMAL
-            if role == "assistant":
-                attr = curses.A_BOLD
-            elif role not in {"user", "assistant"}:
-                attr = curses.A_DIM
-            for line in textwrap.wrap(f"{label}: {content}", max(12, width)):
-                rows.append((attr, line))
+                bubble("You", self._c(1, curses.A_BOLD), content, self._c(1))
+            elif role == "assistant":
+                dstatus = str(md.get("delegationStatus", "")).strip()
+                shop = str(md.get("targetShopId", "")).strip()
+                if dstatus:
+                    icon = {"running": "⟳", "completed": "✓", "failed": "✗"}.get(dstatus, "•")
+                    bubble(f"{icon} delegation → {shop or 'shop'} · {dstatus}", self._c(5, curses.A_BOLD), content, self._c(5))
+                else:
+                    target = str(md.get("targetAgentId", "")).strip() or str(md.get("target", "")).strip() or "agent"
+                    tag = self._provenance_tag(md)
+                    header = target + (f"   {tag}" if tag else "")
+                    bubble(header, self._c(2, curses.A_BOLD), content, self._c(2))
+            else:
+                bubble(role, self._c(3), content, self._c(3))
+
+        # Errors from local events, shown at the end (most recent), in red.
+        for ev in self.state.local_transcript[-4:]:
+            if str(ev.get("role", "")).lower() == "error":
+                bubble("⚠ error", self._c(4, curses.A_BOLD), str(ev.get("content", "")), self._c(4))
+
+        # Optimistic echo of the just-sent message + a live thinking line.
         if self.state.pending_request:
-            # Optimistic echo: show the just-sent message immediately, before the
-            # server has recorded it. Cleared once the reply lands and the real
-            # 'user' message arrives via refresh_session (so it never doubles).
             optimistic = str(self.state.pending_content or "").strip()
             if optimistic:
-                for line in textwrap.wrap(f"you: {optimistic}", max(12, width)):
-                    rows.append((curses.A_NORMAL, line))
-            pending = f'{self.state.pending_target or "agent"} is thinking {self._pending_spinner()} {self._pending_elapsed_sec()}s'
-            for line in textwrap.wrap(pending, max(12, width)):
-                rows.append((curses.A_DIM, line))
-        return rows[-200:]
+                bubble("You", self._c(1, curses.A_BOLD), optimistic, self._c(1))
+            lines.append((self._c(3, curses.A_DIM),
+                          f"  {self._pending_spinner()} {self.state.pending_target or 'agent'} is thinking… {self._pending_elapsed_sec()}s"))
+        return lines
 
     def draw_transcript(self, screen):
-        height, width = screen.getmaxyx()
-        sidebar_w = max(28, min(42, width // 3))
-        transcript_w = max(24, width - sidebar_w - 5)
-        screen.addstr(2, 2, "Transcript", curses.A_BOLD)
-        rows = self._transcript_rows(transcript_w - 2)
-        start_y = 3
-        available_h = max(3, height - 5)
-        visible = rows[-available_h:]
-        y = start_y
-        for attr, line in visible:
-            if y >= height - 1:
-                break
-            screen.addstr(y, 2, _clip(line, transcript_w - 1), attr)
+        h, w = screen.getmaxyx()
+        tw = max(24, w - self._sidebar_w(w) - 4)
+        self._put(screen, 1, 1, "TRANSCRIPT", self._c(7, curses.A_BOLD))
+        lines = self._conversation_lines(tw)
+        top, bottom = 2, h - 2
+        avail = max(1, bottom - top)
+        visible = lines[-avail:]
+        y = top
+        for attr, text in visible:
+            self._put(screen, y, 1, text, attr)
             y += 1
         if not visible:
-            screen.addstr(4, 2, "No town selected. Press n to create a town or s to open one.")
+            self._put(screen, 3, 2, "No conversation yet.", self._c(3, curses.A_BOLD))
+            self._put(screen, 4, 2, "Press n to create a town, then just type and hit enter.", self._c(3))
+
+    def _activity_lines(self) -> list[tuple[int, str]]:
+        """What the agents are doing: live in-flight delegations + recent ones."""
+        out: list[tuple[int, str]] = []
+        now = time.time()
+        for info in self._inflight.values():
+            el = int(now - info.get("started", now))
+            out.append((self._c(5, curses.A_BOLD), f"{self._pending_spinner()} {info.get('shop','shop')} · working {el}s"))
+        session = self.session_payload
+        delegs = session.get("delegations") if isinstance(session.get("delegations"), list) else []
+        for d in list(delegs)[-6:][::-1]:
+            if not isinstance(d, dict):
+                continue
+            state = str(d.get("state", "")).upper()
+            shop = str(d.get("shopId", "")).strip() or "shop"
+            action = str(d.get("resolvedActionId", "") or d.get("actionId", "")).replace("skill.", "")
+            if state in {"COMPLETED", "SUCCEEDED"}:
+                dur = ""
+                if d.get("createdAt") and d.get("completedAt"):
+                    dur = f" {max(0, self._seconds_ago(d['createdAt']) - self._seconds_ago(d['completedAt']))}s"
+                out.append((self._c(2), f"✓ {shop} · {action}{dur}"))
+            elif state == "FAILED":
+                out.append((self._c(4), f"✗ {shop} · {action}"))
+            elif state:
+                out.append((self._c(5), f"⟳ {shop} · {action}"))
+        return out[:8]
 
     def draw_sidebar(self, screen):
-        height, width = screen.getmaxyx()
-        sidebar_w = max(28, min(42, width // 3))
-        x = width - sidebar_w - 2
+        h, w = screen.getmaxyx()
+        sw = self._sidebar_w(w)
+        x = w - sw
         session = self.session_payload
         platform = self.state.home.get("platformStack") or {}
         services = self.state.home.get("services") or []
-        model_provider = self.state.home.get("modelProvider") if isinstance(self.state.home.get("modelProvider"), dict) else {}
-        line = 2
-        screen.addstr(line, x, "Town State", curses.A_BOLD)
-        line += 1
+        # vertical divider
+        for yy in range(1, h - 1):
+            self._put(screen, yy, x - 1, "│", self._c(7))
+        y = 1
+
+        def heading(label: str):
+            nonlocal y
+            self._put(screen, y, x + 1, label, self._c(7, curses.A_BOLD))
+            y += 1
+
+        heading("TOWN")
         if session:
-            screen.addstr(line, x, _clip(f'Mayor: {session.get("mayorAgentId","")}', sidebar_w))
-            line += 1
-            screen.addstr(line, x, _clip(f'Heartbeat: {session.get("heartbeatStatus","")}', sidebar_w))
-            line += 1
+            self._put(screen, y, x + 1, f"mayor  {session.get('mayorAgentId','')}"[:sw - 2]); y += 1
+            hb = str(session.get("heartbeatStatus", "")).strip()
+            self._put(screen, y, x + 1, f"beat   {hb}", self._c(2 if hb == 'healthy' else 3)); y += 1
         else:
-            screen.addstr(line, x, "No town selected")
-            line += 1
-        screen.addstr(line, x, _clip(f'Platform: {"UP" if platform.get("ok") else "DOWN"} {platform.get("profile","")}', sidebar_w))
-        line += 2
-        provider_meta = model_provider.get("provider") if isinstance(model_provider.get("provider"), dict) else {}
-        configured = "configured" if model_provider.get("configured") else "missing"
-        model_name = str(provider_meta.get("defaultModel", "")).strip() or "unset"
-        provider_name = str(provider_meta.get("type", "")).strip() or "unset"
-        screen.addstr(line, x, _clip(f"Model: {provider_name} / {model_name} ({configured})", sidebar_w))
-        line += 2
-        if self.state.pending_request:
-            screen.addstr(line, x, _clip(f'Pending: {self.state.pending_target} {self._pending_spinner()} {self._pending_elapsed_sec()}s', sidebar_w))
-            line += 2
-        screen.addstr(line, x, "Agents", curses.A_BOLD)
-        line += 1
-        for agent in (session.get("agents") or [])[: max(1, (height // 3) - 3)]:
+            self._put(screen, y, x + 1, "no town selected", self._c(3)); y += 1
+        up = bool(platform.get("ok"))
+        self._put(screen, y, x + 1, f"stack  {'UP' if up else 'DOWN'} {platform.get('profile','')}", self._c(2 if up else 4)); y += 2
+
+        heading("ACTIVITY")
+        activity = self._activity_lines()
+        if activity:
+            for attr, text in activity:
+                self._put(screen, y, x + 1, text[:sw - 2], attr); y += 1
+        else:
+            self._put(screen, y, x + 1, "idle — no delegations", self._c(3)); y += 1
+        y += 1
+
+        heading("AGENTS")
+        for agent in (session.get("agents") or [])[: max(1, h // 5)]:
             aid = str(agent.get("agentId", "")).strip()
             role = str(agent.get("role", "")).strip()
-            marker = ">" if aid == self.state.active_target else " "
-            screen.addstr(line, x, _clip(f"{marker} {aid} [{role}]", sidebar_w))
-            line += 1
-        line += 1
+            sel = aid == self.state.active_target
+            self._put(screen, y, x + 1, f"{'▸' if sel else ' '} {aid} · {role}",
+                      self._c(1, curses.A_BOLD) if sel else 0); y += 1
+        y += 1
+
+        heading("SHOPS")
         shops = session.get("shops") if isinstance(session.get("shops"), dict) else {}
-        screen.addstr(line, x, "Shops", curses.A_BOLD)
-        line += 1
-        for shop_id, row in list(shops.items())[: max(1, (height // 4) - 2)]:
-            name = str(row.get("name", "")).strip()
-            screen.addstr(line, x, _clip(f"{shop_id}: {name}", sidebar_w))
-            line += 1
-        line += 1
-        screen.addstr(line, x, "Services", curses.A_BOLD)
-        line += 1
-        for row in services[: max(1, height - line - 2)]:
-            status = "UP" if row.get("ok") else "DN"
-            screen.addstr(line, x, _clip(f'{status} {row.get("service","")}', sidebar_w))
-            line += 1
+        for shop_id, row in list(shops.items())[: max(1, h // 6)]:
+            self._put(screen, y, x + 1, f"{shop_id}", self._c(2)); y += 1
+        y += 1
+
+        heading("SERVICES")
+        for row in services[: max(0, h - y - 1)]:
+            ok = bool(row.get("ok"))
+            self._put(screen, y, x + 1, f"{'●' if ok else '○'} {row.get('service','')}",
+                      self._c(2 if ok else 4)); y += 1
 
     def draw_town(self, screen):
         self.draw_header(screen)
@@ -823,6 +910,7 @@ class UmbrellaTui:
 
     def run(self, screen):
         curses.curs_set(0)
+        self._init_colors()
         screen.keypad(True)
         screen.timeout(100)
         self.refresh_home()
