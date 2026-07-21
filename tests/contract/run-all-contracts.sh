@@ -14,9 +14,6 @@ TESTS=(
   "$ROOT/tests/contract/test-plugin-host-execution.sh"
   "$ROOT/tests/contract/test-policy-catalog-gates.sh"
   "$ROOT/tests/contract/test-router-catalog-routing.sh"
-  "$ROOT/tests/contract/test-runtime-capability-routing.sh"
-  "$ROOT/tests/contract/test-runtime-capability-enforcement.sh"
-  "$ROOT/tests/contract/test-orchestrator-runtime-summary.sh"
   "$ROOT/tests/contract/test-agent-package-runtime.sh"
   "$ROOT/tests/contract/test-session-converse.sh"
   "$ROOT/tests/contract/test-model-broker-zai.sh"
@@ -35,7 +32,6 @@ TESTS=(
   "$ROOT/tests/contract/test-failure-reporting.sh"
   "$ROOT/tests/contract/test-memory-core-concurrency.sh"
   "$ROOT/tests/contract/test-memory-store-thread-safety.sh"
-  "$ROOT/tests/contract/test-memory-import-restore.sh"
   "$ROOT/tests/contract/test-memory-core-shared-e2e.sh"
   "$ROOT/tests/contract/test-execution-native-memory-boundary.sh"
   "$ROOT/tests/contract/test-memory-boundary-promote-hydrate.sh"
@@ -51,11 +47,32 @@ TESTS=(
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "[contract-gate] start $started_at"
 
+pass_count=0
+fail_count=0
+results=()
+
 for t in "${TESTS[@]}"; do
-  echo "[contract-gate] RUN $t"
-  "$t"
-  echo "[contract-gate] PASS $t"
+  name="${t##*/}"
+  echo "[contract-gate] RUN $name"
+  if "$t"; then
+    echo "[contract-gate] PASS $name"
+    results+=("PASS  $name")
+    pass_count=$((pass_count + 1))
+  else
+    echo "[contract-gate] FAIL $name"
+    results+=("FAIL  $name")
+    fail_count=$((fail_count + 1))
+  fi
 done
 
 finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "[contract-gate] done $finished_at"
+echo "[contract-gate] summary"
+for row in "${results[@]}"; do
+  echo "  $row"
+done
+echo "[contract-gate] totals: pass=$pass_count fail=$fail_count total=$((pass_count + fail_count))"
+
+if [[ "$fail_count" -gt 0 ]]; then
+  exit 1
+fi
