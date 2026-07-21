@@ -219,7 +219,13 @@ set -euo pipefail
 exec python3 "$APP_DIR/scripts/umbrella-tui" --umbrella-root "$APP_DIR" "\$@"
 EOF
 
-chmod +x "$BIN_DIR/umbrellactl" "$BIN_DIR/umbrella-manage" "$BIN_DIR/umbrella-runner" "$BIN_DIR/umbrella-tui"
+cat > "$BIN_DIR/umbrella-setup" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+exec python3 "$APP_DIR/scripts/umbrella-setup" --umbrella-root "$APP_DIR" "\$@"
+EOF
+
+chmod +x "$BIN_DIR/umbrellactl" "$BIN_DIR/umbrella-manage" "$BIN_DIR/umbrella-runner" "$BIN_DIR/umbrella-tui" "$BIN_DIR/umbrella-setup"
 
 cat > "$PREFIX/env.sh" <<EOF
 #!/usr/bin/env bash
@@ -291,7 +297,10 @@ echo ""
 echo "Open a new shell or run:"
 echo "  source \"$PREFIX/env.sh\""
 echo ""
-echo "Then try:"
-echo "  umbrellactl --help"
+echo "First-time setup (recommended):"
+echo "  umbrella-setup --start        # add your model API key, then open the town"
+echo ""
+echo "Or manually:"
 echo "  umbrella-manage bringup"
 echo "  umbrella-tui"
+echo "  umbrellactl --help"
