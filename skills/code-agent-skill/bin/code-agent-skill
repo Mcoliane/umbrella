@@ -4,20 +4,25 @@
 Turns the code shop from a snippet runner into a coding agent. Given a task and
 a working directory, it runs an agentic loop:
 
-  explore -> plan -> edit files -> run tests/linters -> observe -> fix -> repeat
+  (repo map) -> locate via search -> read -> plan -> edit -> run tests -> fix -> repeat
 
-then does a self-review pass over the git diff and applies fixes. Changes are
-git-backed (every run is a diff you can review or revert). Reads the configured
-model connection from the platform's model-broker config and calls it directly,
-so the loop is a real tool-use agent rather than a single completion.
+The agent starts with a task-ranked repository map (symbol-level, built with the
+Python AST plus lightweight multi-language regexes) and a ranked `search` tool,
+so it navigates an existing codebase like an engineer instead of reading files
+at random. It then does a self-review pass over the git diff and applies fixes.
+Changes are git-backed (every run is a diff you can review or revert). Reads the
+configured model connection from the platform's model-broker config and calls it
+directly, so the loop is a real tool-use agent rather than a single completion.
 
 stdlib only. Reads one invocation as JSON on stdin, emits one JSON object on
 stdout.
 """
 from __future__ import annotations
 
+import ast
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -35,6 +40,20 @@ MODEL_TIMEOUT = 120        # per model call
 OBS_CAP = 6000             # chars of a tool observation fed back to the model
 READ_CAP = 24000           # chars returned by read_file
 RUN_OUTPUT_CAP = 8000      # chars of command stdout/stderr kept
+REPO_MAP_BUDGET = 6000     # chars of the repository map injected at loop start
+SEARCH_MAX_RESULTS = 30    # ranked matches returned by the search tool
+
+# Source files the repo map and search scan; everything else is skipped.
+SOURCE_EXTS = {
+    ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".rb",
+    ".php", ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".swift", ".kt", ".scala",
+    ".sh", ".bash", ".sql", ".html", ".css", ".json", ".yaml", ".yml", ".toml", ".md",
+}
+_SKIP_PARTS = {".git", "__pycache__", "node_modules", ".venv", "venv", "dist", "build", ".pytest_cache", ".mypy_cache"}
+
+
+def _skip_path(p: Path) -> bool:
+    return any(part in _SKIP_PARTS for part in p.parts)
 
 
 # --------------------------------------------------------------------------- #
@@ -159,6 +178,110 @@ class Workspace:
         err = (proc.stderr or "")[-RUN_OUTPUT_CAP:]
         return f"exit={proc.returncode}\n--stdout--\n{out}\n--stderr--\n{err}".strip()
 
+    def search(self, query: str, max_results: int = SEARCH_MAX_RESULTS) -> str:
+        """Ranked substring search across source files: exact-word symbol hits
+        first, then any substring. Returns file:line: text so the agent can jump
+        straight to the relevant code instead of reading files blindly."""
+        q = str(query or "").strip()
+        if not q:
+            return "(empty query)"
+        needle = q.lower()
+        word_rx = re.compile(r"\b" + re.escape(q) + r"\b", re.IGNORECASE)
+        exact: list[str] = []
+        loose: list[str] = []
+        for p in sorted(self.root.rglob("*")):
+            if not p.is_file() or p.suffix.lower() not in SOURCE_EXTS or _skip_path(p):
+                continue
+            try:
+                lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            rel = p.relative_to(self.root)
+            for i, line in enumerate(lines, 1):
+                if needle not in line.lower():
+                    continue
+                row = f"{rel}:{i}: {line.strip()[:140]}"
+                (exact if word_rx.search(line) else loose).append(row)
+            if len(exact) + len(loose) >= max_results * 3:
+                break
+        hits = (exact + loose)[:max_results]
+        return "\n".join(hits) or f"(no matches for {query!r})"
+
+
+# --------------------------------------------------------------------------- #
+# Repository map — give the agent a symbol-level view of the codebase up front,
+# ranked toward the task, so it navigates like an engineer instead of guessing.
+# --------------------------------------------------------------------------- #
+def _extract_symbols(path: Path, text: str) -> list[str]:
+    """Top-level symbols (functions/classes/etc.) with a line number. Python uses
+    the AST; other languages use lightweight regexes."""
+    out: list[str] = []
+    if path.suffix.lower() in {".py", ".pyi"}:
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError):
+            return out
+        for node in tree.body:  # top-level only, keeps the map compact
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                args = ", ".join(a.arg for a in node.args.args)
+                out.append(f"def {node.name}({args})  L{node.lineno}")
+            elif isinstance(node, ast.ClassDef):
+                methods = [n.name for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+                m = (" {" + ", ".join(methods[:8]) + "}") if methods else ""
+                out.append(f"class {node.name}{m}  L{node.lineno}")
+        return out
+    patterns = (
+        r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(\w+)\s*\(",
+        r"^\s*(?:export\s+)?(?:abstract\s+)?class\s+(\w+)",
+        r"^\s*(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s*)?\(",
+        r"^\s*func\s+(?:\([^)]*\)\s*)?(\w+)\s*\(",   # Go
+        r"^\s*(?:pub\s+)?fn\s+(\w+)",                # Rust
+        r"^\s*type\s+(\w+)\s+struct",                # Go struct
+        r"^\s*(?:public|private|protected).*\s(\w+)\s*\(",  # Java-ish
+    )
+    compiled = [re.compile(p) for p in patterns]
+    for i, line in enumerate(text.splitlines(), 1):
+        for rx in compiled:
+            m = rx.match(line)
+            if m:
+                out.append(f"{m.group(1)}  L{i}")
+                break
+        if len(out) >= 40:
+            break
+    return out
+
+
+def build_repo_map(root: Path, task: str, budget: int = REPO_MAP_BUDGET) -> str:
+    files = [p for p in root.rglob("*")
+             if p.is_file() and p.suffix.lower() in SOURCE_EXTS and not _skip_path(p)]
+    if not files:
+        return ""
+    keywords = {w for w in re.findall(r"\w+", task.lower()) if len(w) > 2}
+    entries: list[tuple[float, str]] = []
+    for p in files[:600]:
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        symbols = _extract_symbols(p, text)
+        rel = str(p.relative_to(root))
+        score = sum(3 for k in keywords if k in rel.lower())
+        for s in symbols:
+            name = re.split(r"[ ({]", s, 1)[0].lower()
+            if name in keywords:
+                score += 5
+        score += min(len(symbols), 12) * 0.2  # bigger/central files rank a bit higher
+        block = rel + ":" + ("".join(f"\n    {s}" for s in symbols[:14]) if symbols else " (no top-level symbols)")
+        entries.append((score, block))
+    entries.sort(key=lambda e: e[0], reverse=True)
+    lines, used = ["Repository map (most task-relevant files first; use `search` to find more):"], 0
+    for _, block in entries:
+        if used + len(block) > budget:
+            break
+        lines.append(block)
+        used += len(block) + 1
+    return "\n".join(lines)
+
 
 # --------------------------------------------------------------------------- #
 # Git — checkpoint before, diff after.
@@ -190,6 +313,7 @@ def working_diff(root: Path) -> str:
 SYSTEM = """You are an elite software engineer operating as an autonomous coding agent inside a git-backed working directory. You write clean, correct, idiomatic, PROFESSIONAL code with sensible structure, error handling, docstrings/comments where they add value, and tests.
 
 You work strictly by TOOLS. On every turn you MUST reply with a SINGLE JSON object and NOTHING ELSE (no prose, no markdown fences). One of:
+  {"tool":"search","query":"<symbol or text>"}       # ranked search across the codebase (file:line hits) — use this to LOCATE relevant code
   {"tool":"list_dir","path":"."}
   {"tool":"read_file","path":"relative/path"}
   {"tool":"write_file","path":"relative/path","content":"<full file content>"}
@@ -198,10 +322,10 @@ You work strictly by TOOLS. On every turn you MUST reply with a SINGLE JSON obje
   {"tool":"finish","summary":"<what you built and how it was verified>"}
 
 Method (follow it):
-1. Explore the working dir (list_dir, read_file) before changing anything.
-2. Plan briefly, then implement in small steps.
+1. You are given a Repository map of the codebase up front. Use it plus `search` to find the exact files/symbols relevant to the task — do NOT read files at random on a large codebase.
+2. Read the specific code you'll change or depend on, then plan briefly and implement in small steps.
 3. VERIFY your work: write and RUN tests (pytest/unittest), and run linters/type-checkers/build commands via the run tool. Read the output. If anything fails, FIX it and re-run. Do not finish on unverified code.
-4. Prefer edit_file for small changes and write_file for new/rewritten files. Keep files complete and runnable.
+4. Prefer edit_file for surgical changes to existing files and write_file for new/rewritten files. Keep files complete and runnable, and match the surrounding code's style and conventions.
 5. Only call finish when the task is complete AND your verification commands pass.
 
 Rules: emit exactly one JSON object per turn. Keep going until done; do not ask the user questions. Assume you may install nothing new unless the task says so — prefer the standard library."""
@@ -264,6 +388,8 @@ def trim_messages(messages: list) -> list:
             actions.append(f"ran `{str(a.get('command', ''))[:70]}`")
         elif t == "read_file":
             actions.append(f"read {a.get('path')}")
+        elif t == "search":
+            actions.append(f"searched `{str(a.get('query', ''))[:40]}`")
     note = "PROGRESS SO FAR (older steps compacted to save context): " + "; ".join(actions[-60:] or ["(none)"])
     return head + [{"role": "user", "content": note}] + tail
 
@@ -291,8 +417,12 @@ def plan_subtasks(model_cfg: dict, ws: Workspace, task: str) -> dict:
 
 
 def run_loop(model_cfg: dict, ws: Workspace, task: str, max_iters: int, extra_system: str = "") -> tuple[list, int, bool]:
+    repo_map = build_repo_map(ws.root, task)
+    context = f"TASK:\n{task}\n\nThe working directory currently contains:\n{ws.list_dir('.')}"
+    if repo_map:
+        context += f"\n\n{repo_map}"
     messages = [{"role": "system", "content": SYSTEM + (("\n\n" + extra_system) if extra_system else "")},
-                {"role": "user", "content": f"TASK:\n{task}\n\nThe working directory currently contains:\n{ws.list_dir('.')}"}]
+                {"role": "user", "content": context}]
     verified = False
     iters = 0
     for iters in range(1, max_iters + 1):
@@ -305,6 +435,8 @@ def run_loop(model_cfg: dict, ws: Workspace, task: str, max_iters: int, extra_sy
                 verified = True
                 messages.append({"role": "user", "content": "acknowledged"})
                 break
+            elif tool == "search":
+                obs = ws.search(str(action.get("query", "")))
             elif tool == "list_dir":
                 obs = ws.list_dir(str(action.get("path", ".")))
             elif tool == "read_file":
@@ -318,7 +450,7 @@ def run_loop(model_cfg: dict, ws: Workspace, task: str, max_iters: int, extra_sy
             elif tool == "_error":
                 obs = f"Your last message was not a valid single JSON action: {action.get('error')}. Reply with exactly one JSON tool object."
             else:
-                obs = f"Unknown tool {tool!r}. Use one of list_dir, read_file, write_file, edit_file, run, finish."
+                obs = f"Unknown tool {tool!r}. Use one of search, list_dir, read_file, write_file, edit_file, run, finish."
         except Exception as ex:  # noqa: BLE001 — surface tool errors back to the agent
             obs = f"(tool error: {type(ex).__name__}: {ex})"
         messages.append({"role": "user", "content": str(obs)[:OBS_CAP]})
