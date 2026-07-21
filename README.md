@@ -36,7 +36,9 @@ Umbrella dispatches actions along two paths, classified by the capability contra
 - model-provider config in `control-plane/runtime/model-provider.json`
 - broker routing and connections in `control-plane/runtime/model-broker.json`
 
-The capability contract lives in [`control-plane/router/runtime-capabilities.json`](control-plane/router/runtime-capabilities.json) and is the source of truth for action-family ownership, compatibility aliases, and supported dispatch paths.
+The capability contract lives in [`control-plane/router/runtime-capabilities.json`](control-plane/router/runtime-capabilities.json) and is the source of truth for action-family ownership, compatibility aliases, and supported runtimes for **action-based steps** (steps submitted through `/v1/execution/submit-step-spec`).
+
+One path exists outside the capability contract: raw command steps. A plan step that carries a `command` field is sent to `/v1/execution/submit-command`, which runs it directly with `/bin/sh -c` on the host. This is a deliberate trusted-operator escape hatch — see the dispatch flow below for exactly what does and does not gate it.
 
 ## What Umbrella Is For
 
@@ -66,12 +68,20 @@ Umbrella-native runtime services:
 - `plugin-host`
 - `session`
 
-High-level flow:
+High-level flow for action-based steps:
 1. a run or session action enters Umbrella
 2. router resolves dispatch path and capability metadata
-3. policy authorizes the action
+3. execution calls `policy` (`/v1/policy/authorize-step`) and rejects the step if policy denies it
 4. execution dispatches to either `native` or `umbrella-agent-runtime`
 5. orchestrator/session persist results and summaries
+
+Raw command steps are different, and it is important to be honest about this:
+- a plan step with a `command` field goes to `/v1/execution/submit-command` and runs via `/bin/sh -c` on the host
+- **policy is not consulted on this path** — there is no `authorize-step` call for raw commands
+- the only gates are the mesh bearer token on the execution service and any `requiresApproval` flag the plan itself declares on the step
+- treat raw command plans as trusted-operator input: anyone who can submit one has shell access as the service user
+
+This posture is tracked in [docs/COMPLETION_PLAN.md](docs/COMPLETION_PLAN.md) (WS9, OQ-2).
 
 ## Umbrella Agent Runtime
 
