@@ -134,8 +134,13 @@ class UmbrellaTui:
             self.refresh_session()
             tag = self._provenance_tag(out)
             suffix = f" {tag}" if tag else ""
-            self.state.status = f"Talked to {self.state.active_target} in {elapsed}s{suffix}"
             reply = str(out.get("reply", "")).strip()
+            if str(out.get("delegationStatus", "")).strip() == "running":
+                shop = str(out.get("shopId", "a shop")).strip() or "a shop"
+                self.state.status = f"Delegated to {shop} — running in background"
+                self.add_local_event("system", f"⏳ {reply}")
+                return
+            self.state.status = f"Talked to {self.state.active_target} in {elapsed}s{suffix}"
             if reply and not any(str(msg.get("content", "")).strip() == reply for msg in self.state.local_transcript[-2:]):
                 self.add_local_event("system", f"{self.state.active_target} replied in {elapsed}s{suffix}.")
             return
@@ -818,6 +823,7 @@ class UmbrellaTui:
             self.refresh_session()
         else:
             self.add_local_event("system", "No town selected. Press n to create a town or s to open one.")
+        last_auto = time.time()
         while True:
             self._drain_pending_result()
             screen.erase()
@@ -825,6 +831,15 @@ class UmbrellaTui:
             screen.refresh()
             key = screen.getch()
             if key == -1:
+                # Idle tick: poll the session so background (async) delegation
+                # results appear on their own without a manual refresh.
+                now = time.time()
+                if self.state.selected_session_id and not self.state.pending_request and (now - last_auto) > 4.0:
+                    last_auto = now
+                    try:
+                        self.refresh_session()
+                    except Exception:
+                        pass
                 continue
             if key in (ord("q"), ord("Q")):
                 break
