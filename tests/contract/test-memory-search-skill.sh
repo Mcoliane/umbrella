@@ -25,12 +25,14 @@ EXEC_URL="http://127.0.0.1:$EXEC_PORT"
 SESSION_URL="http://127.0.0.1:$SESSION_PORT"
 REGISTRY_PATH="$ROOT/tmp/memory-search-skill-catalog-registry.json"
 MEM_DB_PATH="$ROOT/tmp/memory-search-skill.db"
+MEM_BOUNDARY_ROOT="$ROOT/tmp/memory-search-skill-boundary"
 AGENT_ID="memory-search-agent-$(date +%s)"
 
 rm -f "$REGISTRY_PATH"
 rm -f "$MEM_DB_PATH" "$MEM_DB_PATH-shm" "$MEM_DB_PATH-wal"
+rm -rf "$MEM_BOUNDARY_ROOT"
 
-python3 "$ROOT/services/memory/app.py" --host 127.0.0.1 --port "$MEM_PORT" --umbrella-root "$ROOT" --db-path "$MEM_DB_PATH" >"$ROOT/tmp/umbrella04-mss-memory.out" 2>"$ROOT/tmp/umbrella04-mss-memory.err" &
+python3 "$ROOT/services/memory/app.py" --host 127.0.0.1 --port "$MEM_PORT" --umbrella-root "$ROOT" --db-path "$MEM_DB_PATH" --boundary-root "$MEM_BOUNDARY_ROOT" >"$ROOT/tmp/umbrella04-mss-memory.out" 2>"$ROOT/tmp/umbrella04-mss-memory.err" &
 P1=$!
 python3 "$ROOT/services/catalog/app.py" --host 127.0.0.1 --port "$CATALOG_PORT" --umbrella-root "$ROOT" --registry "$REGISTRY_PATH" >"$ROOT/tmp/umbrella04-mss-catalog.out" 2>"$ROOT/tmp/umbrella04-mss-catalog.err" &
 P2=$!
