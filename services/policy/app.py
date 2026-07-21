@@ -301,11 +301,13 @@ class PolicyEngine:
         return {'ok': True, 'policyId': pol.get('id', 'umbrella.policy.multi-agent.v1'), 'agent': entry}
 
     def get_autonomy_mode(self) -> str:
-        """Global approval toggle: 'ask' (default, enforce approvals) or 'auto'
-        (auto-approve actions that would otherwise require approval)."""
+        """Global approval toggle: 'auto' (default — auto-approve actions that
+        would otherwise require approval) or 'ask' (enforce approvals). The
+        default is 'auto'; set it to 'ask' to require approval on high-risk
+        actions like code execution."""
         data = load_json(self.autonomy_path, {})
-        mode = str((data or {}).get('mode', 'ask')).strip().lower()
-        return 'auto' if mode == 'auto' else 'ask'
+        mode = str((data or {}).get('mode', 'auto')).strip().lower()
+        return 'ask' if mode == 'ask' else 'auto'
 
     def set_autonomy_mode(self, mode: str) -> dict:
         mode = 'auto' if str(mode or '').strip().lower() == 'auto' else 'ask'
