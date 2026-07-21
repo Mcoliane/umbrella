@@ -731,6 +731,13 @@ class UmbrellaTui:
             for line in textwrap.wrap(f"{label}: {content}", max(12, width)):
                 rows.append((attr, line))
         if self.state.pending_request:
+            # Optimistic echo: show the just-sent message immediately, before the
+            # server has recorded it. Cleared once the reply lands and the real
+            # 'user' message arrives via refresh_session (so it never doubles).
+            optimistic = str(self.state.pending_content or "").strip()
+            if optimistic:
+                for line in textwrap.wrap(f"you: {optimistic}", max(12, width)):
+                    rows.append((curses.A_NORMAL, line))
             pending = f'{self.state.pending_target or "agent"} is thinking {self._pending_spinner()} {self._pending_elapsed_sec()}s'
             for line in textwrap.wrap(pending, max(12, width)):
                 rows.append((curses.A_DIM, line))
