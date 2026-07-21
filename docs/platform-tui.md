@@ -88,6 +88,8 @@ Do not build the first version in raw `curses`.
 
 If dependency avoidance becomes critical later, a simpler fallback CLI can exist beside the TUI. The main operator interface should still be `textual`.
 
+Decision pending: the shipped build is stdlib `curses` (see Current Implementation Status below). Whether to bless curses or port to Textual is open question 5 in `docs/COMPLETION_PLAN.md`; this section records the original mandate and is left as written until that call is made.
+
 ## Entry Point
 
 Add a new top-level script:
@@ -264,13 +266,21 @@ Current command set:
 - `/status`
 - `/new [title]`
 - `/sessions`
-- `/session <id>`
+- `/session <id|n>`
 - `/agent <id>`
 - `/shops`
 - `/workers`
+- `/model`
+- `/model setup`
+- `/model glm47`
+- `/model glm5`
+- `/model test`
+- `/model use <model>`
+- `/model disable`
 - `/refresh`
 - `/start [full|core]`
 - `/stop`
+- `/quit`
 
 ## Dedicated Mayor Conversation Model
 
@@ -422,7 +432,7 @@ Use direct file reads only when no API exists or for richer local diagnostics.
 
 ## Mayor Conversation Transport
 
-There are two reasonable approaches.
+Resolved: Option B shipped. `POST /v1/sessions/{id}/converse` is implemented in the session service, and the TUI is a thin client over it. The two options are kept below as rationale for why the logic lives server-side.
 
 ### Option A: Thin Conversation Layer In TUI
 
@@ -439,7 +449,7 @@ Pros:
 Cons:
 - mayor behavior lives partly in the client
 
-### Option B: Add A Session Endpoint For Mayor Conversation
+### Option B: Add A Session Endpoint For Mayor Conversation (chosen)
 
 Example:
 - `POST /v1/sessions/{id}/converse`
@@ -457,9 +467,10 @@ Pros:
 Cons:
 - more backend work before the TUI lands
 
-Recommendation:
-- ship TUI MVP with Option A
-- move to Option B once the interaction pattern stabilizes
+Outcome:
+- the original recommendation was to ship the MVP with Option A and move to Option B once the interaction pattern stabilized
+- the build went straight to Option B: the session service owns conversation policy, decides direct reply vs orchestration, and returns the mayor's response
+- the TUI heartbeats the session, calls `converse`, and renders the reply
 
 ## Visual Style
 
@@ -571,29 +582,30 @@ If that feels good, the rest of the TUI will have a solid foundation.
 
 Implemented now:
 - `scripts/umbrella-tui`
-- stdlib curses-based shell under `services/tui/`
+- stdlib curses-based shell under `services/tui/` (`app.py`, `client.py`, `state.py` — a single-screen build, not the `views/` split suggested above; curses vs Textual is still open, see `docs/COMPLETION_PLAN.md` open question 5)
 - full-stack lifecycle launcher:
   - `scripts/control-plane/manage-platform-stack`
-- Home view:
-  - service health
-  - platform start/stop controls
-  - session list
-  - runtime classes
-  - agent package list
-- Town view:
-  - mayor/originator/session summary
-  - shop list
-  - message transcript
-  - create town
-  - talk to the mayor or another agent/shop
-  - mayor path can orchestrate worker shops and return the reconciliation summary as the reply
+  - platform start/stop from inside the TUI (`/start [full|core]`, `/stop`, and the `S`/`c`/`x` keys)
+- Town Hall transcript screen (the only screen; it is both the default surface and the home surface):
+  - message transcript with composer prompt
+  - sidebar: mayor id, heartbeat, platform stack state, model-provider status, agents, shops, service health
+  - create town, list/open towns
+  - talk to the mayor or any agent target (`Tab` cycles targets, `/agent <id>` sets one)
+- server-side conversation:
+  - `POST /v1/sessions/{id}/converse` shipped in the session service
+  - the TUI heartbeats the session, calls `converse` on a background thread, and renders the reply
+  - the mayor can reply directly or orchestrate worker shops and return the reconciliation summary as the reply
+- `/model` flow against the session service and model broker:
+  - `/model`, `/model setup`, `/model glm47`, `/model glm5`, `/model test`, `/model use <model>`, `/model disable`
+  - backed by `GET/POST /v1/runtime/model-provider`, `POST /v1/runtime/model-provider/test`, and `GET /v1/model-broker/health`
 
 Not implemented yet:
-- dedicated turn creation and orchestration controls
+- turns view, and dedicated turn creation/orchestration controls from the UI (client plumbing exists in `client.py`)
 - originator worker creation from inside the TUI
+- shops management controls (enable/disable actions, invocation history)
 - approvals view
 - runs view
 - service log drilldown
-- a server-side `converse` endpoint
+- Textual port (decision pending — `docs/COMPLETION_PLAN.md` open question 5)
 
-So the current build satisfies the initial shell and town-entry slice, but not the full MVP defined above.
+So the current build covers the shell, town entry, server-side conversation, and model configuration, but not the turns/runs/approvals surfaces of the full MVP defined above.
