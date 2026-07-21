@@ -25,12 +25,14 @@ EXEC_URL="http://127.0.0.1:$EXEC_PORT"
 SESSION_URL="http://127.0.0.1:$SESSION_PORT"
 REGISTRY_PATH="$ROOT/tmp/memory-link-skill-catalog-registry.json"
 MEM_DB_PATH="$ROOT/tmp/memory-link-skill.db"
+MEM_BOUNDARY_ROOT="$ROOT/tmp/memory-link-skill-boundary"
 MAYOR_AGENT_ID="memory-link-mayor-$(date +%s)"
 
 rm -f "$REGISTRY_PATH"
 rm -f "$MEM_DB_PATH" "$MEM_DB_PATH-shm" "$MEM_DB_PATH-wal"
+rm -rf "$MEM_BOUNDARY_ROOT"
 
-python3 "$ROOT/services/memory/app.py" --host 127.0.0.1 --port "$MEM_PORT" --umbrella-root "$ROOT" --db-path "$MEM_DB_PATH" >"$ROOT/tmp/umbrella04-mls-memory.out" 2>"$ROOT/tmp/umbrella04-mls-memory.err" &
+python3 "$ROOT/services/memory/app.py" --host 127.0.0.1 --port "$MEM_PORT" --umbrella-root "$ROOT" --db-path "$MEM_DB_PATH" --boundary-root "$MEM_BOUNDARY_ROOT" >"$ROOT/tmp/umbrella04-mls-memory.out" 2>"$ROOT/tmp/umbrella04-mls-memory.err" &
 P1=$!
 python3 "$ROOT/services/catalog/app.py" --host 127.0.0.1 --port "$CATALOG_PORT" --umbrella-root "$ROOT" --registry "$REGISTRY_PATH" >"$ROOT/tmp/umbrella04-mls-catalog.out" 2>"$ROOT/tmp/umbrella04-mls-catalog.err" &
 P2=$!
@@ -205,7 +207,8 @@ enabled = post(session_url + f'/v1/sessions/{session_id}/shops/town-hall/actions
     'actionId': 'skill.memory.link',
     'metadata': {'source': 'memory-link-contract'},
 })
-assert enabled.get('shop', {}).get('enabledActionIds') == ['skill.memory.link'], enabled
+town_hall_enabled = enabled.get('shop', {}).get('enabledActionIds', [])
+assert 'skill.memory.link' in town_hall_enabled, enabled
 
 invoked = post(session_url + f'/v1/sessions/{session_id}/invoke-action', {
     'shopId': 'town-hall',

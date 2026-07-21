@@ -39,8 +39,10 @@ TESTS=(
   "$ROOT/tests/contract/test-memory-boundary-policy-hotpath.sh"
   "$ROOT/tests/contract/test-policy-multi-agent-gates.sh"
   "$ROOT/tests/contract/test-service-manager.sh"
+  "$ROOT/tests/contract/test-memory-durable-bringup.sh"
   "$ROOT/tests/contract/test-bootstrap-register-agent.sh"
   "$ROOT/tests/contract/test-service-auth-mesh.sh"
+  "$ROOT/tests/contract/test-service-auth-gating.sh"
   "$ROOT/tests/contract/test-umbrellactl-smoke.sh"
 )
 

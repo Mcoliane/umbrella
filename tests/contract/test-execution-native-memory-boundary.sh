@@ -20,8 +20,13 @@ MEM_CORE_URL="http://127.0.0.1:$MEM_CORE_PORT"
 POLICY_URL="http://127.0.0.1:$POLICY_PORT"
 EXEC_URL="http://127.0.0.1:$EXEC_PORT"
 AGENT_ID="native-boundary-agent-$(date +%s)"
+MEM_DB_PATH="$ROOT/tmp/umbrella04-enmb-memory.db"
+MEM_BOUNDARY_ROOT="$ROOT/tmp/umbrella04-enmb-memory-boundary"
 
-python3 "$ROOT/services/memory/app.py" --host 127.0.0.1 --port "$MEM_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-enmb-memory.out" 2>"$ROOT/tmp/umbrella04-enmb-memory.err" &
+rm -f "$MEM_DB_PATH" "$MEM_DB_PATH-shm" "$MEM_DB_PATH-wal"
+rm -rf "$MEM_BOUNDARY_ROOT"
+
+python3 "$ROOT/services/memory/app.py" --host 127.0.0.1 --port "$MEM_PORT" --umbrella-root "$ROOT" --db-path "$MEM_DB_PATH" --boundary-root "$MEM_BOUNDARY_ROOT" >"$ROOT/tmp/umbrella04-enmb-memory.out" 2>"$ROOT/tmp/umbrella04-enmb-memory.err" &
 P1=$!
 python3 "$ROOT/services/memory-core/app.py" --host 127.0.0.1 --port "$MEM_CORE_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-enmb-memorycore.out" 2>"$ROOT/tmp/umbrella04-enmb-memorycore.err" &
 P2=$!
