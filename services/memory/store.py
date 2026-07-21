@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 import uuid
@@ -23,18 +24,22 @@ def etag_for(version: int, node_id: str) -> str:
 
 
 class MemoryStore:
-    def __init__(self, db_path: Path):
+    MAX_REPLAY_ATTEMPTS = 5
+
+    def __init__(self, db_path: Path, boundary_root: Path | None = None):
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._local = threading.local()
-        self.boundary_root = self.db_path.parent.parent / 'memory-boundary'
+        self.boundary_root = boundary_root if boundary_root is not None else self.db_path.parent.parent / 'memory-boundary'
         self.promotion_queue_dir = self.boundary_root / 'promotion-queue'
         self.promotion_dlq_dir = self.boundary_root / 'promotion-dlq'
         self.promotion_processed_dir = self.boundary_root / 'promotion-processed'
+        self.promotion_parked_dir = self.boundary_root / 'promotion-parked'
         self.promotion_queue_dir.mkdir(parents=True, exist_ok=True)
         self.promotion_dlq_dir.mkdir(parents=True, exist_ok=True)
         self.promotion_processed_dir.mkdir(parents=True, exist_ok=True)
+        self.promotion_parked_dir.mkdir(parents=True, exist_ok=True)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path))
@@ -417,8 +422,40 @@ class MemoryStore:
     def _processed_path(self, token: str) -> Path:
         return self.promotion_processed_dir / f'{token}.json'
 
+    def _parked_path(self, token: str) -> Path:
+        return self.promotion_parked_dir / f'{token}.json'
+
     def _metrics_path(self) -> Path:
         return self.boundary_root / 'metrics.json'
+
+    @staticmethod
+    def _write_json_atomic(path: Path, obj: dict):
+        tmp = path.with_name(path.name + '.tmp')
+        tmp.write_text(json.dumps(obj, indent=2) + '\n', encoding='utf-8')
+        os.replace(tmp, path)
+
+    @staticmethod
+    def validate_promotion_payload(req: dict):
+        source = req.get('source') if isinstance(req.get('source'), dict) else {}
+        source_namespace = str(source.get('namespace', '')).strip()
+        source_key = str(source.get('key', '')).strip()
+        if not source_namespace or not source_key:
+            raise ValueError('source.namespace and source.key are required')
+
+    def _park_dlq_entry(self, p: Path, entry: dict, reason: str) -> bool:
+        parked = dict(entry)
+        parked['status'] = 'PARKED'
+        parked['parkedAt'] = now_iso()
+        parked['parkReason'] = reason
+        try:
+            self._write_json_atomic(self._parked_path(p.stem), parked)
+        except Exception:
+            return False
+        try:
+            p.unlink()
+        except Exception:
+            pass
+        return True
 
     def _load_metrics(self) -> dict:
         with self._lock:
@@ -432,6 +469,7 @@ class MemoryStore:
                     'replayedTotal': 0,
                     'replaySucceededTotal': 0,
                     'replayFailedTotal': 0,
+                    'parkedTotal': 0,
                     'updatedAt': now_iso(),
                 }
             try:
@@ -446,6 +484,7 @@ class MemoryStore:
                 'replayedTotal': int(row.get('replayedTotal', 0)),
                 'replaySucceededTotal': int(row.get('replaySucceededTotal', 0)),
                 'replayFailedTotal': int(row.get('replayFailedTotal', 0)),
+                'parkedTotal': int(row.get('parkedTotal', 0)),
                 'updatedAt': str(row.get('updatedAt', now_iso())),
             }
             return out
@@ -453,7 +492,7 @@ class MemoryStore:
     def _save_metrics(self, metrics: dict):
         with self._lock:
             metrics['updatedAt'] = now_iso()
-            self._metrics_path().write_text(json.dumps(metrics, indent=2) + '\n', encoding='utf-8')
+            self._write_json_atomic(self._metrics_path(), metrics)
 
     def _bump_metrics(self, **counts: int):
         m = self._load_metrics()
@@ -471,8 +510,9 @@ class MemoryStore:
         age = now_ts - float(oldest)
         return age if age > 0 else 0.0
 
-    def enqueue_promotion(self, req: dict, actor: str, request_id: str = '') -> dict:
+    def enqueue_promotion(self, req: dict, actor: str, request_id: str = '', drain: bool = True) -> dict:
         with self._lock:
+            self.validate_promotion_payload(req)
             token = self._promotion_token()
             entry = {
                 'token': token,
@@ -482,9 +522,15 @@ class MemoryStore:
                 'requestId': request_id,
                 'payload': req,
             }
-            self._queue_path(token).write_text(json.dumps(entry, indent=2) + '\n', encoding='utf-8')
+            self._write_json_atomic(self._queue_path(token), entry)
             self._bump_metrics(queuedTotal=1)
-            return {'ok': True, 'queued': True, 'token': token, 'queuePath': str(self._queue_path(token))}
+            out = {'ok': True, 'queued': True, 'token': token, 'queuePath': str(self._queue_path(token))}
+            if drain:
+                try:
+                    out['drain'] = self.process_promotion_queue(actor=actor, request_id=request_id)
+                except Exception as ex:
+                    out['drain'] = {'ok': False, 'error': str(ex)}
+            return out
 
     def process_promotion_queue(self, actor: str, request_id: str = '', max_items: int = 50) -> dict:
         with self._lock:
@@ -505,18 +551,8 @@ class MemoryStore:
                 payload = entry.get('payload') if isinstance(entry.get('payload'), dict) else {}
                 try:
                     out = self.promote_from_memory_core(payload, actor=actor, request_id=request_id)
-                    done = {
-                        'token': token,
-                        'status': 'SUCCESS',
-                        'processedAt': now_iso(),
-                        'attempts': attempts,
-                        'result': out,
-                    }
-                    self._processed_path(token).write_text(json.dumps(done, indent=2) + '\n', encoding='utf-8')
-                    succeeded += 1
                 except Exception as ex:
                     failed += 1
-                    dlq_tokens.append(token)
                     failed_entry = {
                         'token': token,
                         'status': 'FAILED',
@@ -527,12 +563,33 @@ class MemoryStore:
                         'actor': actor,
                         'requestId': request_id,
                     }
-                    self._dlq_path(token).write_text(json.dumps(failed_entry, indent=2) + '\n', encoding='utf-8')
-                finally:
+                    try:
+                        self._write_json_atomic(self._dlq_path(token), failed_entry)
+                    except Exception:
+                        # DLQ write failed: keep the queue entry so nothing is lost.
+                        continue
+                    dlq_tokens.append(token)
                     try:
                         p.unlink()
                     except Exception:
                         pass
+                    continue
+                done = {
+                    'token': token,
+                    'status': 'SUCCESS',
+                    'processedAt': now_iso(),
+                    'attempts': attempts,
+                    'result': out,
+                }
+                try:
+                    self._write_json_atomic(self._processed_path(token), done)
+                except Exception:
+                    pass
+                succeeded += 1
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
 
             self._bump_metrics(processedTotal=processed, succeededTotal=succeeded, failedTotal=failed)
 
@@ -556,23 +613,48 @@ class MemoryStore:
                     rows.append({'token': p.stem, 'status': 'FAILED', 'parseError': True})
             return {'ok': True, 'count': len(rows), 'entries': rows}
 
-    def replay_promotion_dlq(self, actor: str, request_id: str = '', max_items: int = 20) -> dict:
+    def replay_promotion_dlq(self, actor: str, request_id: str = '', max_items: int = 20, max_attempts: int = MAX_REPLAY_ATTEMPTS) -> dict:
         with self._lock:
             replayed = 0
             succeeded = 0
             failed = 0
+            parked = 0
             for p in sorted(self.promotion_dlq_dir.glob('*.json')):
-                if replayed >= max_items:
+                if replayed + parked >= max_items:
                     break
-                replayed += 1
                 token = p.stem
                 try:
                     entry = json.loads(p.read_text(encoding='utf-8'))
                 except Exception:
-                    failed += 1
+                    # Preserve the original bytes in the parked record — the
+                    # unreadable file is the only copy of the payload.
+                    try:
+                        raw = p.read_text(encoding='utf-8', errors='replace')
+                    except OSError:
+                        failed += 1
+                        continue
+                    if self._park_dlq_entry(p, {'token': token, 'parseError': True, 'raw': raw}, 'dlq_entry_unreadable'):
+                        parked += 1
+                    else:
+                        failed += 1
                     continue
-                attempts = int(entry.get('attempts', 0)) + 1
                 payload = entry.get('payload') if isinstance(entry.get('payload'), dict) else {}
+                prior_attempts = int(entry.get('attempts', 0))
+                park_reason = ''
+                try:
+                    self.validate_promotion_payload(payload)
+                except ValueError as ex:
+                    park_reason = f'payload_validation_failed: {ex}'
+                if not park_reason and prior_attempts >= max_attempts:
+                    park_reason = f'max_attempts_exceeded: {prior_attempts} >= {max_attempts}'
+                if park_reason:
+                    if self._park_dlq_entry(p, entry, park_reason):
+                        parked += 1
+                    else:
+                        failed += 1
+                    continue
+                replayed += 1
+                attempts = prior_attempts + 1
                 try:
                     out = self.promote_from_memory_core(payload, actor=actor, request_id=request_id)
                     done = {
@@ -582,7 +664,7 @@ class MemoryStore:
                         'attempts': attempts,
                         'result': out,
                     }
-                    self._processed_path(token).write_text(json.dumps(done, indent=2) + '\n', encoding='utf-8')
+                    self._write_json_atomic(self._processed_path(token), done)
                     try:
                         p.unlink()
                     except Exception:
@@ -593,14 +675,16 @@ class MemoryStore:
                     entry['attempts'] = attempts
                     entry['lastError'] = str(ex)
                     entry['failedAt'] = now_iso()
-                    p.write_text(json.dumps(entry, indent=2) + '\n', encoding='utf-8')
-            self._bump_metrics(replayedTotal=replayed, replaySucceededTotal=succeeded, replayFailedTotal=failed)
+                    self._write_json_atomic(p, entry)
+            self._bump_metrics(replayedTotal=replayed, replaySucceededTotal=succeeded, replayFailedTotal=failed, parkedTotal=parked)
             return {
                 'ok': True,
                 'replayed': replayed,
                 'succeeded': succeeded,
                 'failed': failed,
+                'parked': parked,
                 'dlqDepth': len(list(self.promotion_dlq_dir.glob('*.json'))),
+                'parkedDepth': len(list(self.promotion_parked_dir.glob('*.json'))),
             }
 
     def boundary_stats(self) -> dict:
@@ -615,6 +699,7 @@ class MemoryStore:
                 'promotionQueueDepth': len(list(self.promotion_queue_dir.glob('*.json'))),
                 'promotionDlqDepth': len(list(self.promotion_dlq_dir.glob('*.json'))),
                 'promotionProcessedCount': len(list(self.promotion_processed_dir.glob('*.json'))),
+                'promotionParkedCount': len(list(self.promotion_parked_dir.glob('*.json'))),
                 'promotionQueueOldestAgeSec': round(self._oldest_age_seconds(self.promotion_queue_dir), 3),
                 'promotionDlqOldestAgeSec': round(self._oldest_age_seconds(self.promotion_dlq_dir), 3),
                 'counters': m,
@@ -635,6 +720,9 @@ class MemoryStore:
             '# HELP umbrella_memory_promotion_dlq_depth Current promotion DLQ depth',
             '# TYPE umbrella_memory_promotion_dlq_depth gauge',
             f"umbrella_memory_promotion_dlq_depth {int(stats.get('promotionDlqDepth', 0))}",
+            '# HELP umbrella_memory_promotion_parked_depth Current parked promotion count',
+            '# TYPE umbrella_memory_promotion_parked_depth gauge',
+            f"umbrella_memory_promotion_parked_depth {int(stats.get('promotionParkedCount', 0))}",
             '# HELP umbrella_memory_promotion_processed_total Total processed promotions',
             '# TYPE umbrella_memory_promotion_processed_total counter',
             f"umbrella_memory_promotion_processed_total {int(counters.get('processedTotal', 0))}",

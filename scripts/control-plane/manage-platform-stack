@@ -262,7 +262,7 @@ for name, s in m.get('services', {}).items():
         url = (s.get('url', '').rstrip('/') + s.get('health', '')).strip()
         try:
             headers = {}
-            if token and name in {'policy','lifecycle','router','scheduler','memory-core','execution','approval','orchestrator','model-broker'}:
+            if token:
                 headers['Authorization'] = f'Bearer {token}'
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=1.5) as r:
@@ -358,6 +358,7 @@ PY
   ROUTER_PORT="${ROUTER_PORT:-$(free_port)}"
   SCHEDULER_PORT="${SCHEDULER_PORT:-$(free_port)}"
   MEMORY_CORE_PORT="${MEMORY_CORE_PORT:-$(free_port)}"
+  MEMORY_PORT="${MEMORY_PORT:-$(free_port)}"
   EXECUTION_PORT="${EXECUTION_PORT:-$(free_port)}"
   APPROVAL_PORT="${APPROVAL_PORT:-$(free_port)}"
   ORCHESTRATOR_PORT="${ORCHESTRATOR_PORT:-$(free_port)}"
@@ -371,6 +372,7 @@ PY
   ROUTER_URL="http://127.0.0.1:$ROUTER_PORT"
   SCHEDULER_URL="http://127.0.0.1:$SCHEDULER_PORT"
   MEMORY_CORE_URL="http://127.0.0.1:$MEMORY_CORE_PORT"
+  MEMORY_URL="http://127.0.0.1:$MEMORY_PORT"
   EXECUTION_URL="http://127.0.0.1:$EXECUTION_PORT"
   APPROVAL_URL="http://127.0.0.1:$APPROVAL_PORT"
   ORCHESTRATOR_URL="http://127.0.0.1:$ORCHESTRATOR_PORT"
@@ -398,16 +400,19 @@ PY
   P5="$(spawn_service "$LOG_DIR/memory-core.out" "$LOG_DIR/memory-core.err" python3 "$ROOT/services/memory-core/app.py" --host 127.0.0.1 --port "$MEMORY_CORE_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN")"
   SERVICES+=("memory-core|$MEMORY_CORE_PORT|$P5|/v1/memory-core/health")
   BRINGUP_PIDS+=("$P5")
-  P9="$(spawn_service "$LOG_DIR/catalog.out" "$LOG_DIR/catalog.err" python3 "$ROOT/services/catalog/app.py" --host 127.0.0.1 --port "$CATALOG_PORT" --umbrella-root "$ROOT")"
+  P13="$(spawn_service "$LOG_DIR/memory.out" "$LOG_DIR/memory.err" python3 "$ROOT/services/memory/app.py" --host 127.0.0.1 --port "$MEMORY_PORT" --umbrella-root "$ROOT" --db-path "$RUNTIME_ROOT/control-plane/observability/memory-service/memory.db" --boundary-root "$RUNTIME_ROOT/control-plane/observability/memory-boundary" --token "$MESH_TOKEN")"
+  SERVICES+=("memory|$MEMORY_PORT|$P13|/v1/memory/health")
+  BRINGUP_PIDS+=("$P13")
+  P9="$(spawn_service "$LOG_DIR/catalog.out" "$LOG_DIR/catalog.err" python3 "$ROOT/services/catalog/app.py" --host 127.0.0.1 --port "$CATALOG_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN")"
   SERVICES+=("catalog|$CATALOG_PORT|$P9|/v1/catalog/health")
   BRINGUP_PIDS+=("$P9")
-  P10="$(spawn_service "$LOG_DIR/plugin-host.out" "$LOG_DIR/plugin-host.err" python3 "$ROOT/services/plugin_host/app.py" --host 127.0.0.1 --port "$PLUGIN_HOST_PORT" --umbrella-root "$ROOT" --catalog-url "$CATALOG_URL")"
+  P10="$(spawn_service "$LOG_DIR/plugin-host.out" "$LOG_DIR/plugin-host.err" python3 "$ROOT/services/plugin_host/app.py" --host 127.0.0.1 --port "$PLUGIN_HOST_PORT" --umbrella-root "$ROOT" --catalog-url "$CATALOG_URL" --mesh-token "$MESH_TOKEN" --token "$MESH_TOKEN")"
   SERVICES+=("plugin-host|$PLUGIN_HOST_PORT|$P10|/v1/plugin-host/health")
   BRINGUP_PIDS+=("$P10")
   P12="$(spawn_service "$LOG_DIR/model-broker.out" "$LOG_DIR/model-broker.err" python3 "$ROOT/services/model_broker/app.py" --host 127.0.0.1 --port "$MODEL_BROKER_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN")"
   SERVICES+=("model-broker|$MODEL_BROKER_PORT|$P12|/v1/model-broker/health")
   BRINGUP_PIDS+=("$P12")
-  P6="$(spawn_service "$LOG_DIR/execution.out" "$LOG_DIR/execution.err" python3 "$ROOT/services/execution/app.py" --host 127.0.0.1 --port "$EXECUTION_PORT" --umbrella-root "$ROOT" --memory-core-url "$MEMORY_CORE_URL" --policy-url "$POLICY_URL" --catalog-url "$CATALOG_URL" --plugin-host-url "$PLUGIN_HOST_URL" --mesh-token "$MESH_TOKEN" --token "$MESH_TOKEN")"
+  P6="$(spawn_service "$LOG_DIR/execution.out" "$LOG_DIR/execution.err" python3 "$ROOT/services/execution/app.py" --host 127.0.0.1 --port "$EXECUTION_PORT" --umbrella-root "$ROOT" --memory-core-url "$MEMORY_CORE_URL" --memory-url "$MEMORY_URL" --policy-url "$POLICY_URL" --catalog-url "$CATALOG_URL" --plugin-host-url "$PLUGIN_HOST_URL" --mesh-token "$MESH_TOKEN" --token "$MESH_TOKEN")"
   SERVICES+=("execution|$EXECUTION_PORT|$P6|/v1/execution/health")
   BRINGUP_PIDS+=("$P6")
   P7="$(spawn_service "$LOG_DIR/approval.out" "$LOG_DIR/approval.err" python3 "$ROOT/services/approval/app.py" --host 127.0.0.1 --port "$APPROVAL_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN")"
@@ -418,7 +423,7 @@ PY
   BRINGUP_PIDS+=("$P8")
 
   if [[ "$PROFILE" == "full" ]]; then
-    P11="$(spawn_service "$LOG_DIR/session.out" "$LOG_DIR/session.err" python3 "$ROOT/services/session/app.py" --host 127.0.0.1 --port "$SESSION_PORT" --umbrella-root "$ROOT" --catalog-url "$CATALOG_URL" --execution-url "$EXECUTION_URL" --mesh-token "$MESH_TOKEN")"
+    P11="$(spawn_service "$LOG_DIR/session.out" "$LOG_DIR/session.err" python3 "$ROOT/services/session/app.py" --host 127.0.0.1 --port "$SESSION_PORT" --umbrella-root "$ROOT" --catalog-url "$CATALOG_URL" --execution-url "$EXECUTION_URL" --mesh-token "$MESH_TOKEN" --token "$MESH_TOKEN")"
     SERVICES+=("session|$SESSION_PORT|$P11|/v1/session/health")
     BRINGUP_PIDS+=("$P11")
   fi
@@ -430,14 +435,15 @@ PY
   wait_health "$ROUTER_URL/v1/router/health" "$MESH_TOKEN"
   wait_health "$SCHEDULER_URL/v1/scheduler/health" "$MESH_TOKEN"
   wait_health "$MEMORY_CORE_URL/v1/memory-core/health" "$MESH_TOKEN"
-  wait_health "$CATALOG_URL/v1/catalog/health"
-  wait_health "$PLUGIN_HOST_URL/v1/plugin-host/health"
+  wait_health "$MEMORY_URL/v1/memory/health" "$MESH_TOKEN"
+  wait_health "$CATALOG_URL/v1/catalog/health" "$MESH_TOKEN"
+  wait_health "$PLUGIN_HOST_URL/v1/plugin-host/health" "$MESH_TOKEN"
   wait_health "$MODEL_BROKER_URL/v1/model-broker/health" "$MESH_TOKEN"
   wait_health "$EXECUTION_URL/v1/execution/health" "$MESH_TOKEN"
   wait_health "$APPROVAL_URL/v1/approval/health" "$MESH_TOKEN"
   wait_health "$ORCHESTRATOR_URL/v1/orchestrator/health" "$MESH_TOKEN"
   if [[ "$PROFILE" == "full" ]]; then
-    wait_health "$SESSION_URL/v1/session/health"
+    wait_health "$SESSION_URL/v1/session/health" "$MESH_TOKEN"
   fi
 
   # Bringup is committed: disarm the failure cleanup so a nonzero exit from

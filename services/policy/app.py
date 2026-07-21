@@ -189,12 +189,14 @@ class PolicyEngine:
         multi_agent_policy_path: str,
         agent_registry_path: str,
         catalog_url: str = '',
+        mesh_token: str = '',
     ):
         self.root = umbrella_root
         self.parity_reconcile_cmd = parity_reconcile_cmd.strip() or str(self.root / 'scripts' / 'tools' / 'memory-core-reconcile')
         self.multi_agent_policy_path = (self.root / multi_agent_policy_path).resolve()
         self.agent_registry_path = (self.root / agent_registry_path).resolve()
         self.catalog_url = catalog_url.rstrip('/')
+        self.mesh_token = mesh_token.strip()
         self.drift_lint = self.root / 'scripts' / 'control-plane' / 'drift-lint'
         self.parity_gate = self.root / 'scripts' / 'control-plane' / 'capability-parity-gate'
         self.multi_agent_policy_path.parent.mkdir(parents=True, exist_ok=True)
@@ -204,12 +206,18 @@ class PolicyEngine:
         if not self.agent_registry_path.exists():
             write_json(self.agent_registry_path, {'agents': {}})
 
+    def _catalog_headers(self) -> dict:
+        if self.mesh_token:
+            return {'Authorization': f'Bearer {self.mesh_token}'}
+        return {}
+
     def _catalog_action(self, action_id: str, timeout: int = 15) -> dict | None:
         if not self.catalog_url:
             return None
         req = urllib.request.Request(
             f'{self.catalog_url}/v1/catalog/actions/{urllib.parse.quote(action_id, safe="")}',
             method='GET',
+            headers=self._catalog_headers(),
         )
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -225,6 +233,7 @@ class PolicyEngine:
         req = urllib.request.Request(
             f'{self.catalog_url}/v1/catalog/items/{urllib.parse.quote(item_id, safe="")}',
             method='GET',
+            headers=self._catalog_headers(),
         )
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -707,6 +716,7 @@ def main() -> int:
         multi_agent_policy_path=args.multi_agent_policy,
         agent_registry_path=args.agent_registry,
         catalog_url=args.catalog_url,
+        mesh_token=token,
     )
     handler = handler_factory(engine, token)
     httpd = ThreadingHTTPServer((args.host, args.port), handler)
