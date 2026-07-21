@@ -12,6 +12,7 @@ from services.tui.client import TuiClient
 from services.tui.state import PlatformState
 
 ZAI_GLM5_CODING_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
+ZAI_GLM5_GENERAL_BASE_URL = "https://api.z.ai/api/paas/v4"
 ZAI_GLM5_TURBO_MODEL = "glm-5-turbo"
 ZAI_GLM47_CODING_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
 ZAI_GLM47_MODEL = "glm-4.7"
@@ -244,7 +245,12 @@ class UmbrellaTui:
 
     def save_glm5_preset(self, screen):
         current = self.state.home.get("modelProvider") if isinstance(self.state.home.get("modelProvider"), dict) else {}
-        provider = self._recommended_provider_defaults("zai", current)
+        provider = {
+            "type": "zai",
+            "baseUrl": ZAI_GLM5_GENERAL_BASE_URL,
+            "defaultModel": ZAI_GLM5_TURBO_MODEL,
+            "timeoutSec": int(((current.get("provider") or {}).get("timeoutSec", 120)) or 120),
+        }
         api_key = self.prompt(screen, "Z.ai API key (blank keeps existing)", default="", secret=True)
         if api_key is None:
             return

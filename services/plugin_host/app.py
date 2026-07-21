@@ -338,7 +338,7 @@ def handler_factory(engine: PluginHostEngine, token: str):
                         'containerRuntimePreference': engine.container_runtime_preference,
                     },
                 )
-                return json_response(self, 404, err('NOT_FOUND', 'route not found', req_id))
+            return json_response(self, 404, err('NOT_FOUND', 'route not found', req_id))
 
         def do_POST(self):
             req_id = self._request_id()

@@ -19,18 +19,20 @@ class TuiClient:
         self.platform_manifest = {}
         self.services = {}
         self.service_overrides = {}
+        # Last-resort fallbacks used only when the manifest lacks an entry;
+        # each port mirrors the argparse default in that service's app.py.
         self.default_urls = {
-            "policy": "http://127.0.0.1:8788",
+            "policy": "http://127.0.0.1:8791",
             "catalog": "http://127.0.0.1:8786",
-            "plugin-host": "http://127.0.0.1:8790",
+            "plugin-host": "http://127.0.0.1:8785",
             "execution": "http://127.0.0.1:8794",
             "session": "http://127.0.0.1:8784",
             "model-broker": "http://127.0.0.1:8796",
             "router": "http://127.0.0.1:8795",
-            "orchestrator": "http://127.0.0.1:8787",
-            "approval": "http://127.0.0.1:8793",
-            "memory-core": "http://127.0.0.1:8792",
-            "memory": "http://127.0.0.1:8791",
+            "orchestrator": "http://127.0.0.1:8797",
+            "approval": "http://127.0.0.1:8792",
+            "memory-core": "http://127.0.0.1:8798",
+            "memory": "http://127.0.0.1:8787",
         }
         self.platform_script = root / "scripts" / "control-plane" / "manage-platform-stack"
         self.reload_manifests()
