@@ -56,40 +56,44 @@ def main() -> int:
 
     provider_type, base_url, model, label = PRESETS[args.provider]
 
-    current = runtime_model.load_model_broker(root)
-    if current.get('enabled') and interactive:
-        print(f"A model is already configured ({label if False else 'existing'}). "
-              "Entering a new key will replace it.\n")
+    already_configured = bool(runtime_model.load_model_broker(root).get('enabled')) and _has_key(root)
 
-    # Step 1 — the key. First and only required question.
+    # Step 1 — the key. When a model is already configured, entering a key is
+    # optional (blank keeps the existing one) so `umbrella-setup --start` can be
+    # used as a plain "start everything and talk" command.
     if interactive:
-        print(f"Step 1 of 1 — paste your {label} API key.")
-        print("  (get one at https://z.ai — input is hidden)")
-        key = getpass.getpass("  API key: ").strip()
+        if already_configured:
+            print("A model is already configured. Press Enter to keep it, "
+                  "or paste a new key to switch.")
+            key = getpass.getpass("  API key (blank = keep current): ").strip()
+        else:
+            print(f"Step 1 of 1 — paste your {label} API key.")
+            print("  (input is hidden)")
+            key = getpass.getpass("  API key: ").strip()
     else:
         key = sys.stdin.readline().strip()
 
-    if not key:
+    if key:
+        # Build the broker config from the canonical default, enable the preset.
+        config = runtime_model._default_broker_config()
+        config['enabled'] = True
+        conn = config['connections']['default']
+        conn['providerId'] = provider_type
+        conn['enabled'] = True
+        conn['label'] = label
+        conn['baseUrl'] = base_url
+        conn['defaultModel'] = model
+        config['routing']['defaultConnectionId'] = 'default'
+        config['broker']['defaultConnectionId'] = 'default'
+        secrets = {'connections': {'default': {'apiKey': key}}}
+        runtime_model.save_model_broker(root, config=config, secrets=secrets)
+        print(f"\n  Configured {model} at {base_url}.")
+        print("  Key stored (0600) — not committed, not logged.\n")
+    elif already_configured:
+        print("  Keeping the existing model configuration.\n")
+    else:
         print("No API key provided — nothing was changed.", file=sys.stderr)
         return 1
-
-    # Build the broker config from the canonical default, then enable the preset.
-    config = runtime_model._default_broker_config()
-    config['enabled'] = True
-    conn = config['connections']['default']
-    conn['providerId'] = provider_type
-    conn['enabled'] = True
-    conn['label'] = label
-    conn['baseUrl'] = base_url
-    conn['defaultModel'] = model
-    config['routing']['defaultConnectionId'] = 'default'
-    config['broker']['defaultConnectionId'] = 'default'
-
-    secrets = {'connections': {'default': {'apiKey': key}}}
-    runtime_model.save_model_broker(root, config=config, secrets=secrets)
-
-    print(f"\n  Configured {model} at {base_url}.")
-    print("  Key stored (0600) — not committed, not logged.\n")
 
     if args.start:
         return _start_platform(root)
@@ -100,6 +104,19 @@ def main() -> int:
     print("  ...then press n to create a town and say hello to the mayor.")
     print("\nOr re-run with --start to do that automatically.")
     return 0
+
+
+def _has_key(root: Path) -> bool:
+    from services import runtime_model
+    try:
+        p = runtime_model.model_broker_secrets_path(root)
+        if not p.exists():
+            return False
+        import json
+        secrets = json.loads(p.read_text(encoding='utf-8'))
+        return bool(((secrets.get('connections') or {}).get('default') or {}).get('apiKey'))
+    except Exception:
+        return False
 
 
 def _start_platform(root: Path) -> int:
