@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""Shop originator skill for the Umbrella agent runtime.
+
+Creates a new worker shop in the current session by calling the session
+service's originations endpoint, so an originator (or the mayor via delegation)
+can build out the town on demand.
+
+Reads one invocation as JSON on stdin. The session URL and mesh token are read
+from the platform manifest under UMBRELLA_ROOT (the plugin-host injects
+UMBRELLA_ROOT); the session id comes from the invocation inputs/context. stdlib
+only.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+
+def _load_manifest(root: Path) -> dict:
+    for name in ("platform-manifest.json", "service-manifest.json"):
+        p = root / "control-plane" / "runtime" / name
+        if p.exists():
+            try:
+                return json.loads(p.read_text(encoding="utf-8"))
+            except ValueError:
+                continue
+    return {}
+
+
+def _session_endpoint(manifest: dict) -> tuple[str, str]:
+    services = manifest.get("services") if isinstance(manifest.get("services"), dict) else {}
+    session = services.get("session") if isinstance(services.get("session"), dict) else {}
+    url = str(session.get("url", "")).strip()
+    token = ""
+    auth = manifest.get("auth") if isinstance(manifest.get("auth"), dict) else {}
+    token_path = str(auth.get("tokenPath", "")).strip()
+    if token_path and Path(token_path).exists():
+        token = Path(token_path).read_text(encoding="utf-8").strip()
+    return url, token
+
+
+def _post(url: str, token: str, body: dict, timeout: int = 15) -> dict:
+    req = urllib.request.Request(
+        url, data=json.dumps(body).encode("utf-8"), method="POST",
+        headers={"Content-Type": "application/json",
+                 **({"Authorization": f"Bearer {token}"} if token else {})},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def main() -> int:
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        print(json.dumps({"ok": False, "error": "invalid JSON on stdin"}))
+        return 1
+    invocation = payload.get("invocation") if isinstance(payload.get("invocation"), dict) else {}
+    inputs = invocation.get("inputs") if isinstance(invocation.get("inputs"), dict) else {}
+    context = invocation.get("context") if isinstance(invocation.get("context"), dict) else {}
+    town = inputs.get("townContext") if isinstance(inputs.get("townContext"), dict) else {}
+
+    session_id = (
+        str(inputs.get("sessionId", "")).strip()
+        or str(context.get("sessionId", "")).strip()
+        or str(town.get("sessionId", "")).strip()
+    )
+    shop_id = str(inputs.get("shopId", "")).strip()
+    enabled = inputs.get("enabledActionIds")
+    if not session_id or not shop_id or not isinstance(enabled, list) or not enabled:
+        print(json.dumps({"ok": False, "error": "sessionId, shopId and a non-empty enabledActionIds are required"}))
+        return 1
+
+    role = str(inputs.get("role", "")).strip() or "worker"
+    agent_id = str(inputs.get("agentId", "")).strip() or f"{shop_id}-worker"
+    shop_name = str(inputs.get("shopName", "")).strip() or shop_id.replace("-", " ").title()
+    originator = (
+        str(inputs.get("originatorAgentId", "")).strip()
+        or str(inputs.get("agentId", "")).strip()  # the caller, if it is the originator
+        or str(context.get("agentId", "")).strip()
+        or "originator"
+    )
+
+    root = Path(os.environ.get("UMBRELLA_ROOT") or Path(__file__).resolve().parents[3])
+    base, token = _session_endpoint(_load_manifest(root))
+    if not base:
+        print(json.dumps({"ok": False, "error": "could not resolve the session service from the platform manifest"}))
+        return 1
+
+    try:
+        # Keep the session live, then originate.
+        try:
+            _post(f"{base}/v1/sessions/{session_id}/heartbeat", token, {"seenBy": "originator"})
+        except Exception:  # noqa: BLE001 — heartbeat is best-effort
+            pass
+        out = _post(f"{base}/v1/sessions/{session_id}/originations", token, {
+            "originatorAgentId": originator,
+            "agentId": agent_id,
+            "role": role,
+            "title": role.title(),
+            "shopId": shop_id,
+            "shopName": shop_name,
+            "enabledActionIds": [str(a).strip() for a in enabled if str(a).strip()],
+            "metadata": {"business": shop_id, "createdVia": "skill.shop.originate"},
+        })
+    except urllib.error.HTTPError as ex:  # type: ignore[attr-defined]
+        print(json.dumps({"ok": False, "error": f"originations HTTP {ex.code}: {ex.read().decode()[:200]}"}))
+        return 0
+    except Exception as ex:  # noqa: BLE001
+        print(json.dumps({"ok": False, "error": f"{type(ex).__name__}: {ex}"}))
+        return 0
+
+    shop = out.get("shop") if isinstance(out.get("shop"), dict) else {}
+    print(json.dumps({
+        "ok": True,
+        "shop": shop,
+        "summary": f"originated shop {shop_id!r} with actions {shop.get('enabledActionIds', enabled)}",
+    }))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
