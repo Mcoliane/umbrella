@@ -122,12 +122,18 @@ def chat(model_cfg: dict, messages: list, temperature: float = 0.1) -> str:
 class Workspace:
     def __init__(self, root: Path):
         self.root = root.resolve()
+        self._symbol_index: dict | None = None  # {name: [(rel, line, kind, sig)]}, cached
 
     def _safe(self, rel: str) -> Path:
         p = (self.root / str(rel or "").lstrip("/")).resolve()
         if p != self.root and self.root not in p.parents:
             raise ValueError(f"path escapes working directory: {rel}")
         return p
+
+    def _source_files(self):
+        for p in sorted(self.root.rglob("*")):
+            if p.is_file() and p.suffix.lower() in SOURCE_EXTS and not _skip_path(p):
+                yield p
 
     def list_dir(self, rel: str = ".") -> str:
         base = self._safe(rel or ".")
@@ -152,6 +158,7 @@ class Workspace:
         p = self._safe(rel)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content if isinstance(content, str) else str(content), encoding="utf-8")
+        self._symbol_index = None  # code changed; rebuild navigation index on next use
         return f"wrote {rel} ({len(content or '')} chars)"
 
     def edit_file(self, rel: str, old: str, new: str) -> str:
@@ -164,6 +171,7 @@ class Workspace:
         if text.count(old) > 1:
             return f"(edit failed: 'old' text is not unique in {rel}; add more context)"
         p.write_text(text.replace(old, new, 1), encoding="utf-8")
+        self._symbol_index = None
         return f"edited {rel}"
 
     def run(self, command: str) -> str:
@@ -178,34 +186,118 @@ class Workspace:
         err = (proc.stderr or "")[-RUN_OUTPUT_CAP:]
         return f"exit={proc.returncode}\n--stdout--\n{out}\n--stderr--\n{err}".strip()
 
-    def search(self, query: str, max_results: int = SEARCH_MAX_RESULTS) -> str:
-        """Ranked substring search across source files: exact-word symbol hits
-        first, then any substring. Returns file:line: text so the agent can jump
-        straight to the relevant code instead of reading files blindly."""
+    def find(self, query: str, *, regex: bool = False, whole_word: bool = False,
+             case_sensitive: bool = False, glob: str = "", context: int = 0,
+             max_results: int = SEARCH_MAX_RESULTS) -> str:
+        """VSCode-style Find in Files: search across source files with optional
+        regex, whole-word, case sensitivity, a file glob, and N lines of context.
+        Returns file:line: text hits, grouped by file."""
         q = str(query or "").strip()
         if not q:
             return "(empty query)"
-        needle = q.lower()
-        word_rx = re.compile(r"\b" + re.escape(q) + r"\b", re.IGNORECASE)
-        exact: list[str] = []
-        loose: list[str] = []
-        for p in sorted(self.root.rglob("*")):
-            if not p.is_file() or p.suffix.lower() not in SOURCE_EXTS or _skip_path(p):
+        flags = 0 if case_sensitive else re.IGNORECASE
+        try:
+            if regex:
+                pat = re.compile(q, flags)
+            elif whole_word:
+                pat = re.compile(r"\b" + re.escape(q) + r"\b", flags)
+            else:
+                pat = re.compile(re.escape(q), flags)
+        except re.error as ex:
+            return f"(invalid regex: {ex})"
+        context = max(0, min(int(context or 0), 4))
+        glob = str(glob or "").strip()
+        out: list[str] = []
+        total = 0
+        for p in self._source_files():
+            rel = p.relative_to(self.root)
+            if glob and not p.match(glob) and not Path(str(rel)).match(glob):
                 continue
             try:
                 lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
             except OSError:
                 continue
-            rel = p.relative_to(self.root)
+            file_hits: list[str] = []
             for i, line in enumerate(lines, 1):
-                if needle not in line.lower():
+                if not pat.search(line):
                     continue
-                row = f"{rel}:{i}: {line.strip()[:140]}"
-                (exact if word_rx.search(line) else loose).append(row)
-            if len(exact) + len(loose) >= max_results * 3:
+                if context:
+                    lo, hi = max(1, i - context), min(len(lines), i + context)
+                    for j in range(lo, hi + 1):
+                        mark = ">" if j == i else " "
+                        file_hits.append(f"  {mark}{j}: {lines[j-1].rstrip()[:160]}")
+                    file_hits.append("  --")
+                else:
+                    file_hits.append(f"  {i}: {line.strip()[:160]}")
+                total += 1
+                if total >= max_results:
+                    break
+            if file_hits:
+                out.append(f"{rel}:")
+                out.extend(file_hits)
+            if total >= max_results:
+                out.append(f"(stopped at {max_results} matches)")
                 break
-        hits = (exact + loose)[:max_results]
-        return "\n".join(hits) or f"(no matches for {query!r})"
+        return "\n".join(out) or f"(no matches for {query!r})"
+
+    # Back-compat: `search` is a simple ranked find.
+    def search(self, query: str, max_results: int = SEARCH_MAX_RESULTS) -> str:
+        return self.find(query, max_results=max_results)
+
+    def _sym_index(self) -> dict:
+        if self._symbol_index is None:
+            index: dict[str, list] = {}
+            for p in self._source_files():
+                try:
+                    text = p.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                rel = str(p.relative_to(self.root))
+                for d in _definitions(p, text):
+                    index.setdefault(d["name"], []).append((rel, d["line"], d["kind"], d["sig"]))
+            self._symbol_index = index
+        return self._symbol_index
+
+    def definition(self, symbol: str) -> str:
+        """Go to Definition: where a function/class/method/symbol is DEFINED."""
+        name = str(symbol or "").strip().split("(")[0].split(".")[-1]
+        if not name:
+            return "(no symbol given)"
+        hits = self._sym_index().get(name, [])
+        if not hits:
+            return f"(no definition found for {name!r}; try `find` for text matches)"
+        return "\n".join(f"{rel}:{line}: {sig}" for rel, line, kind, sig in hits[:20])
+
+    def references(self, symbol: str, max_results: int = SEARCH_MAX_RESULTS) -> str:
+        """Find All References: where a symbol is USED across the codebase."""
+        name = str(symbol or "").strip().split("(")[0].split(".")[-1]
+        if not name:
+            return "(no symbol given)"
+        rx = re.compile(r"\b" + re.escape(name) + r"\b")
+        out: list[str] = []
+        for p in self._source_files():
+            rel = p.relative_to(self.root)
+            try:
+                lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            for i, line in enumerate(lines, 1):
+                if rx.search(line):
+                    out.append(f"{rel}:{i}: {line.strip()[:150]}")
+                    if len(out) >= max_results:
+                        return "\n".join(out) + f"\n(stopped at {max_results})"
+        return "\n".join(out) or f"(no references found for {name!r})"
+
+    def outline(self, rel: str) -> str:
+        """Go to Symbol: list the definitions in a single file with line numbers."""
+        p = self._safe(rel)
+        if not p.is_file():
+            return f"(no such file: {rel})"
+        text = p.read_text(encoding="utf-8", errors="replace")
+        defs = _definitions(p, text)
+        if not defs:
+            return f"(no symbols in {rel})"
+        return "\n".join(f"L{d['line']}: {d['sig']}" for d in defs[:80])
 
 
 # --------------------------------------------------------------------------- #
@@ -249,6 +341,42 @@ def _extract_symbols(path: Path, text: str) -> list[str]:
         if len(out) >= 40:
             break
     return out
+
+
+def _definitions(path: Path, text: str) -> list[dict]:
+    """All definitions (functions/classes/methods/etc.) as structured records
+    {name, kind, line, sig} — backs `definition`, `references`, and `outline`.
+    Python uses the AST (includes methods); others use lightweight regexes."""
+    defs: list[dict] = []
+    if path.suffix.lower() in {".py", ".pyi"}:
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError):
+            return defs
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                args = ", ".join(a.arg for a in node.args.args)
+                defs.append({"name": node.name, "kind": "def", "line": node.lineno, "sig": f"def {node.name}({args})"})
+            elif isinstance(node, ast.ClassDef):
+                defs.append({"name": node.name, "kind": "class", "line": node.lineno, "sig": f"class {node.name}"})
+        defs.sort(key=lambda d: d["line"])
+        return defs
+    patterns = [
+        ("function", r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(\w+)"),
+        ("class", r"^\s*(?:export\s+)?(?:abstract\s+)?class\s+(\w+)"),
+        ("const", r"^\s*(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s*)?\("),
+        ("func", r"^\s*func\s+(?:\([^)]*\)\s*)?(\w+)\s*\("),
+        ("fn", r"^\s*(?:pub\s+)?fn\s+(\w+)"),
+        ("type", r"^\s*type\s+(\w+)\s+struct"),
+    ]
+    compiled = [(k, re.compile(p)) for k, p in patterns]
+    for i, line in enumerate(text.splitlines(), 1):
+        for kind, rx in compiled:
+            m = rx.match(line)
+            if m:
+                defs.append({"name": m.group(1), "kind": kind, "line": i, "sig": line.strip()[:120]})
+                break
+    return defs
 
 
 def build_repo_map(root: Path, task: str, budget: int = REPO_MAP_BUDGET) -> str:
@@ -312,8 +440,11 @@ def working_diff(root: Path) -> str:
 # --------------------------------------------------------------------------- #
 SYSTEM = """You are an elite software engineer operating as an autonomous coding agent inside a git-backed working directory. You write clean, correct, idiomatic, PROFESSIONAL code with sensible structure, error handling, docstrings/comments where they add value, and tests.
 
-You work strictly by TOOLS. On every turn you MUST reply with a SINGLE JSON object and NOTHING ELSE (no prose, no markdown fences). One of:
-  {"tool":"search","query":"<symbol or text>"}       # ranked search across the codebase (file:line hits) — use this to LOCATE relevant code
+You work strictly by TOOLS. On every turn you MUST reply with a SINGLE JSON object and NOTHING ELSE (no prose, no markdown fences). Navigation & editing tools (like an IDE):
+  {"tool":"find","query":"<text or regex>","regex":false,"whole_word":false,"case_sensitive":false,"glob":"","context":0}  # Find in Files; options are optional
+  {"tool":"definition","symbol":"<name>"}            # Go to Definition: where a function/class/method is defined
+  {"tool":"references","symbol":"<name>"}            # Find All References: everywhere a symbol is used
+  {"tool":"outline","path":"relative/path"}          # Go to Symbol: list the definitions in one file
   {"tool":"list_dir","path":"."}
   {"tool":"read_file","path":"relative/path"}
   {"tool":"write_file","path":"relative/path","content":"<full file content>"}
@@ -322,7 +453,7 @@ You work strictly by TOOLS. On every turn you MUST reply with a SINGLE JSON obje
   {"tool":"finish","summary":"<what you built and how it was verified>"}
 
 Method (follow it):
-1. You are given a Repository map of the codebase up front. Use it plus `search` to find the exact files/symbols relevant to the task — do NOT read files at random on a large codebase.
+1. You are given a Repository map of the codebase up front. Use `find` (text/regex), `definition`, `references`, and `outline` to locate the exact code relevant to the task — navigate like an engineer, do NOT read files at random on a large codebase.
 2. Read the specific code you'll change or depend on, then plan briefly and implement in small steps.
 3. VERIFY your work: write and RUN tests (pytest/unittest), and run linters/type-checkers/build commands via the run tool. Read the output. If anything fails, FIX it and re-run. Do not finish on unverified code.
 4. Prefer edit_file for surgical changes to existing files and write_file for new/rewritten files. Keep files complete and runnable, and match the surrounding code's style and conventions.
@@ -388,8 +519,12 @@ def trim_messages(messages: list) -> list:
             actions.append(f"ran `{str(a.get('command', ''))[:70]}`")
         elif t == "read_file":
             actions.append(f"read {a.get('path')}")
-        elif t == "search":
-            actions.append(f"searched `{str(a.get('query', ''))[:40]}`")
+        elif t in ("find", "search"):
+            actions.append(f"found `{str(a.get('query', ''))[:40]}`")
+        elif t in ("definition", "references"):
+            actions.append(f"{t} {a.get('symbol')}")
+        elif t == "outline":
+            actions.append(f"outline {a.get('path')}")
     note = "PROGRESS SO FAR (older steps compacted to save context): " + "; ".join(actions[-60:] or ["(none)"])
     return head + [{"role": "user", "content": note}] + tail
 
@@ -435,8 +570,23 @@ def run_loop(model_cfg: dict, ws: Workspace, task: str, max_iters: int, extra_sy
                 verified = True
                 messages.append({"role": "user", "content": "acknowledged"})
                 break
+            elif tool == "find":
+                obs = ws.find(
+                    str(action.get("query", "")),
+                    regex=bool(action.get("regex", False)),
+                    whole_word=bool(action.get("whole_word", False)),
+                    case_sensitive=bool(action.get("case_sensitive", False)),
+                    glob=str(action.get("glob", "")),
+                    context=int(action.get("context", 0) or 0),
+                )
             elif tool == "search":
                 obs = ws.search(str(action.get("query", "")))
+            elif tool == "definition":
+                obs = ws.definition(str(action.get("symbol", "")))
+            elif tool == "references":
+                obs = ws.references(str(action.get("symbol", "")))
+            elif tool == "outline":
+                obs = ws.outline(str(action.get("path", "")))
             elif tool == "list_dir":
                 obs = ws.list_dir(str(action.get("path", ".")))
             elif tool == "read_file":
@@ -450,7 +600,7 @@ def run_loop(model_cfg: dict, ws: Workspace, task: str, max_iters: int, extra_sy
             elif tool == "_error":
                 obs = f"Your last message was not a valid single JSON action: {action.get('error')}. Reply with exactly one JSON tool object."
             else:
-                obs = f"Unknown tool {tool!r}. Use one of search, list_dir, read_file, write_file, edit_file, run, finish."
+                obs = f"Unknown tool {tool!r}. Use one of find, definition, references, outline, list_dir, read_file, write_file, edit_file, run, finish."
         except Exception as ex:  # noqa: BLE001 — surface tool errors back to the agent
             obs = f"(tool error: {type(ex).__name__}: {ex})"
         messages.append({"role": "user", "content": str(obs)[:OBS_CAP]})
