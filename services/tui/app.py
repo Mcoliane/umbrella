@@ -11,10 +11,6 @@ from pathlib import Path
 from services.tui.client import TuiClient
 from services.tui.state import PlatformState
 
-ZAI_GLM5_GENERAL_BASE_URL = "https://api.z.ai/api/paas/v4"
-ZAI_GLM5_TURBO_MODEL = "glm-5-turbo"
-ZAI_GLM47_CODING_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
-ZAI_GLM47_MODEL = "glm-4.7"
 SPINNER_FRAMES = ("|", "/", "-", "\\")
 
 
@@ -289,13 +285,6 @@ class UmbrellaTui:
     def _recommended_provider_defaults(self, provider_type: str, current: dict) -> dict:
         normalized = str(provider_type or "").strip().lower()
         provider_meta = current.get("provider") if isinstance(current.get("provider"), dict) else {}
-        if normalized == "zai":
-            return {
-                "type": "zai",
-                "baseUrl": str(provider_meta.get("baseUrl", "")).strip() or ZAI_GLM5_GENERAL_BASE_URL,
-                "defaultModel": str(provider_meta.get("defaultModel", "")).strip() or ZAI_GLM5_TURBO_MODEL,
-                "timeoutSec": int(provider_meta.get("timeoutSec", 120) or 120),
-            }
         return {
             "type": normalized or str(provider_meta.get("type", "openai-compatible")).strip() or "openai-compatible",
             "baseUrl": str(provider_meta.get("baseUrl", "")).strip(),
@@ -303,77 +292,22 @@ class UmbrellaTui:
             "timeoutSec": int(provider_meta.get("timeoutSec", 120) or 120),
         }
 
-    def save_glm5_preset(self, screen):
-        current = self.state.home.get("modelProvider") if isinstance(self.state.home.get("modelProvider"), dict) else {}
-        provider = {
-            "type": "zai",
-            "baseUrl": ZAI_GLM5_GENERAL_BASE_URL,
-            "defaultModel": ZAI_GLM5_TURBO_MODEL,
-            "timeoutSec": int(((current.get("provider") or {}).get("timeoutSec", 120)) or 120),
-        }
-        api_key = self.prompt(screen, "Z.ai API key (blank keeps existing)", default="", secret=True)
-        if api_key is None:
-            return
-        out = self.client.save_model_provider(
-            enabled=True,
-            provider=provider,
-            api_key=None if not str(api_key).strip() else str(api_key).strip(),
-        )
-        self.refresh_home()
-        if out.get("saved"):
-            self.add_local_event(
-                "system",
-                f'Saved Z.ai preset {provider["defaultModel"]} at {provider["baseUrl"]}. Run /model test next.',
-            )
-            self.state.status = "glm-5-turbo preset saved"
-            return
-        self.add_local_event("error", f"GLM-5-Turbo preset failed: {json.dumps(out, ensure_ascii=False)[:180]}")
-        self.state.status = "glm-5-turbo preset failed"
-
-    def save_glm47_preset(self, screen):
-        current = self.state.home.get("modelProvider") if isinstance(self.state.home.get("modelProvider"), dict) else {}
-        provider = {
-            "type": "zai",
-            "baseUrl": ZAI_GLM47_CODING_BASE_URL,
-            "defaultModel": ZAI_GLM47_MODEL,
-            "timeoutSec": int(((current.get("provider") or {}).get("timeoutSec", 120)) or 120),
-        }
-        api_key = self.prompt(screen, "Z.ai API key (blank keeps existing)", default="", secret=True)
-        if api_key is None:
-            return
-        out = self.client.save_model_provider(
-            enabled=True,
-            provider=provider,
-            api_key=None if not str(api_key).strip() else str(api_key).strip(),
-        )
-        self.refresh_home()
-        if out.get("saved"):
-            self.add_local_event(
-                "system",
-                f'Saved Z.ai preset {provider["defaultModel"]} at {provider["baseUrl"]}. Run /model test next.',
-            )
-            self.state.status = "glm-4.7 preset saved"
-            return
-        self.add_local_event("error", f"GLM-4.7 preset failed: {json.dumps(out, ensure_ascii=False)[:180]}")
-        self.state.status = "glm-4.7 preset failed"
-
     def setup_model_provider(self, screen):
         current = self.state.home.get("modelProvider") if isinstance(self.state.home.get("modelProvider"), dict) else {}
         provider_meta = current.get("provider") if isinstance(current.get("provider"), dict) else {}
-        provider_type = self.prompt(screen, "Provider type", default=str(provider_meta.get("type", "zai")).strip() or "zai")
+        provider_type = self.prompt(screen, "Provider type", default=str(provider_meta.get("type", "openai-compatible")).strip() or "openai-compatible")
         if provider_type is None:
             return
-        provider_type = str(provider_type).strip().lower() or "zai"
-        if provider_type not in {"zai", "openai-compatible"}:
+        provider_type = str(provider_type).strip().lower() or "openai-compatible"
+        # "zai" is a retired alias: silently fold a typed value into the one
+        # supported type so no new Z.ai-typed connection is ever created here.
+        if provider_type == "zai":
+            provider_type = "openai-compatible"
+        if provider_type != "openai-compatible":
             self.add_local_event("error", f"Unsupported provider type: {provider_type}")
             self.state.status = "Model setup failed"
             return
         recommended = self._recommended_provider_defaults(provider_type, current)
-        if provider_type == "zai":
-            self.add_local_event(
-                "system",
-                f'Recommended Z.ai preset: base={recommended["baseUrl"]} model={recommended["defaultModel"]}',
-            )
         base_url = self.prompt(screen, "Base URL", default=str(recommended.get("baseUrl", "")).strip())
         if base_url is None:
             return
@@ -537,7 +471,7 @@ class UmbrellaTui:
         if name in {"help", "h", "?"}:
             self.add_local_event(
                 "system",
-                "Commands: /help /status /autonomy [auto|ask] /new [title] /sessions /session <id|n> /agent <id> /shops /workers /model /model setup /model glm47 /model glm5 /model test /model use <model> /model disable /refresh /start [full|core] /stop /quit",
+                "Commands: /help /status /autonomy [auto|ask] /new [title] /sessions /session <id|n> /agent <id> /shops /workers /model /model setup /model test /model use <model> /model disable /refresh /start [full|core] /stop /quit",
             )
             self.state.status = "Help"
             return
@@ -619,12 +553,6 @@ class UmbrellaTui:
             if sub == "setup":
                 self.setup_model_provider(screen)
                 return
-            if sub in {"glm47", "glm-4.7", "glm4.7", "glm-4_7"}:
-                self.save_glm47_preset(screen)
-                return
-            if sub in {"glm5", "glm-5", "glm-5-turbo"}:
-                self.save_glm5_preset(screen)
-                return
             if sub == "test":
                 self.test_model_provider()
                 return
@@ -643,7 +571,7 @@ class UmbrellaTui:
                 provider_meta = current.get("provider") if isinstance(current.get("provider"), dict) else {}
                 out = self.client.save_model_provider(
                     provider={
-                        "type": str(provider_meta.get("type", "zai")).strip() or "zai",
+                        "type": str(provider_meta.get("type", "openai-compatible")).strip() or "openai-compatible",
                         "baseUrl": str(provider_meta.get("baseUrl", "")).strip(),
                         "defaultModel": str(args[1]).strip(),
                         "timeoutSec": int(provider_meta.get("timeoutSec", 120) or 120),

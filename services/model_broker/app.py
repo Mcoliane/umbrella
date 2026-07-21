@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import sys
 import time
 import uuid
@@ -15,8 +16,18 @@ from urllib.parse import urlparse
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from services.memory.auth import check_auth
 from services.model_broker.providers import openai_compatible
-from services.model_broker.providers import zai
 from services.runtime_model import load_model_broker, mask_secret, save_model_broker
+
+# A single completion can come back as a valid HTTP 200 with empty or unusable
+# content (flaky providers do this). The adapter retries transient 5xx/network
+# errors underneath each call; these govern how many times chat_respond re-asks
+# when a 200 body is unusable before giving up.
+_COMPLETION_ATTEMPTS = 3
+_COMPLETION_BACKOFF_SEC = 0.5
+
+# Canonical provider type. Every backend Umbrella talks to is an OpenAI-compatible
+# /chat/completions endpoint; there is one adapter.
+DEFAULT_PROVIDER_TYPE = "openai-compatible"
 
 
 def now_iso() -> str:
@@ -133,10 +144,12 @@ class BrokerEngine:
         self.root = Path(root).resolve()
 
     def _provider_adapter(self, provider_type: str):
-        normalized = str(provider_type or "").strip() or "zai"
-        if normalized == "zai":
-            return zai
-        if normalized == "openai-compatible":
+        normalized = str(provider_type or "").strip().lower()
+        # "openai-compatible" is the only adapter. "zai" is a legacy alias that
+        # resolves to it — Z.ai spoke the same OpenAI-compatible API, so old
+        # configs keep working without a migration step. Empty type also resolves
+        # to it, since there is nothing else to be.
+        if normalized in {"", "openai-compatible", "zai"}:
             return openai_compatible
         return None
 
@@ -168,7 +181,7 @@ class BrokerEngine:
 
     def _connection_payload(self, broker: dict, connection_id: str, connection: dict) -> dict:
         providers = broker.get("providers") if isinstance(broker.get("providers"), dict) else {}
-        provider_id = str(connection.get("providerId", "")).strip() or "zai"
+        provider_id = str(connection.get("providerId", "")).strip() or "openai-compatible"
         provider = providers.get(provider_id) if isinstance(providers.get(provider_id), dict) else {}
         secret = (
             ((broker.get("secrets") or {}).get("connections") or {}).get(connection_id, {})
@@ -252,7 +265,7 @@ class BrokerEngine:
     ) -> dict:
         broker = self._load()
         connection_id = str(connection_id or "").strip() or self._default_connection_id(broker)
-        provider_id = str(provider_id or "").strip() or "zai"
+        provider_id = str(provider_id or "").strip() or "openai-compatible"
         providers = broker.get("providers") if isinstance(broker.get("providers"), dict) else {}
         if provider_id not in providers:
             providers[provider_id] = {
@@ -301,7 +314,7 @@ class BrokerEngine:
         connection_id = str(request.get("connectionId", "")).strip() or self._default_connection_id(broker)
         connections = broker.get("connections") if isinstance(broker.get("connections"), dict) else {}
         connection = connections.get(connection_id) if isinstance(connections.get(connection_id), dict) else {}
-        provider_id = str(connection.get("providerId", "")).strip() or "zai"
+        provider_id = str(connection.get("providerId", "")).strip() or "openai-compatible"
         providers = broker.get("providers") if isinstance(broker.get("providers"), dict) else {}
         provider = providers.get(provider_id) if isinstance(providers.get(provider_id), dict) else {}
         secret = (
@@ -325,7 +338,7 @@ class BrokerEngine:
             return {"ok": False, "configured": False, "connectionId": cid, "message": "connection not configured"}
         timeout_sec = float(connection.get("timeoutSec", 120) or 120)
         try:
-            provider_type = str(provider.get("type", "")).strip() or str(connection.get("providerId", "")).strip() or "zai"
+            provider_type = str(provider.get("type", "")).strip() or str(connection.get("providerId", "")).strip() or "openai-compatible"
             adapter = self._provider_adapter(provider_type)
             if adapter is None:
                 return {"ok": False, "configured": True, "connectionId": cid, "message": "unsupported provider type"}
@@ -344,7 +357,7 @@ class BrokerEngine:
                 "ok": False,
                 "configured": True,
                 "connectionId": cid,
-                "providerType": str(provider.get("type", "")).strip() or str(connection.get("providerId", "")).strip() or "zai",
+                "providerType": str(provider.get("type", "")).strip() or str(connection.get("providerId", "")).strip() or "openai-compatible",
                 "model": model,
                 "latencyMs": int((time.time() - started) * 1000),
                 "message": http_error_detail(exc),
@@ -354,7 +367,7 @@ class BrokerEngine:
                 "ok": False,
                 "configured": True,
                 "connectionId": cid,
-                "providerType": str(provider.get("type", "")).strip() or str(connection.get("providerId", "")).strip() or "zai",
+                "providerType": str(provider.get("type", "")).strip() or str(connection.get("providerId", "")).strip() or "openai-compatible",
                 "model": model,
                 "latencyMs": int((time.time() - started) * 1000),
                 "message": str(exc),
@@ -371,7 +384,7 @@ class BrokerEngine:
             return {"connectionId": cid, "models": models}
         error_message = ""
         try:
-            provider_type = str(provider.get("type", "")).strip() or str(connection.get("providerId", "")).strip() or "zai"
+            provider_type = str(provider.get("type", "")).strip() or str(connection.get("providerId", "")).strip() or "openai-compatible"
             adapter = self._provider_adapter(provider_type)
             if adapter is None:
                 error_message = f"unsupported provider type: {provider_type}"
@@ -403,7 +416,7 @@ class BrokerEngine:
             return {"ok": False, "error": {"message": "connection not found"}}
         if not bool(broker.get("enabled", False)) or not bool(connection.get("enabled", False)):
             return {"ok": False, "error": {"message": "model broker is not configured"}}
-        provider_type = str(provider.get("type", "")).strip() or str(connection.get("providerId", "")).strip() or "zai"
+        provider_type = str(provider.get("type", "")).strip() or str(connection.get("providerId", "")).strip() or "openai-compatible"
         adapter = self._provider_adapter(provider_type)
         if adapter is None:
             return {"ok": False, "error": {"message": f"unsupported provider type: {provider_type}"}}
@@ -483,47 +496,92 @@ class BrokerEngine:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
-        if provider_type == "zai":
-            provider_payload["response_format"] = {"type": "json_object"}
-            provider_payload["thinking"] = {"type": "disabled"}
         started = time.time()
-        try:
-            raw = adapter.chat_respond(
-                base_url=str(connection.get("baseUrl", "")).strip(),
-                api_key=str(secret.get("apiKey", "")).strip(),
-                payload=provider_payload,
-                    timeout_sec=float(connection.get("timeoutSec", 120) or 120),
-            )
-        except urllib.error.HTTPError as exc:
-            return {"ok": False, "error": {"message": http_error_detail(exc)}}
-        except Exception as exc:
-            return {"ok": False, "error": {"message": str(exc)}}
-        choices = raw.get("choices") if isinstance(raw.get("choices"), list) else []
-        if not choices:
-            return {"ok": False, "error": {"message": "provider returned no choices"}}
-        message = (choices[0] or {}).get("message") if isinstance((choices[0] or {}).get("message"), dict) else {}
-        content = str((message or {}).get("content") or "").strip()
-        if not content:
-            return {"ok": False, "error": {"message": "provider returned empty content"}}
-        parsed = parse_json_content_block(content)
-        if not isinstance(parsed, dict):
-            parsed = {"reply": content, "mode": "direct"}
-        parsed["ok"] = True
-        parsed["reply"] = str(parsed.get("reply", "")).strip()
-        parsed["mode"] = str(parsed.get("mode", "direct")).strip() or "direct"
-        if not parsed["reply"] and parsed["mode"] != "delegate":
-            return {"ok": False, "error": {"message": "provider returned empty reply"}}
-        if parsed["mode"] == "delegate":
+        base_url = str(connection.get("baseUrl", "")).strip()
+        api_key = str(secret.get("apiKey", "")).strip()
+        timeout = float(connection.get("timeoutSec", 120) or 120)
+        # Ask up to _COMPLETION_ATTEMPTS times. The adapter already retries
+        # transient 5xx/network errors inside each call, so an HTTPError that
+        # reaches here is terminal (bad key, 4xx, exhausted 5xx) and we stop.
+        # These attempts exist for the other failure mode: a valid 200 whose
+        # body is empty or has no usable reply — which flaky models return and
+        # which no HTTP-level retry can catch.
+        last_error = "provider returned no usable content"
+        for attempt in range(_COMPLETION_ATTEMPTS):
+            try:
+                raw = adapter.chat_respond(
+                    base_url=base_url,
+                    api_key=api_key,
+                    payload=provider_payload,
+                    timeout_sec=timeout,
+                )
+            except urllib.error.HTTPError as exc:
+                # 4xx, or a 5xx the adapter already exhausted its retries on: terminal.
+                return {"ok": False, "error": {"message": http_error_detail(exc)}}
+            except json.JSONDecodeError:
+                # A 200 whose body is not valid JSON (e.g. a proxy's HTML error
+                # page served with status 200). Treat it as an unusable response
+                # and re-ask rather than failing the turn.
+                raw = None
+            except Exception as exc:
+                # Transport error the adapter already retried and re-raised: terminal.
+                return {"ok": False, "error": {"message": str(exc)}}
+
+            # A syntactically valid but non-object body (null -> None, [] -> list,
+            # bare scalar) is as unusable as an empty one — normalize so it is
+            # retried/degraded below instead of raising AttributeError.
+            if not isinstance(raw, dict):
+                raw = {}
+            choices = raw.get("choices") if isinstance(raw.get("choices"), list) else []
+            first = choices[0] if choices and isinstance(choices[0], dict) else {}
+            msg = first.get("message") if isinstance(first.get("message"), dict) else {}
+            content = str((msg or {}).get("content") or "").strip()
+
+            parsed = parse_json_content_block(content)
+            if not isinstance(parsed, dict):
+                # Non-JSON (or no JSON object): treat the raw text as a direct answer.
+                parsed = {"reply": content, "mode": "direct"} if content else {}
+            reply = str(parsed.get("reply", "")).strip()
+            mode = str(parsed.get("mode", "direct")).strip().lower() or "direct"
+            if mode not in {"direct", "delegate"}:
+                # Any other label a model invents is answered directly.
+                mode = "direct"
             delegation_plan = parsed.get("delegationPlan")
-            if not isinstance(delegation_plan, list) or not delegation_plan:
-                return {"ok": False, "error": {"message": "provider requested delegation without a delegation plan"}}
-        parsed["providerUsed"] = True
-        parsed["fallbackUsed"] = False
-        parsed["providerType"] = provider_type
-        parsed["connectionUsed"] = cid
-        parsed["modelUsed"] = model
-        parsed["latencyMs"] = int((time.time() - started) * 1000)
-        return parsed
+            has_plan = isinstance(delegation_plan, list) and len(delegation_plan) > 0
+
+            # Graceful degradation: a model that asks to delegate but gives no
+            # usable plan is answered as a direct reply, not failed outright.
+            if mode == "delegate" and not has_plan:
+                mode = "direct"
+                parsed.pop("delegationPlan", None)
+            # A JSON object that parsed but carried no reply falls back to its
+            # own raw text so the turn still says something.
+            if mode != "delegate" and not reply and content:
+                reply = content
+            # A valid delegation with no status line still gets one, so a delegate
+            # turn never renders as a blank reply.
+            if mode == "delegate" and has_plan and not reply:
+                reply = "Working on it."
+
+            if reply or (mode == "delegate" and has_plan):
+                out = dict(parsed)
+                out["ok"] = True
+                out["reply"] = reply
+                out["mode"] = mode
+                out["providerUsed"] = True
+                out["fallbackUsed"] = False
+                out["providerType"] = provider_type
+                out["connectionUsed"] = cid
+                out["modelUsed"] = model
+                out["latencyMs"] = int((time.time() - started) * 1000)
+                out["attempts"] = attempt + 1
+                return out
+
+            last_error = "provider returned empty content" if not content else "provider returned no usable reply"
+            if attempt < _COMPLETION_ATTEMPTS - 1:
+                time.sleep(_COMPLETION_BACKOFF_SEC * (attempt + 1) + random.uniform(0, 0.25))
+
+        return {"ok": False, "error": {"message": last_error}}
 
 
 def handler_factory(engine: BrokerEngine, token: str):
@@ -562,7 +620,7 @@ def handler_factory(engine: BrokerEngine, token: str):
                 if path == "/v1/connections":
                     out = engine.save_connection(
                         connection_id=str(body.get("connectionId", "")).strip(),
-                        provider_id=str(body.get("providerId", body.get("providerType", "zai"))).strip(),
+                        provider_id=str(body.get("providerId", body.get("providerType", "openai-compatible"))).strip(),
                         auth_mode=str(body.get("authMode", "api_key")).strip(),
                         label=str(body.get("label", "")).strip(),
                         enabled=body.get("enabled") if isinstance(body.get("enabled"), bool) else None,

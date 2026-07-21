@@ -16,8 +16,6 @@ TESTS=(
   "$ROOT/tests/contract/test-router-catalog-routing.sh"
   "$ROOT/tests/contract/test-agent-package-runtime.sh"
   "$ROOT/tests/contract/test-session-converse.sh"
-  "$ROOT/tests/contract/test-model-broker-zai.sh"
-  "$ROOT/tests/contract/test-session-converse-via-zai.sh"
   "$ROOT/tests/contract/test-model-broker-service.sh"
   "$ROOT/tests/contract/test-model-provider-config.sh"
   "$ROOT/tests/contract/test-session-converse-provider-configured.sh"

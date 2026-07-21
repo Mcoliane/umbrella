@@ -171,7 +171,7 @@ def _provider_response(inputs: dict) -> dict | None:
             return {
                 "ok": True,
                 "mode": "direct",
-                "reply": f"The configured model backend is unavailable right now ({exc}). Run /model test.",
+                "reply": f"I couldn't reach the model just now — that's usually a brief provider hiccup. Give it another try in a moment; if it keeps happening, check the connection with /model test. (detail: {exc})",
                 "providerUsed": False,
                 "modelUsed": "",
                 "fallbackUsed": False,
@@ -183,7 +183,7 @@ def _provider_response(inputs: dict) -> dict | None:
             return {
                 "ok": True,
                 "mode": "direct",
-                "reply": "The configured model backend returned an invalid response. Run /model test.",
+                "reply": "The model sent back something I couldn't use — likely a momentary glitch. Try again; if it persists, run /model test.",
                 "providerUsed": False,
                 "modelUsed": "",
                 "fallbackUsed": False,
@@ -197,7 +197,7 @@ def _provider_response(inputs: dict) -> dict | None:
             return {
                 "ok": True,
                 "mode": "direct",
-                "reply": f"The configured model backend is unavailable right now ({message}). Run /model test.",
+                "reply": f"The model sent back something I couldn't use — likely a momentary glitch. Try again; if it persists, run /model test. (detail: {message})",
                 "providerUsed": False,
                 "modelUsed": "",
                 "fallbackUsed": False,

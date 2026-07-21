@@ -3,7 +3,7 @@
   "enabled": false,
   "provider": {
     "id": "default",
-    "type": "zai",
+    "type": "openai-compatible",
     "baseUrl": "",
     "defaultModel": "",
     "timeoutSec": 120

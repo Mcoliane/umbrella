@@ -95,7 +95,7 @@ def _normalize_legacy_provider(config: dict, secrets: dict, root: Path) -> dict:
         "enabled": bool(config.get("enabled", False)),
         "provider": {
             "id": str(provider.get("id", "")).strip() or "default",
-            "type": str(provider.get("type", "")).strip() or "zai",
+            "type": str(provider.get("type", "")).strip() or "openai-compatible",
             "baseUrl": str(provider.get("baseUrl", "")).strip(),
             "defaultModel": str(provider.get("defaultModel", "")).strip(),
             "timeoutSec": int(provider.get("timeoutSec", 120) or 120),
@@ -121,12 +121,6 @@ def _default_broker_config() -> dict:
             "allowFallback": True,
         },
         "providers": {
-            "zai": {
-                "id": "zai",
-                "type": "zai",
-                "supportsApiKey": True,
-                "supportsOAuth": False,
-            },
             "openai-compatible": {
                 "id": "openai-compatible",
                 "type": "openai-compatible",
@@ -137,9 +131,9 @@ def _default_broker_config() -> dict:
         "connections": {
             "default": {
                 "id": "default",
-                "providerId": "zai",
+                "providerId": "openai-compatible",
                 "authMode": "api_key",
-                "label": "Default Z.ai",
+                "label": "Default",
                 "enabled": False,
                 "baseUrl": "",
                 "defaultModel": "",
@@ -190,7 +184,7 @@ def _normalize_broker(config: dict, secrets: dict, root: Path) -> dict:
             continue
         normalized_connections[cid] = {
             "id": cid,
-            "providerId": str(row.get("providerId", "")).strip() or "zai",
+            "providerId": str(row.get("providerId", "")).strip() or "openai-compatible",
             "authMode": str(row.get("authMode", "api_key")).strip() or "api_key",
             "label": str(row.get("label", "")).strip() or cid,
             "enabled": bool(row.get("enabled", False)),
@@ -250,7 +244,7 @@ def _legacy_to_broker(provider: dict) -> dict:
     normalized["connections"] = {
         connection_id: {
             "id": connection_id,
-            "providerId": str(provider_meta.get("type", "zai")).strip() or "zai",
+            "providerId": str(provider_meta.get("type", "openai-compatible")).strip() or "openai-compatible",
             "authMode": "api_key",
             "label": "Migrated Model Provider",
             "enabled": bool(provider.get("enabled", False)),
@@ -341,7 +335,7 @@ def load_model_provider(root: Path) -> dict:
     root = Path(root).resolve()
     broker = load_model_broker(root)
     connection = default_connection(broker)
-    provider_id = str(connection.get("providerId", "zai")).strip() or "zai"
+    provider_id = str(connection.get("providerId", "openai-compatible")).strip() or "openai-compatible"
     providers = broker.get("providers") if isinstance(broker.get("providers"), dict) else {}
     provider_meta = providers.get(provider_id) if isinstance(providers.get(provider_id), dict) else {}
     connection_id = str(connection.get("id", _default_connection_id(broker))).strip() or "default"
@@ -379,7 +373,7 @@ def save_model_provider(root: Path, *, config: dict | None = None, secrets: dict
     current["routing"]["defaultConnectionId"] = connection_id
     current["routing"]["packageDefaults"] = dict(normalized_provider.get("agentDefaults") if isinstance(normalized_provider.get("agentDefaults"), dict) else {})
     provider_meta = normalized_provider.get("provider") if isinstance(normalized_provider.get("provider"), dict) else {}
-    provider_type = str(provider_meta.get("type", "zai")).strip() or "zai"
+    provider_type = str(provider_meta.get("type", "openai-compatible")).strip() or "openai-compatible"
     providers = current.get("providers") if isinstance(current.get("providers"), dict) else {}
     if provider_type not in providers:
         providers[provider_type] = {

@@ -2,12 +2,14 @@
 """Umbrella first-run setup wizard.
 
 Gets a new user from a fresh install to a talking town with the fewest
-possible steps. The first and only required question is the model API key.
+possible steps. Umbrella talks to any OpenAI-compatible /chat/completions
+endpoint: you supply a base URL, a model id, and an API key.
 
 Usage:
-  umbrella-setup                 # interactive: prompts for the key, configures
-  umbrella-setup --start         # ...then brings up the platform and opens the TUI
-  echo "<key>" | umbrella-setup  # non-interactive (key on stdin)
+  umbrella-setup                                       # interactive: prompts for base URL, model, key
+  umbrella-setup --base-url URL --model NAME           # take base URL/model from flags; prompt only for the key
+  umbrella-setup --base-url URL --model NAME --start   # ...then bring up the platform and open the TUI
+  echo "<key>" | umbrella-setup --base-url URL --model NAME  # fully non-interactive (key on stdin)
 
 The key is written to the gitignored model-broker secrets file with 0600
 permissions; it is never printed, logged, or committed.
@@ -21,13 +23,12 @@ import sys
 from pathlib import Path
 
 
-PRESETS = {
-    # id            provider             base URL                                   model           label
-    'zai-glm5':  ('zai',                'https://api.z.ai/api/paas/v4',        'glm-5-turbo',   'Z.ai GLM-5 Turbo'),
-    'zai-glm47': ('zai',                'https://api.z.ai/api/coding/paas/v4', 'glm-4.7',       'Z.ai GLM-4.7 (coding)'),
-    'deepseek':       ('openai-compatible', 'https://api.deepseek.com', 'deepseek-v4-pro',   'DeepSeek V4 Pro'),
-    'deepseek-flash': ('openai-compatible', 'https://api.deepseek.com', 'deepseek-v4-flash', 'DeepSeek V4 Flash'),
-}
+# Umbrella is provider-agnostic: it drives any OpenAI-compatible
+# /chat/completions endpoint. The only connection type the wizard writes is
+# "openai-compatible"; the endpoint (base URL) and model are supplied by the
+# user via flags or prompts.
+PROVIDER_TYPE = 'openai-compatible'
+CONNECTION_LABEL = 'OpenAI-compatible'
 
 BANNER = r"""
   ___ Umbrella setup ___________________________________________
@@ -40,8 +41,14 @@ BANNER = r"""
 def main() -> int:
     ap = argparse.ArgumentParser(description='Umbrella first-run setup wizard')
     ap.add_argument('--umbrella-root', default=str(Path(__file__).resolve().parents[1]))
-    ap.add_argument('--provider', default='zai-glm5', choices=sorted(PRESETS),
-                    help='model preset to configure (default: zai-glm5)')
+    ap.add_argument('--provider', default=PROVIDER_TYPE, choices=[PROVIDER_TYPE],
+                    help='connection type to configure (only openai-compatible is supported)')
+    ap.add_argument('--base-url', default='',
+                    help='OpenAI-compatible API base URL (e.g. https://host/v1); '
+                         'also read from UMBRELLA_SETUP_BASE_URL')
+    ap.add_argument('--model', default='',
+                    help='model id to request from the endpoint; '
+                         'also read from UMBRELLA_SETUP_MODEL')
     ap.add_argument('--start', action='store_true',
                     help='after saving, bring up the full platform and open the TUI')
     ap.add_argument('--key', default='',
@@ -56,14 +63,28 @@ def main() -> int:
     if interactive:
         print(BANNER)
 
-    provider_type, base_url, model, label = PRESETS[args.provider]
+    provider_type = args.provider  # only 'openai-compatible'
+    label = CONNECTION_LABEL
 
     already_configured = bool(runtime_model.load_model_broker(root).get('enabled')) and _has_key(root)
 
-    # Step 1 — the key. Prefer --key / env for scripting; otherwise a VISIBLE
-    # prompt (input(), not getpass) so paste works — macOS secure-keyboard entry
-    # blocks pasting into hidden getpass prompts. When a model is already
-    # configured, entering a key is optional (blank keeps the existing one) so
+    # Connection details. Prefer flags / env for scripting; otherwise prompt when
+    # interactive. When a model is already configured these may be left blank to
+    # keep the current connection (see the key step below).
+    base_url = args.base_url.strip() or os.environ.get('UMBRELLA_SETUP_BASE_URL', '').strip()
+    model = args.model.strip() or os.environ.get('UMBRELLA_SETUP_MODEL', '').strip()
+
+    if interactive and not already_configured:
+        if not base_url:
+            print("Umbrella talks to any OpenAI-compatible /chat/completions endpoint.")
+            base_url = input("  API base URL (e.g. https://host/v1): ").strip()
+        if not model:
+            model = input("  Model id to request: ").strip()
+
+    # The key. Prefer --key / env for scripting; otherwise a VISIBLE prompt
+    # (input(), not getpass) so paste works — macOS secure-keyboard entry blocks
+    # pasting into hidden getpass prompts. When a model is already configured,
+    # entering a key is optional (blank keeps the existing one) so
     # `umbrella-setup --start` works as a plain "start everything" command.
     supplied = args.key.strip() or os.environ.get('UMBRELLA_SETUP_KEY', '').strip()
     if supplied:
@@ -74,14 +95,26 @@ def main() -> int:
                   "or type/paste a new key to switch.")
             key = input("  API key (blank = keep current): ").strip()
         else:
-            print(f"Step 1 of 1 — type or paste your {label} API key, then Enter.")
+            print("Type or paste your API key, then Enter.")
             print("  (the key is shown as you type so paste works)")
             key = input("  API key: ").strip()
     else:
         key = sys.stdin.readline().strip()
 
     if key:
-        # Build the broker config from the canonical default, enable the preset.
+        # Switching an already-configured install still needs a base URL + model;
+        # prompt for anything not supplied via flags/env.
+        if interactive and already_configured:
+            if not base_url:
+                print("Umbrella talks to any OpenAI-compatible /chat/completions endpoint.")
+                base_url = input("  API base URL (e.g. https://host/v1): ").strip()
+            if not model:
+                model = input("  Model id to request: ").strip()
+        if not base_url or not model:
+            print("A base URL (--base-url) and model (--model) are required to "
+                  "configure a connection.", file=sys.stderr)
+            return 1
+        # Build the broker config from the canonical default, enable the connection.
         config = runtime_model._default_broker_config()
         config['enabled'] = True
         conn = config['connections']['default']

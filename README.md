@@ -32,7 +32,7 @@ Umbrella dispatches actions along two paths, classified by the capability contra
 - owns sessions, shops, sub-agents, catalog-managed skills, and plugin-host-backed execution
 - owns server-side conversation through `POST /v1/sessions/{id}/converse`
 - uses an internal `model-broker` service for model access
-- prefers `Z.ai` as the primary live model backend
+- uses a configurable OpenAI-compatible model backend
 - model-provider config in `control-plane/runtime/model-provider.json`
 - broker routing and connections in `control-plane/runtime/model-broker.json`
 
@@ -275,13 +275,12 @@ Current direction:
 - the TUI is a thin client over the session service `converse` endpoint
 - mayor conversations can answer directly or orchestrate worker shops and return a mayor summary
 - conversation uses the internal model broker when a real provider connection is configured
-- the recommended real-model path is a `zai` broker connection configured through `/model setup`
-- the fastest Z.ai path is `/model glm5`, which presets the general endpoint and `glm-5-turbo`
+- configure any OpenAI-compatible endpoint through `/model setup` (baseUrl + model + API key)
 
 Current controls:
 - `Enter` send a message to the current target
 - `/` open slash-command mode
-- `/model`, `/model setup`, `/model glm5`, `/model test`, `/model use <model>`, `/model disable`
+- `/model`, `/model setup`, `/model test`, `/model use <model>`, `/model disable`
 - `Tab` cycle the current target
 - `s` choose a session
 - `n` create a new town

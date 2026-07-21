@@ -149,9 +149,8 @@ Primary interaction:
 - `Tab` to cycle targets
 - `/model` to inspect broker-backed model status
 - `/model setup` to configure the default broker connection
-- `/model glm5` to apply the recommended Z.ai `glm-5-turbo` general-chat preset
 - `/model test` to test the configured backend
-- the preferred live provider path is `zai`
+- the live provider path is any OpenAI-compatible `/chat/completions` endpoint
 
 Actions:
 - send message
@@ -272,8 +271,6 @@ Current command set:
 - `/workers`
 - `/model`
 - `/model setup`
-- `/model glm47`
-- `/model glm5`
 - `/model test`
 - `/model use <model>`
 - `/model disable`
@@ -596,7 +593,7 @@ Implemented now:
   - the TUI heartbeats the session, calls `converse` on a background thread, and renders the reply
   - the mayor can reply directly or orchestrate worker shops and return the reconciliation summary as the reply
 - `/model` flow against the session service and model broker:
-  - `/model`, `/model setup`, `/model glm47`, `/model glm5`, `/model test`, `/model use <model>`, `/model disable`
+  - `/model`, `/model setup`, `/model test`, `/model use <model>`, `/model disable`
   - backed by `GET/POST /v1/runtime/model-provider`, `POST /v1/runtime/model-provider/test`, and `GET /v1/model-broker/health`
 
 Not implemented yet:

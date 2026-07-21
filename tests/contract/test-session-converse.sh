@@ -25,7 +25,7 @@ cat >"$CONFIG_PATH" <<'JSON'
   "enabled": false,
   "provider": {
     "id": "default",
-    "type": "zai",
+    "type": "openai-compatible",
     "baseUrl": "",
     "defaultModel": "",
     "timeoutSec": 20
@@ -54,9 +54,9 @@ cat >"$BROKER_CONFIG_PATH" <<'JSON'
     "allowFallback": true
   },
   "providers": {
-    "zai": {
-      "id": "zai",
-      "type": "zai",
+    "openai-compatible": {
+      "id": "openai-compatible",
+      "type": "openai-compatible",
       "supportsApiKey": true,
       "supportsOAuth": false
     }
@@ -64,7 +64,7 @@ cat >"$BROKER_CONFIG_PATH" <<'JSON'
   "connections": {
     "default": {
       "id": "default",
-      "providerId": "zai",
+      "providerId": "openai-compatible",
       "authMode": "api_key",
       "label": "Disabled for fallback test",
       "enabled": false,
