@@ -12,7 +12,9 @@
       "shopProfileId": "",
       "enabledActionIds": [
         "skill.chat.respond",
-        "skill.memory.summarize"
+        "skill.memory.summarize",
+        "skill.memory.get",
+        "skill.memory.search"
       ],
       "capabilityFamilies": [
         "catalog.skill.invoke",
@@ -43,7 +45,9 @@
       "shopProfileId": "",
       "enabledActionIds": [
         "skill.chat.respond",
-        "skill.memory.summarize"
+        "skill.memory.summarize",
+        "skill.memory.get",
+        "skill.memory.search"
       ],
       "capabilityFamilies": [
         "catalog.skill.invoke",
