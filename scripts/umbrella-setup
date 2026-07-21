@@ -23,9 +23,10 @@ from pathlib import Path
 
 
 PRESETS = {
-    # id            provider  base URL                                   model         label
-    'zai-glm5':  ('zai', 'https://api.z.ai/api/paas/v4',        'glm-5-turbo', 'Z.ai GLM-5 Turbo'),
-    'zai-glm47': ('zai', 'https://api.z.ai/api/coding/paas/v4', 'glm-4.7',     'Z.ai GLM-4.7 (coding)'),
+    # id            provider             base URL                                   model           label
+    'zai-glm5':  ('zai',                'https://api.z.ai/api/paas/v4',        'glm-5-turbo',   'Z.ai GLM-5 Turbo'),
+    'zai-glm47': ('zai',                'https://api.z.ai/api/coding/paas/v4', 'glm-4.7',       'Z.ai GLM-4.7 (coding)'),
+    'deepseek':  ('openai-compatible',  'https://api.deepseek.com',            'deepseek-chat', 'DeepSeek Chat'),
 }
 
 BANNER = r"""
