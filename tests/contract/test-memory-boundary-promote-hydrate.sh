@@ -28,7 +28,7 @@ trap cleanup EXIT
 
 wait_health() {
   local url="$1"
-  local attempts=30
+  local attempts=100
   local i=1
   while [[ "$i" -le "$attempts" ]]; do
     if python3 - "$url" <<'PY'

@@ -136,7 +136,9 @@ with urllib.request.urlopen(req, timeout=5) as resp:
     payload = json.loads(resp.read().decode('utf-8'))
 
 assert payload['failureCategory'] == 'validation', payload
-assert payload['failureReason'] == 'execution_validation_failed', payload
+assert payload['failureReason'] == 'runtime_capability_unsupported', payload
+assert payload['failureSource'] == 'execution', payload
+assert payload['result']['kind'] == 'runtimeCapability', payload
 
 run_dir = Path(root) / 'control-plane' / 'observability' / 'runs' / run_id
 summary = json.loads((run_dir / 'summary.json').read_text())
@@ -144,9 +146,9 @@ run = json.loads((run_dir / 'run.json').read_text())
 step = run['steps'][0]
 
 assert summary['state'] == 'FAILED', summary
-assert summary['terminalReason'] == 'execution_validation_failed', summary
+assert summary['terminalReason'] == 'runtime_capability_unsupported', summary
 assert summary['failureCategory'] == 'validation', summary
-assert summary['failureSource'] == 'adapter', summary
+assert summary['failureSource'] == 'execution', summary
 assert summary['failedStepId'] == 'invalid-step', summary
 assert step['status'] == 'FAILED', step
 
