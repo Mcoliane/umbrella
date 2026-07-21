@@ -1,0 +1,100 @@
+{
+  "id": "code.run.skill",
+  "name": "Code Runner Skill",
+  "version": "0.1.0",
+  "apiVersion": "umbrella.catalog.manifest.v1",
+  "kind": "skill",
+  "runtime": "python",
+  "entrypoint": "bin/code-run-skill",
+  "defaultEnabled": true,
+  "isolationMode": "process",
+  "compatibility": {
+    "umbrella": {
+      "minVersion": "0.4.0"
+    },
+    "pluginHostRuntimes": [
+      "python"
+    ],
+    "apiVersions": [
+      "umbrella.catalog.manifest.v1"
+    ],
+    "actionSchemaVersions": [
+      "umbrella.catalog.action.v1"
+    ],
+    "requiresFeatures": []
+  },
+  "executionPolicy": {
+    "envAllowlist": [],
+    "network": "none",
+    "fs": "scratch-only",
+    "maxRuntimeSec": 60,
+    "maxOutputBytes": 65536,
+    "maxInputBytes": 262144,
+    "isolationProfile": "process-default"
+  },
+  "sessionHooks": {
+    "suggestedContexts": [
+      "code",
+      "compute"
+    ]
+  },
+  "actions": [
+    {
+      "id": "skill.code.run",
+      "title": "Run Code",
+      "description": "Execute a snippet of Python or Bash in a subprocess and return stdout, stderr, and exit code. Runs as the local user; approval-gated by default.",
+      "requiredCapabilities": [],
+      "policyHints": {
+        "riskClass": "high",
+        "approvalMode": "required",
+        "memoryAccess": "none",
+        "fsAccess": "scratch-only",
+        "networkAccess": "none",
+        "processAccess": "unrestricted-subprocess",
+        "delegationAllowed": true,
+        "subAgentAllowed": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "language": {
+            "type": "string",
+            "enum": [
+              "python",
+              "bash"
+            ]
+          },
+          "code": {
+            "type": "string"
+          },
+          "stdin": {
+            "type": "string"
+          },
+          "timeoutSec": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "exitCode": {
+            "type": "integer"
+          },
+          "stdout": {
+            "type": "string"
+          },
+          "stderr": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ]
+}

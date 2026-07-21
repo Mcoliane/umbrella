@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""Code runner skill for the Umbrella agent runtime.
+
+Reads one invocation as JSON on stdin ({"invocation": {"inputs": {...}}}) and
+emits one JSON result object on stdout. Executes a Python or Bash snippet in a
+fresh subprocess with a wall-clock timeout and returns stdout/stderr/exit code.
+
+Runs as the local user with no OS sandbox (honor-system, like every plugin-host
+python/shell skill), so the action is declared riskClass=high with
+approvalMode=required — an operator should approve each run unless they
+deliberately lower the policy. stdlib only.
+"""
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+_MAX_TIMEOUT = 120
+
+
+def run_code(language: str, code: str, stdin_text: str, timeout_sec: int) -> dict:
+    language = (language or "python").strip().lower()
+    if language in ("py", "python", "python3"):
+        suffix, argv0 = ".py", [sys.executable]
+    elif language in ("bash", "sh", "shell"):
+        suffix, argv0 = ".sh", ["bash"]
+    else:
+        return {"ok": False, "error": f"unsupported language: {language!r} (use 'python' or 'bash')"}
+
+    timeout_sec = max(1, min(int(timeout_sec or 30), _MAX_TIMEOUT))
+    tmp = tempfile.mkdtemp(prefix="umbrella-code-")
+    script = Path(tmp) / f"snippet{suffix}"
+    script.write_text(code, encoding="utf-8")
+    try:
+        proc = subprocess.run(
+            argv0 + [str(script)],
+            input=stdin_text,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            cwd=tmp,
+        )
+        return {
+            "ok": proc.returncode == 0,
+            "language": language,
+            "exitCode": proc.returncode,
+            "stdout": proc.stdout,
+            "stderr": proc.stderr,
+            "summary": f"code.run ({language}) exited {proc.returncode}",
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "language": language,
+            "exitCode": 124,
+            "stdout": "",
+            "stderr": f"timed out after {timeout_sec}s",
+            "summary": f"code.run ({language}) timed out after {timeout_sec}s",
+        }
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def main() -> int:
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        print(json.dumps({"ok": False, "error": "invalid JSON on stdin"}))
+        return 1
+    invocation = payload.get("invocation") if isinstance(payload.get("invocation"), dict) else {}
+    inputs = invocation.get("inputs") if isinstance(invocation.get("inputs"), dict) else {}
+
+    code = str(inputs.get("code", ""))
+    if not code.strip():
+        print(json.dumps({"ok": False, "error": "'code' is required"}))
+        return 1
+
+    out = run_code(
+        language=str(inputs.get("language", "python")),
+        code=code,
+        stdin_text=str(inputs.get("stdin", "")),
+        timeout_sec=inputs.get("timeoutSec", 30),
+    )
+    print(json.dumps(out))
+    return 0 if out.get("ok") else 0  # a non-zero exit code is a result, not a skill failure
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

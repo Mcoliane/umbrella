@@ -1,0 +1,100 @@
+{
+  "id": "shop.originate.skill",
+  "name": "Shop Originator Skill",
+  "version": "0.1.0",
+  "apiVersion": "umbrella.catalog.manifest.v1",
+  "kind": "skill",
+  "runtime": "python",
+  "entrypoint": "bin/shop-originate-skill",
+  "defaultEnabled": true,
+  "isolationMode": "process",
+  "compatibility": {
+    "umbrella": {
+      "minVersion": "0.4.0"
+    },
+    "pluginHostRuntimes": [
+      "python"
+    ],
+    "apiVersions": [
+      "umbrella.catalog.manifest.v1"
+    ],
+    "actionSchemaVersions": [
+      "umbrella.catalog.action.v1"
+    ],
+    "requiresFeatures": []
+  },
+  "executionPolicy": {
+    "envAllowlist": [],
+    "network": "http-outbound",
+    "fs": "scratch-only",
+    "maxRuntimeSec": 20,
+    "maxOutputBytes": 16384,
+    "maxInputBytes": 16384,
+    "isolationProfile": "http-outbound"
+  },
+  "sessionHooks": {
+    "suggestedContexts": [
+      "town",
+      "governance"
+    ]
+  },
+  "actions": [
+    {
+      "id": "skill.shop.originate",
+      "title": "Originate Worker Shop",
+      "description": "Create a new worker shop (and its worker agent) in the current session with a chosen set of enabled actions, so the mayor can delegate to it.",
+      "requiredCapabilities": [],
+      "policyHints": {
+        "riskClass": "high",
+        "approvalMode": "conditional",
+        "memoryAccess": "none",
+        "fsAccess": "scratch-only",
+        "networkAccess": "http-outbound",
+        "processAccess": "restricted-subprocess",
+        "delegationAllowed": true,
+        "subAgentAllowed": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "shopId": {
+            "type": "string"
+          },
+          "shopName": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "enabledActionIds": {
+            "type": "array"
+          },
+          "originatorAgentId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "shopId",
+          "enabledActionIds"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "shop": {
+            "type": "object"
+          },
+          "summary": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ]
+}

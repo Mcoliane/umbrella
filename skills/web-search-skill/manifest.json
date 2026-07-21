@@ -1,0 +1,131 @@
+{
+  "id": "web.search.skill",
+  "name": "Web Search & Scrape Skill",
+  "version": "0.1.0",
+  "apiVersion": "umbrella.catalog.manifest.v1",
+  "kind": "skill",
+  "runtime": "python",
+  "entrypoint": "bin/web-search-skill",
+  "defaultEnabled": true,
+  "isolationMode": "process",
+  "compatibility": {
+    "umbrella": {
+      "minVersion": "0.4.0"
+    },
+    "pluginHostRuntimes": [
+      "python"
+    ],
+    "apiVersions": [
+      "umbrella.catalog.manifest.v1"
+    ],
+    "actionSchemaVersions": [
+      "umbrella.catalog.action.v1"
+    ],
+    "requiresFeatures": []
+  },
+  "executionPolicy": {
+    "envAllowlist": [],
+    "network": "http-outbound",
+    "fs": "scratch-only",
+    "maxRuntimeSec": 30,
+    "maxOutputBytes": 65536,
+    "maxInputBytes": 16384,
+    "isolationProfile": "http-outbound"
+  },
+  "sessionHooks": {
+    "suggestedContexts": [
+      "web",
+      "research"
+    ]
+  },
+  "actions": [
+    {
+      "id": "skill.web.search",
+      "title": "Web Search",
+      "description": "Search the web (via DuckDuckGo) and return ranked result titles, URLs, and snippets.",
+      "requiredCapabilities": [],
+      "policyHints": {
+        "riskClass": "moderate",
+        "approvalMode": "none",
+        "memoryAccess": "none",
+        "fsAccess": "scratch-only",
+        "networkAccess": "http-outbound",
+        "processAccess": "restricted-subprocess",
+        "delegationAllowed": true,
+        "subAgentAllowed": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "maxResults": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "results": {
+            "type": "array"
+          },
+          "summary": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "id": "skill.web.fetch",
+      "title": "Fetch & Scrape URL",
+      "description": "Fetch a URL and return its readable text content with scripts, styles, and markup stripped.",
+      "requiredCapabilities": [],
+      "policyHints": {
+        "riskClass": "moderate",
+        "approvalMode": "none",
+        "memoryAccess": "none",
+        "fsAccess": "scratch-only",
+        "networkAccess": "http-outbound",
+        "processAccess": "restricted-subprocess",
+        "delegationAllowed": true,
+        "subAgentAllowed": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "maxChars": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "url"
+        ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ]
+}

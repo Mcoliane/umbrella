@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+"""Web search + scrape skill for the Umbrella agent runtime.
+
+Reads one invocation as JSON on stdin ({"invocation": {"inputs": {...}}}) and
+emits one JSON result object on stdout. Two actions share this entrypoint,
+dispatched by which input is present:
+  - inputs.query -> web search
+  - inputs.url   -> fetch a URL and return its readable text
+
+Rendering strategy (best-first, all stdlib — no third-party packages):
+  1. A local Chromium-based browser via `--headless --dump-dom` (executes JS,
+     behaves like a real browser). Auto-detected; skipped if none is installed.
+  2. Plain urllib as a fallback.
+
+Search backends (best-first):
+  1. Brave Search API when a key is present (context.searchApiKey or
+     UMBRELLA_SEARCH_API_KEY) — reliable, no scraping.
+  2. DuckDuckGo HTML rendered through the browser / urllib — no key, but may be
+     rate-limited from shared/flagged IPs.
+"""
+from __future__ import annotations
+
+import html
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import urllib.parse
+import urllib.request
+
+_UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0 Safari/537.36"}
+_SCRIPT_STYLE = re.compile(r"(?is)<(script|style|noscript|template)\b.*?</\1>")
+_TAG = re.compile(r"(?s)<[^>]+>")
+_WS = re.compile(r"\s+")
+
+_BROWSER_CANDIDATES = [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+]
+
+
+def _clean(fragment: str) -> str:
+    return html.unescape(_TAG.sub("", fragment)).strip()
+
+
+def find_browser() -> str:
+    override = os.environ.get("UMBRELLA_BROWSER", "").strip()
+    if override and os.path.exists(override):
+        return override
+    for name in ("google-chrome-stable", "google-chrome", "chromium", "chromium-browser", "brave-browser"):
+        found = shutil.which(name)
+        if found:
+            return found
+    for path in _BROWSER_CANDIDATES:
+        if os.path.exists(path):
+            return path
+    return ""
+
+
+def render_dom(url: str, browser: str, wait_ms: int = 4000) -> str:
+    """Return the fully-rendered DOM of `url` using headless Chrome, or '' on failure."""
+    tmp = tempfile.mkdtemp(prefix="umbrella-web-")
+    try:
+        cmd = [
+            browser, "--headless=new", "--disable-gpu", "--no-sandbox",
+            "--no-first-run", "--no-default-browser-check", "--disable-extensions",
+            "--disable-background-networking", "--mute-audio",
+            f"--virtual-time-budget={max(0, wait_ms)}",
+            f"--user-data-dir={tmp}", "--dump-dom", url,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+        return proc.stdout or ""
+    except Exception:  # noqa: BLE001
+        return ""
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def http_get(url: str, data: bytes | None = None) -> str:
+    req = urllib.request.Request(url, data=data, headers=_UA)
+    with urllib.request.urlopen(req, timeout=25) as resp:
+        raw = resp.read(4_000_000)
+        charset = resp.headers.get_content_charset() or "utf-8"
+    return raw.decode(charset, "replace")
+
+
+def _parse_ddg_html(body: str, max_results: int) -> list[dict]:
+    links = re.findall(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', body, re.S)
+    snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', body, re.S)
+    out = []
+    for i, (href, title) in enumerate(links[: max(1, max_results)]):
+        url = href
+        m = re.search(r"[?&]uddg=([^&]+)", href)
+        if m:
+            url = urllib.parse.unquote(m.group(1))
+        out.append({"title": _clean(title), "url": url,
+                    "snippet": _clean(snippets[i]) if i < len(snippets) else ""})
+    return out
+
+
+def brave_search(query: str, key: str, max_results: int) -> list[dict]:
+    url = "https://api.search.brave.com/res/v1/web/search?" + urllib.parse.urlencode({"q": query, "count": max_results})
+    req = urllib.request.Request(url, headers={"Accept": "application/json", "X-Subscription-Token": key})
+    with urllib.request.urlopen(req, timeout=25) as resp:
+        data = json.loads(resp.read().decode("utf-8", "replace"))
+    return [
+        {"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("description", "")}
+        for r in (data.get("web", {}).get("results", []) or [])[:max_results]
+    ]
+
+
+def web_search(query: str, max_results: int, key: str, browser: str) -> dict:
+    backend = None
+    results: list[dict] = []
+    if key:
+        try:
+            results = brave_search(query, key, max_results)
+            backend = "brave-api"
+        except Exception as ex:  # noqa: BLE001
+            backend = f"brave-api-failed:{type(ex).__name__}"
+    if not results:
+        ddg = "https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": query})
+        body = render_dom(ddg, browser) if browser else ""
+        if not body or "result__a" not in body:
+            try:
+                body = http_get("https://html.duckduckgo.com/html/", urllib.parse.urlencode({"q": query}).encode())
+            except Exception:  # noqa: BLE001
+                body = body or ""
+        results = _parse_ddg_html(body, max_results)
+        backend = backend or ("duckduckgo-browser" if browser else "duckduckgo-http")
+    note = "" if results else " (no results — the search source may be rate-limiting this IP; set UMBRELLA_SEARCH_API_KEY for a reliable backend)"
+    return {"ok": True, "query": query, "backend": backend, "results": results,
+            "summary": f"web.search: {len(results)} result(s) for {query!r} via {backend}{note}"}
+
+
+def web_fetch(url: str, max_chars: int, browser: str) -> dict:
+    if not re.match(r"^https?://", url):
+        url = "https://" + url
+    body = render_dom(url, browser) if browser else ""
+    source = "browser"
+    if not body:
+        body = http_get(url)
+        source = "http"
+    title_match = re.search(r"(?is)<title[^>]*>(.*?)</title>", body)
+    title = _clean(title_match.group(1)) if title_match else ""
+    text = _WS.sub(" ", _clean(_SCRIPT_STYLE.sub(" ", body))).strip()
+    if max_chars > 0:
+        text = text[:max_chars]
+    return {"ok": True, "url": url, "title": title, "text": text, "source": source,
+            "summary": f"web.fetch: {len(text)} chars from {url} via {source}"}
+
+
+def main() -> int:
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        print(json.dumps({"ok": False, "error": "invalid JSON on stdin"}))
+        return 1
+    invocation = payload.get("invocation") if isinstance(payload.get("invocation"), dict) else {}
+    inputs = invocation.get("inputs") if isinstance(invocation.get("inputs"), dict) else {}
+    context = invocation.get("context") if isinstance(invocation.get("context"), dict) else {}
+
+    browser = find_browser()
+    key = str(context.get("searchApiKey", "")).strip() or os.environ.get("UMBRELLA_SEARCH_API_KEY", "").strip()
+    url = str(inputs.get("url", "")).strip()
+    query = str(inputs.get("query", "")).strip()
+    try:
+        if url:
+            out = web_fetch(url, int(inputs.get("maxChars", 8000) or 8000), browser)
+        elif query:
+            out = web_search(query, int(inputs.get("maxResults", 8) or 8), key, browser)
+        else:
+            print(json.dumps({"ok": False, "error": "provide 'query' (search) or 'url' (fetch)"}))
+            return 1
+    except Exception as ex:  # noqa: BLE001
+        print(json.dumps({"ok": False, "error": f"{type(ex).__name__}: {ex}"}))
+        return 1
+
+    out["browserUsed"] = bool(browser)
+    print(json.dumps(out))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
