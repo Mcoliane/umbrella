@@ -31,7 +31,7 @@
         "delegationPolicy": "delegate-when-specialized",
         "modelPreference": "gpt-4.1",
         "temperatureDefault": 0.2,
-        "maxTokensDefault": 300
+        "maxTokensDefault": 1200
       }
     },
     "umbrella.originator.v1": {
@@ -62,7 +62,7 @@
         "conversationStyle": "concise-operational",
         "modelPreference": "gpt-4.1-mini",
         "temperatureDefault": 0.2,
-        "maxTokensDefault": 300
+        "maxTokensDefault": 1200
       }
     },
     "umbrella.programming-agent.v1": {
