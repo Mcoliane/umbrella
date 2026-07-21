@@ -104,6 +104,10 @@ def get(url):
 def authorize(step_spec):
     return post(policy_url + '/v1/policy/authorize-step', {'stepSpec': step_spec})
 
+# This contract verifies the approval/identity gates, which enforce under
+# 'ask' mode (the autonomy default is 'auto').
+post(policy_url + '/v1/policy/autonomy', {'mode': 'ask'})
+
 post(mem_url + '/v1/namespaces', {'id': 'graph', 'owner_type': 'system', 'owner_id': 'test'})
 post(mem_url + '/v1/nodes', {
     'node_id': 'fact:graph:source',

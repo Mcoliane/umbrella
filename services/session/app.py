@@ -334,10 +334,11 @@ class SessionEngine:
                 max_runtime_sec = int(execution_policy.get('maxRuntimeSec', timeout_sec) or timeout_sec)
             except Exception:
                 max_runtime_sec = timeout_sec
-            # Honor the skill's own declared budget so long-running actions
-            # (e.g. the code agent) are not killed by the 30s default when a
-            # delegation carries no explicit timeout.
-            timeout_sec = max(1, max(timeout_sec, max_runtime_sec))
+            # Default to the skill's own declared budget: this never exceeds the
+            # plugin's maxRuntimeSec (short skills stay short) yet gives long
+            # actions like the code agent their full budget when a delegation
+            # carries no explicit timeout.
+            timeout_sec = max(1, max_runtime_sec)
         return timeout_sec
 
     def _build_action_governance(
@@ -1368,6 +1369,7 @@ class SessionEngine:
         mode: str = '',
         allow_delegation: bool = True,
         conversation_mode_hint: str = '',
+        wait_for_result: bool = False,
     ) -> dict:
         session_id = validate_identifier(session_id, 'sessionId')
         session = self.store.get(session_id)
@@ -1434,52 +1436,87 @@ class SessionEngine:
                             'metadata': {'source': 'session-converse-mayor'},
                         }
                     )
-                orchestrated = self.orchestrate_turn(session_id=session_id, turn_id=turn_id, plan=plan, metadata={'source': 'session-converse', 'allowDelegation': True})
-                reconciliation = orchestrated.get('reconciliation') if isinstance(orchestrated.get('reconciliation'), dict) else {}
-                reply = str(reconciliation.get('summary', '')).strip() or compact_text(str(direct.get('reply', '')).strip() or 'The delegated work is complete.')
-                appended: dict = {}
-
-                def _append_summary(fresh: dict) -> dict:
-                    appended['message'] = self._append_message_row(
-                        fresh,
-                        'assistant',
-                        reply,
-                        {
-                            'targetAgentId': agent_id,
-                            'targetShopId': shop_id,
-                            'modeResolved': 'delegate',
-                            'turnId': turn_id,
-                            'delegationIds': [str(row.get('delegationId', '')).strip() for row in (orchestrated.get('delegations') or []) if isinstance(row, dict)],
-                            'providerUsed': bool(direct.get('providerUsed', False)),
-                            'providerType': str(direct.get('providerType', '')).strip(),
-                            'connectionUsed': str(direct.get('connectionUsed', '')).strip(),
-                            'modelUsed': str(direct.get('modelUsed', '')).strip(),
-                            'fallbackUsed': bool(direct.get('fallbackUsed', False)),
-                            'latencyMs': int(direct.get('latencyMs', 0) or 0),
-                        },
-                    )
-                    return fresh
-
-                session = self.store.update(session_id, _append_summary)
-                message = appended['message']
-                return {
-                    'ok': True,
-                    'target': agent_id,
-                    'agentId': agent_id,
-                    'shopId': shop_id,
-                    'modeResolved': 'delegate',
-                    'reply': reply,
-                    'turnId': turn_id,
-                    'delegations': orchestrated.get('delegations') if isinstance(orchestrated.get('delegations'), list) else [],
-                    'reconciliation': reconciliation,
-                    'message': message,
-                    'runtimeResolved': 'umbrella-agent-runtime',
+                provider_meta = {
                     'providerUsed': bool(direct.get('providerUsed', False)),
                     'providerType': str(direct.get('providerType', '')).strip(),
                     'connectionUsed': str(direct.get('connectionUsed', '')).strip(),
                     'modelUsed': str(direct.get('modelUsed', '')).strip(),
                     'fallbackUsed': bool(direct.get('fallbackUsed', False)),
                     'latencyMs': int(direct.get('latencyMs', 0) or 0),
+                }
+
+                if wait_for_result:
+                    # Synchronous path: block until the delegated work completes.
+                    orchestrated = self.orchestrate_turn(session_id=session_id, turn_id=turn_id, plan=plan, metadata={'source': 'session-converse', 'allowDelegation': True})
+                    reconciliation = orchestrated.get('reconciliation') if isinstance(orchestrated.get('reconciliation'), dict) else {}
+                    reply = str(reconciliation.get('summary', '')).strip() or compact_text(str(direct.get('reply', '')).strip() or 'The delegated work is complete.')
+                    appended: dict = {}
+
+                    def _append_summary(fresh: dict) -> dict:
+                        appended['message'] = self._append_message_row(
+                            fresh, 'assistant', reply,
+                            {'targetAgentId': agent_id, 'targetShopId': shop_id, 'modeResolved': 'delegate',
+                             'delegationStatus': 'completed', 'turnId': turn_id,
+                             'delegationIds': [str(row.get('delegationId', '')).strip() for row in (orchestrated.get('delegations') or []) if isinstance(row, dict)],
+                             **provider_meta},
+                        )
+                        return fresh
+
+                    session = self.store.update(session_id, _append_summary)
+                    return {
+                        'ok': True, 'target': agent_id, 'agentId': agent_id, 'shopId': shop_id,
+                        'modeResolved': 'delegate', 'delegationStatus': 'completed', 'async': False,
+                        'reply': reply, 'turnId': turn_id,
+                        'delegations': orchestrated.get('delegations') if isinstance(orchestrated.get('delegations'), list) else [],
+                        'reconciliation': reconciliation, 'message': appended['message'],
+                        'runtimeResolved': 'umbrella-agent-runtime', **provider_meta,
+                    }
+
+                # Async path (default): acknowledge now, run the delegation in the
+                # background, and post the result to the session when it completes.
+                ack = compact_text(str(direct.get('reply', '')).strip()) or f"On it — delegating to {plan[0]['shopId']}. I'll post the result here when it's done."
+
+                def _run_delegation() -> None:
+                    try:
+                        orchestrated = self.orchestrate_turn(session_id=session_id, turn_id=turn_id, plan=plan, metadata={'source': 'session-converse', 'allowDelegation': True})
+                        reconciliation = orchestrated.get('reconciliation') if isinstance(orchestrated.get('reconciliation'), dict) else {}
+                        summary = str(reconciliation.get('summary', '')).strip() or 'The delegated work is complete.'
+                        delegation_ids = [str(r.get('delegationId', '')).strip() for r in (orchestrated.get('delegations') or []) if isinstance(r, dict)]
+                        status = 'completed'
+                    except Exception as ex:  # noqa: BLE001 — record the failure as a message
+                        summary, delegation_ids, status = f'The delegated work failed: {ex}', [], 'failed'
+
+                    def _finish(fresh: dict) -> dict:
+                        self._append_message_row(
+                            fresh, 'assistant', summary,
+                            {'targetAgentId': agent_id, 'targetShopId': shop_id, 'modeResolved': 'delegate',
+                             'delegationStatus': status, 'turnId': turn_id, 'delegationIds': delegation_ids,
+                             'async': True, **provider_meta},
+                        )
+                        return fresh
+
+                    try:
+                        self.store.update(session_id, _finish)
+                    except Exception:  # noqa: BLE001 — best-effort result posting
+                        pass
+
+                appended = {}
+
+                def _append_ack(fresh: dict) -> dict:
+                    appended['message'] = self._append_message_row(
+                        fresh, 'assistant', ack,
+                        {'targetAgentId': agent_id, 'targetShopId': shop_id, 'modeResolved': 'delegate',
+                         'delegationStatus': 'running', 'turnId': turn_id, 'async': True, **provider_meta},
+                    )
+                    return fresh
+
+                session = self.store.update(session_id, _append_ack)
+                threading.Thread(target=_run_delegation, name=f'delegation-{turn_id}', daemon=True).start()
+                return {
+                    'ok': True, 'target': agent_id, 'agentId': agent_id, 'shopId': shop_id,
+                    'modeResolved': 'delegate', 'delegationStatus': 'running', 'async': True,
+                    'reply': ack, 'turnId': turn_id, 'delegations': [],
+                    'message': appended['message'], 'runtimeResolved': 'umbrella-agent-runtime', **provider_meta,
                 }
             reply, reply_error = self._conversation_reply_or_error(
                 direct,
@@ -2733,6 +2770,7 @@ def handler_factory(engine: SessionEngine, token: str):
                         mode=str(body.get('mode', '')),
                         allow_delegation=bool(body.get('allowDelegation', True)),
                         conversation_mode_hint=str(body.get('conversationModeHint', '')),
+                        wait_for_result=bool(body.get('waitForResult', False)),
                     )
                     return json_response(self, 200, out)
                 if path.endswith('/invoke-action') and path.startswith('/v1/sessions/'):

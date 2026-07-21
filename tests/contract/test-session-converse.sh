@@ -190,7 +190,7 @@ worker = post(session_url + f'/v1/sessions/{session_id}/converse', {'target': 'p
 assert worker.get('ok') is True, worker
 assert 'fact:worker' in worker.get('reply', ''), worker
 
-mayor_delegate = post(session_url + f'/v1/sessions/{session_id}/converse', {'target': 'mayor', 'content': 'fact:delegated'})
+mayor_delegate = post(session_url + f'/v1/sessions/{session_id}/converse', {'target': 'mayor', 'content': 'fact:delegated', 'waitForResult': True})
 assert mayor_delegate.get('ok') is True, mayor_delegate
 assert mayor_delegate.get('modeResolved') == 'delegate', mayor_delegate
 assert mayor_delegate.get('turnId'), mayor_delegate

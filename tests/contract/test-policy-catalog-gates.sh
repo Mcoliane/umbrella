@@ -69,6 +69,9 @@ def authorize(step_spec):
     with urllib.request.urlopen(req, timeout=20) as resp:
         return json.loads(resp.read().decode('utf-8'))
 
+# These gates enforce under 'ask' mode; the autonomy default is 'auto'.
+urllib.request.urlopen(urllib.request.Request(policy_url + '/v1/policy/autonomy', method='POST', data=b'{"mode":"ask"}', headers={'Content-Type':'application/json'}), timeout=20).read()
+
 deny_unregistered = authorize({'action': 'skill.memory.summarize', 'metadata': {'agentId': agent_id}})
 assert deny_unregistered.get('allowed') is False and deny_unregistered.get('reason') == 'external_agent_registration_required', deny_unregistered
 
