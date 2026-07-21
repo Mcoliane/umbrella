@@ -19,7 +19,7 @@
     "version": { "type": "string", "minLength": 1 },
     "apiVersion": { "const": "umbrella.catalog.manifest.v1" },
     "kind": { "enum": ["skill", "plugin"] },
-    "runtime": { "enum": ["shell", "python", "http", "container"] },
+    "runtime": { "enum": ["shell", "python", "container"] },
     "entrypoint": { "type": "string", "minLength": 1 },
     "defaultEnabled": { "type": "boolean" },
     "isolationMode": { "type": "string" },

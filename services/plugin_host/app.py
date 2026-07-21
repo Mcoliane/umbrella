@@ -152,6 +152,11 @@ class PluginHostEngine:
         compatible = item.get('compatible') if isinstance(item.get('compatible'), dict) else {}
         if not bool(compatible.get('ok', False)):
             raise ValueError('catalog item is incompatible with this umbrella version')
+        trust = item.get('trust') if isinstance(item.get('trust'), dict) else {}
+        if trust.get('ok') is False:
+            mode = str(trust.get('signatureMode', '')).strip() or 'unknown'
+            reason = str(trust.get('reason', '')).strip() or 'install verification missing'
+            raise ValueError(f"catalog item is not trusted under catalog signature mode '{mode}': {reason}")
         if not bool(item.get('enabled', False)):
             raise ValueError('catalog item is disabled')
         install = item.get('install') if isinstance(item.get('install'), dict) else {}
@@ -179,6 +184,12 @@ class PluginHostEngine:
             'TMPDIR': str(scratch_dir),
             'HOME': str(scratch_dir),
             'PWD': str(scratch_dir),
+            # Relocation contract: skills must resolve the umbrella root from
+            # UMBRELLA_ROOT instead of walking parents of their own file, so a
+            # managed install under control-plane/extensions/ still finds the
+            # repo tree and sibling services.
+            'UMBRELLA_ROOT': str(self.root),
+            'UMBRELLA_CATALOG_URL': self.catalog_url,
             'UMBRELLA_PLUGIN_SCRATCH_DIR': str(scratch_dir),
             'UMBRELLA_PLUGIN_RUN_ID': str(invocation.get('runId', '')).strip(),
             'UMBRELLA_PLUGIN_STEP_ID': str(invocation.get('stepId', '')).strip(),
@@ -189,12 +200,30 @@ class PluginHostEngine:
                 env[key] = parent_env[key]
         return env
 
+    def _policy_warnings(self, runtime: str, policy: dict) -> list[str]:
+        """Honesty check: report declared isolation that this host does not enforce."""
+        warnings: list[str] = []
+        if runtime in {'shell', 'python'}:
+            warnings.append(
+                f"isolation policy not enforced for runtime '{runtime}': "
+                f"fs='{policy['fs']}', network='{policy['network']}', isolationProfile='{policy['isolationProfile']}' "
+                'are declared, but the plugin runs as an ordinary local process (scrubbed env, scratch cwd, '
+                'timeout and I/O caps only; no filesystem or network sandbox)'
+            )
+        if runtime == 'container' and policy.get('network') != 'none':
+            warnings.append(
+                f"network policy '{policy['network']}' not enforced for runtime 'container': "
+                'containers always run with --network none'
+            )
+        return warnings
+
     def invoke(self, action_id: str, invocation: dict) -> dict:
         action, item = self.resolve_action(action_id)
         self._assert_invocation_allowed(action_id, item)
         policy = self._effective_execution_policy(item, invocation)
 
         runtime = str(item.get('runtime', '')).strip()
+        policy_warnings = self._policy_warnings(runtime, policy)
         entrypoint = Path(str(item.get('entrypoint', '')).strip())
         if not entrypoint.exists():
             raise ValueError('plugin entrypoint not found')
@@ -281,6 +310,7 @@ class PluginHostEngine:
                 'command': cmd,
                 'scratchDir': str(scratch_dir),
                 'executionPolicy': policy,
+                'policyWarnings': policy_warnings,
             }
 
         stdout = truncate_text(proc.stdout or '', policy['maxOutputBytes'])
@@ -302,6 +332,7 @@ class PluginHostEngine:
             'command': cmd,
             'scratchDir': str(scratch_dir),
             'executionPolicy': policy,
+            'policyWarnings': policy_warnings,
         }
         if not out['ok']:
             out['failureCategory'] = 'runtime'

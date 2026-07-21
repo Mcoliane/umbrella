@@ -101,8 +101,26 @@ with urllib.request.urlopen(catalog_url + '/v1/catalog/items', timeout=20) as re
 entries = {item['id']: item for item in items.get('items', [])}
 example = entries.get('example.memory.skill')
 assert example is not None, items
-assert example['enabled'] is True, example
+# Trusted-enable model: in require-signature mode a scan-discovered skill has
+# no verified bundle signature, so it is registered but not enabled and the
+# enable endpoint refuses it.
+assert example['enabled'] is False, example
 assert example['compatible']['ok'] is True, example
+assert example.get('trust', {}).get('ok') is False, example
+
+enable_untrusted_req = urllib.request.Request(
+    catalog_url + '/v1/catalog/items/enable',
+    method='POST',
+    data=json.dumps({'id': 'example.memory.skill'}).encode('utf-8'),
+    headers={'Content-Type': 'application/json'},
+)
+try:
+    with urllib.request.urlopen(enable_untrusted_req, timeout=20) as resp:
+        enable_untrusted_out = json.loads(resp.read().decode('utf-8'))
+    raise AssertionError(enable_untrusted_out)
+except urllib.error.HTTPError as exc:
+    enable_untrusted_out = json.loads(exc.read().decode('utf-8'))
+assert 'require-signature' in (((enable_untrusted_out.get('error') or {}).get('message')) or ''), enable_untrusted_out
 
 with urllib.request.urlopen(catalog_url + '/v1/catalog/actions', timeout=20) as resp:
     actions = json.loads(resp.read().decode('utf-8'))
