@@ -25,8 +25,15 @@ def _load_json(path: Path, default):
 
 
 def _write_json(path: Path, payload: dict) -> None:
+    # Create with 0600 from the first byte (no chmod-after-write window) and
+    # publish atomically so readers never see a partial file.
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    tmp_path = path.with_name(path.name + ".tmp")
+    fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, indent=2) + "\n")
+    os.replace(tmp_path, path)
+    os.chmod(path, 0o600)
 
 
 def model_provider_path(root: Path) -> Path:

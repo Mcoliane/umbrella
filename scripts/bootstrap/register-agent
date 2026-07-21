@@ -74,18 +74,22 @@ fi
 SECRET_PATH="$RUNTIME_ROOT/control-plane/runtime/bootstrap-secret.txt"
 if [[ ! -f "$SECRET_PATH" ]]; then
   python3 - "$SECRET_PATH" <<'PY'
-import secrets, sys
+import os, secrets, sys
 from pathlib import Path
 p=Path(sys.argv[1])
 p.parent.mkdir(parents=True, exist_ok=True)
-p.write_text(secrets.token_hex(32) + '\n', encoding='utf-8')
+fd=os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, 'w', encoding='utf-8') as f:
+  f.write(secrets.token_hex(32) + '\n')
 PY
 fi
+chmod 600 "$SECRET_PATH"
 
 python3 - "$MANIFEST" "$SECRET_PATH" "$AGENT_ID" "$SOURCE" "$TOKEN" "$OUT_PATH" "${CAPS[@]}" <<'PY'
 import hashlib
 import hmac
 import json
+import os
 import sys
 import urllib.request
 from datetime import datetime, timezone
@@ -176,6 +180,8 @@ blob = json.dumps(out, indent=2) + '\n'
 if out_path:
     p = Path(out_path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(blob, encoding='utf-8')
+    fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        f.write(blob)
 print(blob, end='')
 PY

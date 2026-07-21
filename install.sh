@@ -76,12 +76,49 @@ mkdir -p "$PREFIX" "$BIN_DIR" "$RUNTIME_DIR" "$CONFIG_DIR"
 
 echo "[install] copying app to $APP_DIR"
 mkdir -p "$APP_DIR"
+# Exclusions mirror .gitignore: an install from a used checkout must not
+# propagate live secrets or runtime-generated state into PREFIX/app.
 rsync -a --delete \
   --exclude '.git' \
   --exclude '.DS_Store' \
+  --exclude '* 2' \
+  --exclude '* 2.*' \
+  --exclude '__pycache__' \
+  --exclude '*.pyc' \
+  --exclude 'dist/releases' \
+  --exclude 'dist/releases-test' \
   --exclude 'tmp' \
+  --exclude '.venv' \
+  --exclude 'memory-boundary' \
   --exclude 'control-plane/observability/runs' \
+  --exclude 'control-plane/observability/memory-boundary' \
+  --exclude 'control-plane/observability/memory-service' \
+  --exclude 'control-plane/observability/policy' \
+  --exclude 'control-plane/observability/catalog' \
+  --exclude 'control-plane/observability/plugin-host' \
+  --exclude 'control-plane/observability/session-profiles' \
+  --exclude 'control-plane/observability/sessions' \
+  --exclude 'control-plane/extensions' \
+  --exclude 'control-plane/approvals/*.json' \
+  --exclude 'control-plane/approvals/resume-journal' \
+  --exclude 'control-plane/runtime/bootstrap-secret.txt' \
+  --exclude 'control-plane/runtime/platform-manifest.json' \
+  --exclude 'control-plane/runtime/platform-token.txt' \
+  --exclude 'control-plane/runtime/service-manifest.json' \
+  --exclude 'control-plane/runtime/service-token.txt' \
+  --exclude 'control-plane/runtime/logs' \
+  --exclude 'control-plane/memory-core/store.json' \
+  --exclude '*.secrets.json' \
   "$ROOT/" "$APP_DIR/"
+
+# rsync --delete does not remove receiver-side files that match an exclude
+# pattern, so purge secrets propagated into APP_DIR by earlier installers.
+rm -f \
+  "$APP_DIR/control-plane/runtime/bootstrap-secret.txt" \
+  "$APP_DIR/control-plane/runtime/platform-token.txt" \
+  "$APP_DIR/control-plane/runtime/service-token.txt" \
+  "$APP_DIR/control-plane/runtime/model-broker.secrets.json" \
+  "$APP_DIR/control-plane/runtime/model-provider.secrets.json"
 
 echo "[install] creating virtual environment at $VENV_DIR"
 python3 -m venv "$VENV_DIR"
