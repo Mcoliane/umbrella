@@ -148,8 +148,9 @@ Boundary actions (owned by `native`):
 - `memory.hydrate`
 
 Important operational note:
-- `umbrella-manage bringup` starts `memory-core`
-- it does not automatically start the durable `memory` service
+- `umbrella-manage bringup` starts both memory layers: `memory-core` and the
+  durable `memory` service, mesh-token-authenticated, with state under
+  `control-plane/observability/`
 
 See [docs/memory-boundary-contract.md](docs/memory-boundary-contract.md) for the boundary rules.
 
@@ -320,7 +321,6 @@ Service docs:
 
 The project is in strong local-dev shape, but still has normal platform maturity gaps:
 - default service supervision is script-managed, not OS-native
-- durable memory is not started by default in `bringup`
 - dynamic-action approval UX is less mature than the core run approval path
 - stronger isolation is still host-dependent
 

@@ -4,26 +4,32 @@ Update this file after each full gate run. If only targeted verification was run
 
 ## Last Full Gate
 
-- Date (UTC): `2026-03-13T02:03:59Z`
+- Date (UTC): `2026-07-21T06:02:00Z`
 - Contract gate command: `./tests/contract/run-all-contracts.sh`
-- Contract gate result: `PASS`
+- Contract gate result: `PASS` — `totals: pass=40 fail=0 total=40`
+- Pattern gate: `./scripts/control-plane/verify-patterns --umbrella-root . --require-docs` — all 7 patterns `FULL`, `ok: true`
 - Notes:
-  - The gate was rerun after fixing the session/plugin-host timeout regression, restoring safe thread-local SQLite access in `services/memory/store.py`, and reconciling `memory.promote` / `memory.hydrate` policy posture with the existing boundary contract.
-  - The runner output reached `test-service-manager.sh` in the captured stream; the remaining tail contracts (`test-bootstrap-register-agent.sh`, `test-service-auth-mesh.sh`, `test-umbrellactl-smoke.sh`) were also verified directly in the same refresh pass and passed.
+  - First full gate since 2026-03-13. Covers the completion-plan P0 rounds
+    (see docs/COMPLETION_PLAN.md): shipped `memory-core-reconcile` unblocking
+    the capability-parity preflight, per-test summary runner, durable memory
+    service launched by both launchers with mesh-token auth, token-gated
+    session/catalog/plugin-host with authenticated outbound calls, promotion
+    queue auto-drain with enqueue validation and DLQ parking, disabled-by-default
+    broker config template, TUI model-provenance surfacing, and memory skills
+    enabled for the default agent packages.
+  - Two new contracts added this cycle: `test-memory-durable-bringup.sh` and
+    `test-service-auth-gating.sh`. Memory contract tests are now hermetic
+    (explicit `--db-path`/`--boundary-root` under `tmp/`), so gate runs no
+    longer mutate live repo state.
 
 ## Latest Targeted Verification
 
-- Date (UTC): `2026-03-13`
-- Scope:
-  - `bash ./tests/contract/test-session-runtime.sh`
-  - `bash ./tests/contract/test-memory-store-thread-safety.sh`
-  - `bash ./tests/contract/test-memory-boundary-policy-hotpath.sh`
-  - `python3 -m py_compile` for `services/session/app.py`, `services/memory/store.py`, and `services/policy/app.py`
+- Date (UTC): `2026-07-21`
+- Scope: full suite (see above) plus isolated re-runs of the governance,
+  launcher, policy, and plugin-host contracts after coordinator fixes
+  (plugin-host `--mesh-token`, policy outbound catalog auth, runtime-root
+  anchored memory state, DLQ raw-payload preservation).
 - Result: `PASS`
-- Notes:
-  - session assignment/runtime path was repaired by aligning default delegated skill timeouts with catalog execution policy
-  - durable memory thread safety now uses thread-local SQLite connections instead of a single cross-thread handle
-  - boundary policy hot-path expectations were kept intact while retaining explicit action policy controls for catalog-managed skills
 
 ## Evidence Pointers
 
