@@ -15,7 +15,6 @@ permissions; it is never printed, logged, or committed.
 from __future__ import annotations
 
 import argparse
-import getpass
 import os
 import subprocess
 import sys
@@ -44,6 +43,8 @@ def main() -> int:
                     help='model preset to configure (default: zai-glm5)')
     ap.add_argument('--start', action='store_true',
                     help='after saving, bring up the full platform and open the TUI')
+    ap.add_argument('--key', default='',
+                    help='API key (skips the prompt); also read from UMBRELLA_SETUP_KEY')
     args = ap.parse_args()
 
     root = Path(args.umbrella_root).resolve()
@@ -58,18 +59,23 @@ def main() -> int:
 
     already_configured = bool(runtime_model.load_model_broker(root).get('enabled')) and _has_key(root)
 
-    # Step 1 — the key. When a model is already configured, entering a key is
-    # optional (blank keeps the existing one) so `umbrella-setup --start` can be
-    # used as a plain "start everything and talk" command.
-    if interactive:
+    # Step 1 — the key. Prefer --key / env for scripting; otherwise a VISIBLE
+    # prompt (input(), not getpass) so paste works — macOS secure-keyboard entry
+    # blocks pasting into hidden getpass prompts. When a model is already
+    # configured, entering a key is optional (blank keeps the existing one) so
+    # `umbrella-setup --start` works as a plain "start everything" command.
+    supplied = args.key.strip() or os.environ.get('UMBRELLA_SETUP_KEY', '').strip()
+    if supplied:
+        key = supplied
+    elif interactive:
         if already_configured:
             print("A model is already configured. Press Enter to keep it, "
-                  "or paste a new key to switch.")
-            key = getpass.getpass("  API key (blank = keep current): ").strip()
+                  "or type/paste a new key to switch.")
+            key = input("  API key (blank = keep current): ").strip()
         else:
-            print(f"Step 1 of 1 — paste your {label} API key.")
-            print("  (input is hidden)")
-            key = getpass.getpass("  API key: ").strip()
+            print(f"Step 1 of 1 — type or paste your {label} API key, then Enter.")
+            print("  (the key is shown as you type so paste works)")
+            key = input("  API key: ").strip()
     else:
         key = sys.stdin.readline().strip()
 
