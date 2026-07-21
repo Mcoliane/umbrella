@@ -406,8 +406,16 @@ class CatalogEngine:
             timeout=10,
         )
         if proc.returncode != 0:
-            message = (proc.stderr or proc.stdout or '').strip() or 'signature verification failed'
-            raise ValueError(message)
+            # openssl exits non-zero for any signature that fails to verify. The
+            # exact text is TLS-backend dependent — LibreSSL prints "Verification
+            # Failure" while OpenSSL 3.x prints "wrong signature length" for a
+            # malformed blob — so normalize to one backend-independent message
+            # and keep the raw detail on stderr instead of leaking crypto
+            # internals to API clients.
+            raw = (proc.stderr or proc.stdout or '').strip()
+            if raw:
+                print(f'catalog: signature verification failure for {key_id}: {raw}', file=sys.stderr)
+            raise ValueError(f'signature verification failure for key {key_id}')
         result['signatureVerified'] = True
         result['signatureStatus'] = 'verified'
         result['signatureKeyId'] = key_id
