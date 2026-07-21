@@ -25,7 +25,8 @@ PRESETS = {
     # id            provider             base URL                                   model           label
     'zai-glm5':  ('zai',                'https://api.z.ai/api/paas/v4',        'glm-5-turbo',   'Z.ai GLM-5 Turbo'),
     'zai-glm47': ('zai',                'https://api.z.ai/api/coding/paas/v4', 'glm-4.7',       'Z.ai GLM-4.7 (coding)'),
-    'deepseek':  ('openai-compatible',  'https://api.deepseek.com',            'deepseek-chat', 'DeepSeek Chat'),
+    'deepseek':       ('openai-compatible', 'https://api.deepseek.com', 'deepseek-v4-pro',   'DeepSeek V4 Pro'),
+    'deepseek-flash': ('openai-compatible', 'https://api.deepseek.com', 'deepseek-v4-flash', 'DeepSeek V4 Flash'),
 }
 
 BANNER = r"""
