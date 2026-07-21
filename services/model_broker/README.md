@@ -2,6 +2,21 @@
 
 The model broker is Umbrella's internal model gateway.
 
+Run it directly:
+
+```bash
+python3 services/model_broker/app.py --host 127.0.0.1 --port 8782
+```
+
+The default port is `8782`.
+
+Configuration lives in `control-plane/runtime/model-broker.json` (live runtime
+state, not tracked by git) with API keys in
+`control-plane/runtime/model-broker.secrets.json`. The tracked, documented
+template is `control-plane/runtime/model-broker.example.json`; it ships
+disabled with no connections. When the runtime file is missing, the broker
+initializes from that template with `enabled=false`.
+
 It owns:
 - provider connection storage
 - connection testing

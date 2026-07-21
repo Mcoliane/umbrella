@@ -52,6 +52,10 @@ def model_broker_secrets_path(root: Path) -> Path:
     return _runtime_root(root) / "control-plane" / "runtime" / "model-broker.secrets.json"
 
 
+def model_broker_example_path(root: Path) -> Path:
+    return Path(root).resolve() / "control-plane" / "runtime" / "model-broker.example.json"
+
+
 def platform_manifest_path(root: Path) -> Path:
     return _runtime_root(root) / "control-plane" / "runtime" / "platform-manifest.json"
 
@@ -268,18 +272,33 @@ def _legacy_to_broker(provider: dict) -> dict:
     return normalized
 
 
+def _example_broker_config(root: Path) -> dict:
+    # Tracked, documented template: always disabled, never carries live state.
+    template = _load_json(model_broker_example_path(root), {})
+    if isinstance(template, dict) and template:
+        template["enabled"] = False
+        return template
+    return _default_broker_config()
+
+
 def load_model_broker(root: Path) -> dict:
     root = Path(root).resolve()
     config = _load_json(model_broker_path(root), {})
     secrets = _load_json(model_broker_secrets_path(root), {})
     if isinstance(config, dict) and config:
         return _normalize_broker(config, secrets, root)
-    legacy = _normalize_legacy_provider(
-        _load_json(model_provider_path(root), {}),
-        _load_json(model_provider_secrets_path(root), {}),
-        root,
-    )
-    return _normalize_broker(_legacy_to_broker(legacy), _legacy_to_broker(legacy).get("secrets", {}), root)
+    legacy_config = _load_json(model_provider_path(root), {})
+    if isinstance(legacy_config, dict) and legacy_config:
+        legacy = _normalize_legacy_provider(
+            legacy_config,
+            _load_json(model_provider_secrets_path(root), {}),
+            root,
+        )
+        migrated = _legacy_to_broker(legacy)
+        return _normalize_broker(migrated, migrated.get("secrets", {}), root)
+    # Runtime file missing: initialize from the tracked example template
+    # (or the equivalent built-in default) with enabled=false.
+    return _normalize_broker(_example_broker_config(root), {}, root)
 
 
 def save_model_broker(root: Path, *, config: dict | None = None, secrets: dict | None = None, mirror_legacy: bool = False) -> dict:
@@ -512,7 +531,7 @@ def discover_broker_url(root: Path, broker: dict | None = None) -> str:
         return configured.rstrip("/")
     if manifest_url:
         return manifest_url.rstrip("/")
-    return "http://127.0.0.1:8796"
+    return "http://127.0.0.1:8782"
 
 
 def broker_headers(root: Path, token_override: str = "") -> dict[str, str]:

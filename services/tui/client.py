@@ -27,7 +27,7 @@ class TuiClient:
             "plugin-host": "http://127.0.0.1:8785",
             "execution": "http://127.0.0.1:8794",
             "session": "http://127.0.0.1:8784",
-            "model-broker": "http://127.0.0.1:8796",
+            "model-broker": "http://127.0.0.1:8782",
             "router": "http://127.0.0.1:8795",
             "orchestrator": "http://127.0.0.1:8797",
             "approval": "http://127.0.0.1:8792",
@@ -81,6 +81,12 @@ class TuiClient:
         except Exception:
             return ""
 
+    def _auth_headers(self) -> dict:
+        token = self._mesh_token()
+        if not token:
+            return {}
+        return {"Authorization": f"Bearer {token}"}
+
     def _request(
         self,
         method: str,
@@ -90,6 +96,7 @@ class TuiClient:
         timeout: float | None = None,
     ):
         request_headers = {"Content-Type": "application/json"}
+        request_headers.update(self._auth_headers())
         if isinstance(headers, dict):
             request_headers.update(headers)
         data = None
@@ -119,12 +126,7 @@ class TuiClient:
         base = self.service_url(service)
         if not base:
             return {"service": service, "ok": False, "status": "missing-url"}
-        headers = {}
-        if service in {"policy", "lifecycle", "router", "scheduler", "memory-core", "execution", "approval", "orchestrator", "model-broker"}:
-            token = self._mesh_token()
-            if token:
-                headers["Authorization"] = f"Bearer {token}"
-        out = self._request("GET", f"{base}{path}", headers=headers)
+        out = self._request("GET", f"{base}{path}")
         payload = out["json"]
         ok = bool(out["ok"] and isinstance(payload, dict) and payload.get("status") == "ok")
         return {
@@ -251,11 +253,7 @@ class TuiClient:
 
     def runtime_capabilities(self) -> dict:
         base = self.service_url("router")
-        headers = {}
-        token = self._mesh_token()
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        return self._request("GET", f"{base}/v1/router/runtime-capabilities", headers=headers)["json"]
+        return self._request("GET", f"{base}/v1/router/runtime-capabilities")["json"]
 
     def home_snapshot(self) -> dict:
         health_checks = [
