@@ -157,6 +157,10 @@ class UmbrellaTui:
 
     def refresh_home(self):
         self.state.home = self.client.home_snapshot()
+        try:
+            self.state.home["autonomyMode"] = self.client.get_autonomy()
+        except Exception:
+            self.state.home["autonomyMode"] = "unknown"
         sessions = self.state.home.get("sessions") or []
         if sessions:
             session_ids = [str(row.get("sessionId", "")) for row in sessions]
@@ -518,9 +522,30 @@ class UmbrellaTui:
         if name in {"help", "h", "?"}:
             self.add_local_event(
                 "system",
-                "Commands: /help /status /new [title] /sessions /session <id|n> /agent <id> /shops /workers /model /model setup /model glm47 /model glm5 /model test /model use <model> /model disable /refresh /start [full|core] /stop /quit",
+                "Commands: /help /status /autonomy [auto|ask] /new [title] /sessions /session <id|n> /agent <id> /shops /workers /model /model setup /model glm47 /model glm5 /model test /model use <model> /model disable /refresh /start [full|core] /stop /quit",
             )
             self.state.status = "Help"
+            return
+        if name in {"autonomy", "approvals"}:
+            if args and args[0].strip().lower() in {"auto", "ask", "on", "off"}:
+                choice = args[0].strip().lower()
+                mode = "auto" if choice in {"auto", "off"} else "ask"
+                out = self.client.set_autonomy(mode)
+                now = str(out.get("mode", mode)) if isinstance(out, dict) else mode
+                self.add_local_event(
+                    "system",
+                    f"Approval gating: {now.upper()} — "
+                    + ("actions run without asking (autonomous)." if now == "auto" else "approval-required actions must be approved."),
+                )
+                self.state.status = f"approvals={now}"
+            else:
+                current = self.client.get_autonomy()
+                self.add_local_event(
+                    "system",
+                    f"Approval gating is {current.upper()}. Use /autonomy auto (run without asking) or /autonomy ask (require approval).",
+                )
+                self.state.status = f"approvals={current}"
+            self.refresh_home()
             return
         if name == "status":
             platform = self.state.home.get("platformStack") or {}
@@ -644,9 +669,10 @@ class UmbrellaTui:
         session = self.session_payload
         title = str(session.get("title", "Town Hall")).strip() or "Town Hall"
         session_id = self.state.selected_session_id or "no-town"
+        approvals = str((self.state.home or {}).get("autonomyMode", "")).strip() or "?"
         header = (
             f" Umbrella Town Hall | {title} | {session_id} | "
-            f"target={self.state.active_target} | model={self._active_model_label()} "
+            f"target={self.state.active_target} | model={self._active_model_label()} | approvals={approvals} "
         )
         screen.attron(curses.A_REVERSE)
         screen.addstr(0, 0, " " * max(1, width - 1))

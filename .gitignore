@@ -40,3 +40,6 @@ control-plane/memory-core/store.json.backup.*
 .venv/
 dist/releases-test/
 dist/releases/
+
+# Runtime approval-mode toggle
+control-plane/runtime/autonomy.json

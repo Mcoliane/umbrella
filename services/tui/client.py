@@ -179,6 +179,17 @@ class TuiClient:
             {"role": role, "content": content},
         )["json"]
 
+    def get_autonomy(self) -> str:
+        base = self.service_url("policy")
+        if not base:
+            return "unknown"
+        out = self._request("GET", f"{base}/v1/policy/autonomy")
+        return str((out.get("json") or {}).get("mode", "unknown")) if out.get("ok") else "unknown"
+
+    def set_autonomy(self, mode: str) -> dict:
+        base = self.service_url("policy")
+        return self._request("POST", f"{base}/v1/policy/autonomy", {"mode": mode})["json"]
+
     def register_agent(self, *, agent_id: str, capabilities: list[str]) -> dict:
         base = self.service_url("policy")
         return self._request(
