@@ -334,7 +334,10 @@ class SessionEngine:
                 max_runtime_sec = int(execution_policy.get('maxRuntimeSec', timeout_sec) or timeout_sec)
             except Exception:
                 max_runtime_sec = timeout_sec
-            timeout_sec = max(1, min(timeout_sec, max_runtime_sec))
+            # Honor the skill's own declared budget so long-running actions
+            # (e.g. the code agent) are not killed by the 30s default when a
+            # delegation carries no explicit timeout.
+            timeout_sec = max(1, max(timeout_sec, max_runtime_sec))
         return timeout_sec
 
     def _build_action_governance(

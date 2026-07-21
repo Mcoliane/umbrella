@@ -94,6 +94,22 @@ def summarize_history(rows: list[dict], limit: int = 8) -> str:
     return "\n".join(lines)
 
 
+# What each built-in action does and the inputs to fill when delegating to it.
+# Lets the mayor form a correct delegationPlan instead of guessing.
+ACTION_GUIDE = {
+    "skill.code.agent": "autonomously write/modify/verify code (plans, edits files, runs tests until they pass) — inputs: task (required: the full description of what to build), workingDir (optional: absolute path, e.g. ~/Desktop/my-app)",
+    "skill.code.run": "run a single Python or Bash snippet and return its output — inputs: code (required), language ('python' or 'bash')",
+    "skill.web.search": "search the web and return ranked results — inputs: query (required)",
+    "skill.web.fetch": "fetch a URL and return its readable text — inputs: url (required)",
+    "skill.memory.search": "search durable knowledge memory — inputs: query (required)",
+    "skill.memory.get": "read a durable knowledge node — inputs: nodeId (required)",
+    "skill.memory.link": "create a knowledge edge — inputs: fromNodeId, toNodeId, relation",
+    "skill.memory.summarize": "summarize a memory node — inputs: nodeId",
+    "skill.shop.originate": "create a new worker shop in this session — inputs: shopId, shopName, role, enabledActionIds (array)",
+    "skill.chat.respond": "hand a conversational sub-request to this shop's agent — inputs: message",
+}
+
+
 def summarize_shops(rows: list[dict], limit: int = 8) -> str:
     parts: list[str] = []
     for row in rows[:limit]:
@@ -103,11 +119,12 @@ def summarize_shops(rows: list[dict], limit: int = 8) -> str:
         name = str(row.get("name", "")).strip() or shop_id
         shop_type = str(row.get("shopType", "")).strip() or "shop"
         actions = [str(x).strip() for x in (row.get("enabledActionIds") or []) if str(x).strip()]
-        action_text = ", ".join(actions[:4])
-        if action_text:
-            parts.append(f"{name} ({shop_type}, id={shop_id}, actions={action_text})")
-        else:
-            parts.append(f"{name} ({shop_type}, id={shop_id})")
+        parts.append(f"- shop id={shop_id} ({name}, {shop_type}):")
+        if not actions:
+            parts.append("    (no actions enabled)")
+        for action in actions[:8]:
+            guide = ACTION_GUIDE.get(action, "custom action")
+            parts.append(f"    - {action}: {guide}")
     return "\n".join(parts)
 
 
@@ -408,7 +425,7 @@ class BrokerEngine:
         if not model:
             return {"ok": False, "error": {"message": "default model is not configured"}}
         temperature = float(request.get("temperature") if request.get("temperature") is not None else request.get("temperatureDefault", 0.2) or 0.2)
-        max_tokens = int(request.get("maxTokens") if request.get("maxTokens") is not None else request.get("maxTokensDefault", 300) or 300)
+        max_tokens = int(request.get("maxTokens") if request.get("maxTokens") is not None else request.get("maxTokensDefault", 1200) or 1200)
         history_text = summarize_history(conversation_history)
         shops_text = summarize_shops(available_shops)
         context_lines = [
@@ -437,7 +454,25 @@ class BrokerEngine:
                 },
                 {
                     "role": "system",
-                    "content": "Available worker shops:\n" + (shops_text or "none"),
+                    "content": "Available worker shops and the actions you can delegate to them:\n" + (shops_text or "none"),
+                },
+                {
+                    "role": "system",
+                    "content": (
+                        "DELEGATION CONTRACT. You reply with a single JSON object.\n"
+                        "- To answer yourself: {\"mode\":\"direct\",\"reply\":\"<your answer>\"}.\n"
+                        "- To hand real work to a shop: {\"mode\":\"delegate\",\"reply\":\"<one short line telling the user what you're doing>\","
+                        "\"delegationPlan\":[{\"shopId\":\"<id from the list above>\",\"actionId\":\"<an action that shop has>\",\"inputs\":{...}}]}.\n"
+                        "Rules:\n"
+                        "1. DELEGATE whenever the user asks for real work a shop can do — writing or running code, building an app, "
+                        "searching or scraping the web, or looking things up in memory. Do NOT try to do these yourself in prose.\n"
+                        "2. Pick the shopId and actionId from the list above, and fill inputs exactly as that action describes. "
+                        "For skill.code.agent put the user's full request in inputs.task, and if they name a location set inputs.workingDir "
+                        "(e.g. a folder 'prism-code' on the desktop -> \"~/Desktop/prism-code\").\n"
+                        "3. Only use shopIds and actionIds that appear above. If no shop fits, answer directly and say what worker would be needed.\n"
+                        "4. Answer directly (mode:direct) for questions, chat, explanations, and status.\n"
+                        "Return ONLY the JSON object, no prose outside it."
+                    ),
                 },
                 {
                     "role": "system",
