@@ -2,6 +2,7 @@
   "id": "umbrella.scheduler.default.v1",
   "strategy": "serial",
   "maxParallel": 1,
+  "runBudgetSec": 1800,
   "retryPolicy": {
     "maxAttempts": 1,
     "retryOn": []

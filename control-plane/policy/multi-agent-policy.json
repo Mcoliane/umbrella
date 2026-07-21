@@ -49,5 +49,77 @@
     "memory.link": [
       "memory.write"
     ]
-  }
+  },
+  "actionPolicyDefaults": {
+    "builtin": {
+      "riskClass": "moderate",
+      "approvalMode": "conditional",
+      "memoryAccess": "none",
+      "networkAccess": "none",
+      "fsAccess": "none",
+      "processAccess": "restricted-subprocess",
+      "identityScope": {
+        "agentIds": [],
+        "roles": [],
+        "shopIds": []
+      },
+      "delegationAllowed": true,
+      "subAgentAllowed": true
+    },
+    "skill": {
+      "riskClass": "low",
+      "approvalMode": "none",
+      "memoryAccess": "session",
+      "networkAccess": "none",
+      "fsAccess": "scratch-only",
+      "processAccess": "restricted-subprocess",
+      "identityScope": {
+        "agentIds": [],
+        "roles": [],
+        "shopIds": []
+      },
+      "delegationAllowed": true,
+      "subAgentAllowed": true
+    },
+    "plugin": {
+      "riskClass": "moderate",
+      "approvalMode": "conditional",
+      "memoryAccess": "none",
+      "networkAccess": "none",
+      "fsAccess": "scratch-only",
+      "processAccess": "restricted-subprocess",
+      "identityScope": {
+        "agentIds": [],
+        "roles": [],
+        "shopIds": []
+      },
+      "delegationAllowed": true,
+      "subAgentAllowed": false
+    }
+  },
+  "actionPolicyOverrides": {
+    "skill.memory.link": {
+      "riskClass": "high",
+      "approvalMode": "required",
+      "memoryAccess": "durable-memory",
+      "identityScope": {
+        "shopIds": [
+          "town-hall"
+        ]
+      },
+      "delegationAllowed": false,
+      "subAgentAllowed": false
+    },
+    "memory.promote": {
+      "riskClass": "high",
+      "approvalMode": "conditional",
+      "memoryAccess": "durable-memory"
+    },
+    "memory.hydrate": {
+      "riskClass": "high",
+      "approvalMode": "conditional",
+      "memoryAccess": "durable-memory"
+    }
+  },
+  "agents": {}
 }

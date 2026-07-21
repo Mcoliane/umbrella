@@ -5,6 +5,7 @@ import argparse
 import json
 import subprocess
 import sys
+import threading
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -14,6 +15,7 @@ from urllib.parse import parse_qs, urlparse
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from services.memory.auth import check_auth
 from services.id_utils import validate_identifier
+from services.persistence import atomic_write_json, file_lock, update_json
 
 
 def now_iso() -> str:
@@ -55,6 +57,9 @@ class ApprovalStore:
         self.resume_journal_dir = self.approvals_dir / 'resume-journal'
         self.resume_journal_dir.mkdir(parents=True, exist_ok=True)
         self.runner = self.root / 'scripts' / 'control-plane' / 'run-umbrella-control-plane'
+        # In-process ordering; combined with the cross-process file lock in
+        # services.persistence (which is not reentrant — never nest on one path).
+        self._lock = threading.Lock()
 
     def approval_path(self, key: str) -> Path:
         validate_identifier(key, 'approvalKey')
@@ -71,8 +76,15 @@ class ApprovalStore:
 
     def put(self, key: str, data: dict) -> dict:
         p = self.approval_path(key)
-        p.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8')
+        with self._lock, file_lock(p):
+            atomic_write_json(p, data)
         return data
+
+    def _update(self, key: str, mutator) -> dict:
+        """Locked read-modify-write of one approval file."""
+        p = self.approval_path(key)
+        with self._lock:
+            return update_json(p, mutator, default=None)
 
     def resume_journal_path(self, run_id: str, approval_key: str, idempotency_key: str) -> Path:
         run_id = validate_identifier(run_id, 'runId')
@@ -102,7 +114,8 @@ class ApprovalStore:
             'journalPath': str(self.resume_journal_path(run_id, approval_key, idempotency_key)),
         }
         p = self.resume_journal_path(run_id, approval_key, idempotency_key)
-        p.write_text(json.dumps(entry, indent=2) + '\n', encoding='utf-8')
+        with self._lock, file_lock(p):
+            atomic_write_json(p, entry)
         return entry
 
     def list_resume_journal(self, run_id: str, approval_key: str = '') -> list[dict]:
@@ -131,30 +144,38 @@ class ApprovalStore:
             run_id = validate_identifier(run_id, 'runId')
         if step_id.strip():
             step_id = validate_identifier(step_id, 'stepId')
-        current = self.get(key) or {}
-        data = {
-            'approvalKey': key,
-            'status': 'PENDING',
-            'requestedAt': current.get('requestedAt') or now_iso(),
-            'updatedAt': now_iso(),
-            'runId': run_id or current.get('runId', ''),
-            'stepId': step_id or current.get('stepId', ''),
-        }
-        if note.strip():
-            data['note'] = note.strip()
-        if current.get('decisionBy'):
-            data['previousDecisionBy'] = current.get('decisionBy')
-        return self.put(key, data)
+
+        def _apply(current):
+            current = current if isinstance(current, dict) else {}
+            data = {
+                'approvalKey': key,
+                'status': 'PENDING',
+                'requestedAt': current.get('requestedAt') or now_iso(),
+                'updatedAt': now_iso(),
+                'runId': run_id or current.get('runId', ''),
+                'stepId': step_id or current.get('stepId', ''),
+            }
+            if note.strip():
+                data['note'] = note.strip()
+            if current.get('decisionBy'):
+                data['previousDecisionBy'] = current.get('decisionBy')
+            return data
+
+        return self._update(key, _apply)
 
     def decide(self, key: str, status: str, by: str, note: str = '') -> dict:
         key = validate_identifier(key, 'approvalKey')
-        current = self.get(key) or {'approvalKey': key, 'requestedAt': now_iso()}
-        current['status'] = status
-        current['updatedAt'] = now_iso()
-        current['decisionBy'] = by or 'operator'
-        if note.strip():
-            current['decisionNote'] = note.strip()
-        return self.put(key, current)
+
+        def _apply(current):
+            current = current if isinstance(current, dict) else {'approvalKey': key, 'requestedAt': now_iso()}
+            current['status'] = status
+            current['updatedAt'] = now_iso()
+            current['decisionBy'] = by or 'operator'
+            if note.strip():
+                current['decisionNote'] = note.strip()
+            return current
+
+        return self._update(key, _apply)
 
     def get_run_status(self, approval_key: str) -> dict | None:
         ap = self.get(approval_key)

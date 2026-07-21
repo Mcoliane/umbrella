@@ -5,6 +5,7 @@ import argparse
 import json
 import subprocess
 import sys
+import threading
 import uuid
 import urllib.error
 import urllib.parse
@@ -15,6 +16,7 @@ from urllib.parse import urlparse
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from services.memory.auth import check_auth  # reuse optional bearer check
+from services.persistence import atomic_write_json, update_json
 
 
 def now_iso() -> str:
@@ -30,11 +32,6 @@ def load_json(path: Path, default):
         return json.loads(path.read_text(encoding='utf-8'))
     except Exception:
         return default
-
-
-def write_json(path: Path, obj: dict):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, indent=2) + '\n', encoding='utf-8')
 
 
 def parse_payload(raw: str):
@@ -201,10 +198,11 @@ class PolicyEngine:
         self.parity_gate = self.root / 'scripts' / 'control-plane' / 'capability-parity-gate'
         self.multi_agent_policy_path.parent.mkdir(parents=True, exist_ok=True)
         self.agent_registry_path.parent.mkdir(parents=True, exist_ok=True)
+        self._registry_lock = threading.Lock()
         if not self.multi_agent_policy_path.exists():
-            write_json(self.multi_agent_policy_path, DEFAULT_MULTI_AGENT_POLICY)
+            atomic_write_json(self.multi_agent_policy_path, DEFAULT_MULTI_AGENT_POLICY)
         if not self.agent_registry_path.exists():
-            write_json(self.agent_registry_path, {'agents': {}})
+            update_json(self.agent_registry_path, lambda cur: cur if isinstance(cur, dict) else {'agents': {}}, default={'agents': {}})
 
     def _catalog_headers(self) -> dict:
         if self.mesh_token:
@@ -279,18 +277,27 @@ class PolicyEngine:
 
     def register_agent(self, agent_id: str, capabilities: list[str], source: str = 'external') -> dict:
         pol = self.load_multi_agent_policy_seed()
-        reg = self.load_agent_registry()
-        agents = reg.get('agents') if isinstance(reg.get('agents'), dict) else {}
-        agents[agent_id] = {
+        entry = {
             'agentId': agent_id,
             'registered': True,
             'source': source or 'external',
             'capabilities': sorted({str(c).strip() for c in capabilities if str(c).strip()}),
             'updatedAt': now_iso(),
         }
-        reg['agents'] = agents
-        write_json(self.agent_registry_path, reg)
-        return {'ok': True, 'policyId': pol.get('id', 'umbrella.policy.multi-agent.v1'), 'agent': agents[agent_id]}
+
+        def mutate(reg):
+            if not isinstance(reg, dict):
+                reg = {'agents': {}}
+            agents = reg.get('agents') if isinstance(reg.get('agents'), dict) else {}
+            agents[agent_id] = entry
+            reg['agents'] = agents
+            return reg
+
+        # Locked read-modify-write: the threading lock orders handler threads in
+        # this process; update_json's file lock excludes other processes.
+        with self._registry_lock:
+            update_json(self.agent_registry_path, mutate, default={'agents': {}})
+        return {'ok': True, 'policyId': pol.get('id', 'umbrella.policy.multi-agent.v1'), 'agent': entry}
 
     def authorize_step(self, step_spec: dict) -> dict:
         pol = self.load_multi_agent_policy()

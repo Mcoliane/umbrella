@@ -9,19 +9,21 @@ import shutil
 import sys
 import tarfile
 import tempfile
+import threading
 import uuid
 import zipfile
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import unquote, urlparse
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from services.memory.auth import check_auth
+from services.persistence import read_json, update_json
 
 
-SUPPORTED_PLUGIN_HOST_RUNTIMES = {'shell', 'python', 'http', 'container'}
+SUPPORTED_PLUGIN_HOST_RUNTIMES = {'shell', 'python', 'container'}
 SUPPORTED_ACTION_SCHEMA_VERSIONS = {'umbrella.catalog.action.v1'}
 SUPPORTED_SIGNATURE_MODES = {'permissive', 'require-checksum', 'require-signature'}
 
@@ -37,11 +39,6 @@ def load_json(path: Path, default: Any):
         return json.loads(path.read_text(encoding='utf-8'))
     except Exception:
         return default
-
-
-def write_json(path: Path, obj: dict):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, indent=2) + '\n', encoding='utf-8')
 
 
 def parse_json(handler: BaseHTTPRequestHandler) -> dict:
@@ -97,11 +94,16 @@ class CatalogEngine:
         extensions_root: str,
         signature_mode: str = 'permissive',
         trusted_key_dir: str = '',
+        trusted_scan_roots: list[str] | None = None,
     ):
         self.root = umbrella_root
         self.registry_path = (self.root / registry_path).resolve()
         self.scan_roots = [(self.root / rel).resolve() for rel in scan_roots]
+        if trusted_scan_roots is None:
+            trusted_scan_roots = ['skills']
+        self.trusted_scan_roots = [(self.root / rel).resolve() for rel in trusted_scan_roots if str(rel).strip()]
         self.extensions_root = (self.root / extensions_root).resolve()
+        self._registry_lock = threading.Lock()
         self.signature_mode = str(signature_mode or 'permissive').strip() or 'permissive'
         if self.signature_mode not in SUPPORTED_SIGNATURE_MODES:
             raise ValueError(f'signatureMode must be one of {", ".join(sorted(SUPPORTED_SIGNATURE_MODES))}')
@@ -116,7 +118,7 @@ class CatalogEngine:
         self.registry_path.parent.mkdir(parents=True, exist_ok=True)
         self.extensions_root.mkdir(parents=True, exist_ok=True)
         if not self.registry_path.exists():
-            self.save_registry(self._empty_registry())
+            self._mutate_registry(lambda reg: reg)
 
     def _empty_registry(self) -> dict:
         return {
@@ -127,8 +129,7 @@ class CatalogEngine:
             'updatedAt': now_iso(),
         }
 
-    def load_registry(self) -> dict:
-        reg = load_json(self.registry_path, self._empty_registry())
+    def _coerce_registry(self, reg: Any) -> dict:
         if not isinstance(reg, dict):
             reg = self._empty_registry()
         if not isinstance(reg.get('managedManifests'), dict):
@@ -139,9 +140,25 @@ class CatalogEngine:
             reg['itemState'] = {}
         return reg
 
-    def save_registry(self, reg: dict):
-        reg['updatedAt'] = now_iso()
-        write_json(self.registry_path, reg)
+    def load_registry(self) -> dict:
+        return self._coerce_registry(read_json(self.registry_path, None))
+
+    def _mutate_registry(self, mutator: Callable[[dict], dict | None]) -> dict:
+        """Locked registry read-modify-write.
+
+        The intra-process threading lock orders handler threads; update_json
+        holds the cross-process file lock and writes atomically, so a CLI or a
+        second service instance cannot interleave with this mutation.
+        """
+        def _apply(cur: Any) -> dict:
+            reg = self._coerce_registry(cur)
+            out = mutator(reg)
+            reg = out if isinstance(out, dict) else reg
+            reg['updatedAt'] = now_iso()
+            return reg
+
+        with self._registry_lock:
+            return update_json(self.registry_path, _apply, default=None)
 
     def _normalize_manifest(self, manifest: dict) -> dict:
         manifest = dict(manifest)
@@ -206,8 +223,11 @@ class CatalogEngine:
             errors.append('apiVersion must be umbrella.catalog.manifest.v1')
         if str(manifest.get('kind', '')).strip() not in {'skill', 'plugin'}:
             errors.append('kind must be skill or plugin')
-        if str(manifest.get('runtime', '')).strip() not in {'shell', 'python', 'http', 'container'}:
-            errors.append('runtime must be shell, python, http, or container')
+        runtime = str(manifest.get('runtime', '')).strip()
+        if runtime == 'http':
+            errors.append('runtime http is not supported: plugin-host has no HTTP dispatch; use shell, python, or container')
+        elif runtime not in SUPPORTED_PLUGIN_HOST_RUNTIMES:
+            errors.append('runtime must be shell, python, or container')
         actions = manifest.get('actions')
         if not isinstance(actions, list) or not actions:
             errors.append('actions must be a non-empty list')
@@ -229,11 +249,51 @@ class CatalogEngine:
                 if req_caps is not None and not isinstance(req_caps, list):
                     errors.append(f'actions[{idx}] requiredCapabilities must be a list')
         entrypoint = str(manifest.get('entrypoint', '')).strip()
-        if entrypoint and str(manifest.get('runtime', '')).strip() != 'http':
+        if entrypoint:
             resolved = (manifest_path.parent / entrypoint).resolve()
             if not resolved.exists():
                 errors.append(f'entrypoint not found: {entrypoint}')
         return errors
+
+    def _scan_root_trusted(self, manifest_path: Path) -> bool:
+        for trusted_root in self.trusted_scan_roots:
+            try:
+                manifest_path.resolve().relative_to(trusted_root)
+                return True
+            except ValueError:
+                continue
+        return False
+
+    def _trust_evaluation(self, install_row: dict | None) -> dict:
+        """Evaluate the configured signature mode against an install row.
+
+        permissive         every item is trusted.
+        require-checksum   only installs with a verified CHECKSUMS.json are
+                           trusted (bundle installs); scan and install-local
+                           items carry no verification and stay untrusted.
+        require-signature  only installs with a verified detached signature
+                           are trusted.
+        Untrusted items are registered and listed but can be neither enabled
+        nor invoked.
+        """
+        row = install_row if isinstance(install_row, dict) else {}
+        if self.signature_mode == 'require-checksum':
+            if bool(row.get('checksumVerified', False)):
+                return {'ok': True, 'signatureMode': self.signature_mode, 'reason': 'checksums verified'}
+            return {
+                'ok': False,
+                'signatureMode': self.signature_mode,
+                'reason': 'require-checksum mode: this item has no verified checksum manifest (only bundle installs are checksum-verified)',
+            }
+        if self.signature_mode == 'require-signature':
+            if bool(row.get('signatureVerified', False)):
+                return {'ok': True, 'signatureMode': self.signature_mode, 'reason': 'signature verified'}
+            return {
+                'ok': False,
+                'signatureMode': self.signature_mode,
+                'reason': 'require-signature mode: this item has no verified bundle signature',
+            }
+        return {'ok': True, 'signatureMode': self.signature_mode, 'reason': 'permissive mode'}
 
     def _file_checksum(self, path: Path) -> str:
         digest = hashlib.sha256()
@@ -274,6 +334,18 @@ class CatalogEngine:
             if actual != expected:
                 raise ValueError(f'checksum mismatch for {safe_path}')
             verified[safe_path] = actual
+        # Every installed file must be covered by the checksum manifest so a
+        # bundle cannot smuggle unlisted executables past verification.
+        exempt = {'CHECKSUMS.json', 'SIGNATURE.json', 'SIGNATURE'}
+        install_root_resolved = install_root.resolve()
+        for file_path in sorted(install_root_resolved.rglob('*')):
+            if not file_path.is_file():
+                continue
+            rel = file_path.relative_to(install_root_resolved).as_posix()
+            if rel in exempt:
+                continue
+            if rel not in verified:
+                raise ValueError(f'installed file is not listed in CHECKSUMS.json: {rel}')
         return {
             'checksumVerified': True,
             'verifiedAt': now_iso(),
@@ -303,6 +375,8 @@ class CatalogEngine:
         if algorithm != 'sha256-rsa':
             raise ValueError('SIGNATURE.json algorithm must be sha256-rsa')
         signed_file_rel = safe_relpath(str(payload.get('signedFile', 'CHECKSUMS.json')).strip() or 'CHECKSUMS.json')
+        if signed_file_rel != 'CHECKSUMS.json':
+            raise ValueError('SIGNATURE.json signedFile must be CHECKSUMS.json (the signature must cover the checksum manifest)')
         signed_file = (install_root / signed_file_rel).resolve()
         try:
             signed_file.relative_to(install_root.resolve())
@@ -359,13 +433,6 @@ class CatalogEngine:
             return
         raise ValueError('bundlePath must point to a .zip, .tar, or .tgz bundle')
 
-    def _registry_install_row(self, item_id: str, version: str) -> dict | None:
-        reg = self.load_registry()
-        installs = reg.get('managedInstalls') if isinstance(reg.get('managedInstalls'), dict) else {}
-        item_versions = installs.get(item_id) if isinstance(installs.get(item_id), dict) else {}
-        row = item_versions.get(version)
-        return row if isinstance(row, dict) else None
-
     def _entry_from_manifest(
         self,
         manifest: dict,
@@ -378,8 +445,16 @@ class CatalogEngine:
         state_row = state_row if isinstance(state_row, dict) else {}
         install_row = install_row if isinstance(install_row, dict) else {}
         compatible = self._compatibility(manifest)
+        trust = self._trust_evaluation(install_row)
         lifecycle_state = str(install_row.get('lifecycleState', 'discovered' if source == 'scan' else 'installed')).strip() or 'discovered'
-        enabled = bool(state_row.get('enabled', manifest.get('defaultEnabled', True)))
+        default_enabled = bool(manifest.get('defaultEnabled', True))
+        if source == 'scan' and not self._scan_root_trusted(manifest_path):
+            # A manifest dropped into an untrusted scan root is registered but
+            # never enabled by default; an operator must enable it explicitly.
+            default_enabled = False
+        enabled = bool(state_row.get('enabled', default_enabled))
+        if not trust['ok']:
+            enabled = False
         if not compatible['ok']:
             lifecycle_state = 'incompatible'
             enabled = False
@@ -409,12 +484,13 @@ class CatalogEngine:
             'apiVersion': str(manifest.get('apiVersion', '')).strip(),
             'kind': str(manifest.get('kind', '')).strip(),
             'runtime': str(manifest.get('runtime', '')).strip(),
-            'entrypoint': str((Path(install_path) / str(manifest.get('entrypoint', '')).strip()).resolve()) if str(manifest.get('runtime', '')).strip() != 'http' else str(manifest.get('entrypoint', '')).strip(),
+            'entrypoint': str((Path(install_path) / str(manifest.get('entrypoint', '')).strip()).resolve()),
             'manifestPath': str(manifest_path),
             'source': source,
             'status': status,
             'enabled': enabled,
             'compatible': compatible,
+            'trust': trust,
             'requiredCapabilities': sorted({cap for action in actions for cap in action.get('requiredCapabilities', [])}),
             'actions': actions,
             'sessionHooks': manifest.get('sessionHooks') if isinstance(manifest.get('sessionHooks'), dict) else {},
@@ -529,6 +605,8 @@ class CatalogEngine:
             'umbrellaVersion': self.umbrella_version,
             'loadedAt': now_iso(),
             'scanRoots': [str(x) for x in self.scan_roots],
+            'trustedScanRoots': [str(x) for x in self.trusted_scan_roots],
+            'signatureMode': self.signature_mode,
             'registryPath': str(self.registry_path),
             'extensionsRoot': str(self.extensions_root),
             'items': [entries[key] for key in sorted(entries.keys())],
@@ -536,26 +614,31 @@ class CatalogEngine:
         }
 
     def refresh(self) -> dict:
-        reg = self.load_registry()
-        item_state = reg.get('itemState') if isinstance(reg.get('itemState'), dict) else {}
         catalog = self.discover_catalog()
         items_by_id = {item['id']: item for item in catalog['items']}
-        for item_id, row in list(item_state.items()):
-            if not isinstance(row, dict):
-                continue
-            item = items_by_id.get(item_id)
-            if not item:
-                continue
-            if not item.get('compatible', {}).get('ok', False):
-                row['enabled'] = False
-                row['updatedAt'] = now_iso()
-                selected_version = str(row.get('selectedVersion', '')).strip()
-                install_row = self._registry_install_row(item_id, selected_version) if selected_version else None
-                if install_row is not None:
-                    install_row['lifecycleState'] = 'incompatible'
-                    install_row['updatedAt'] = now_iso()
-        reg['itemState'] = item_state
-        self.save_registry(reg)
+
+        def _apply(reg: dict) -> dict:
+            item_state = reg['itemState']
+            installs = reg['managedInstalls']
+            for item_id, row in list(item_state.items()):
+                if not isinstance(row, dict):
+                    continue
+                item = items_by_id.get(item_id)
+                if not item:
+                    continue
+                if not item.get('compatible', {}).get('ok', False):
+                    row['enabled'] = False
+                    row['updatedAt'] = now_iso()
+                    selected_version = str(row.get('selectedVersion', '')).strip()
+                    if selected_version:
+                        item_versions = installs.get(item_id) if isinstance(installs.get(item_id), dict) else {}
+                        install_row = item_versions.get(selected_version)
+                        if isinstance(install_row, dict):
+                            install_row['lifecycleState'] = 'incompatible'
+                            install_row['updatedAt'] = now_iso()
+            return reg
+
+        self._mutate_registry(_apply)
         catalog = self.discover_catalog()
         return {
             'ok': True,
@@ -620,20 +703,26 @@ class CatalogEngine:
             raise ValueError('catalog item not found')
         if enabled and not item.get('compatible', {}).get('ok', False):
             raise ValueError('catalog item is not compatible with this Umbrella runtime')
-        reg = self.load_registry()
-        item_state = reg.get('itemState') if isinstance(reg.get('itemState'), dict) else {}
-        state_row = item_state.get(item_id) if isinstance(item_state.get(item_id), dict) else {}
-        state_row['enabled'] = enabled
-        state_row['selectedVersion'] = str(item.get('version', '')).strip()
-        state_row['updatedAt'] = now_iso()
-        item_state[item_id] = state_row
-        reg['itemState'] = item_state
-        installs = reg.get('managedInstalls') if isinstance(reg.get('managedInstalls'), dict) else {}
-        version_row = (installs.get(item_id) or {}).get(str(item.get('version', '')).strip())
-        if isinstance(version_row, dict):
-            version_row['lifecycleState'] = 'enabled' if enabled else 'disabled'
-            version_row['updatedAt'] = now_iso()
-        self.save_registry(reg)
+        if enabled:
+            trust = item.get('trust') if isinstance(item.get('trust'), dict) else {}
+            if trust.get('ok') is False:
+                raise ValueError(f"signature mode '{self.signature_mode}' blocks enable: {trust.get('reason', 'install verification missing')}")
+        version = str(item.get('version', '')).strip()
+
+        def _apply(reg: dict) -> dict:
+            item_state = reg['itemState']
+            state_row = item_state.get(item_id) if isinstance(item_state.get(item_id), dict) else {}
+            state_row['enabled'] = enabled
+            state_row['selectedVersion'] = version
+            state_row['updatedAt'] = now_iso()
+            item_state[item_id] = state_row
+            version_row = (reg['managedInstalls'].get(item_id) or {}).get(version)
+            if isinstance(version_row, dict):
+                version_row['lifecycleState'] = 'enabled' if enabled else 'disabled'
+                version_row['updatedAt'] = now_iso()
+            return reg
+
+        self._mutate_registry(_apply)
         updated = self.get_item(item_id)
         return {'ok': True, 'item': updated}
 
@@ -649,10 +738,7 @@ class CatalogEngine:
         version = str(manifest.get('version', '')).strip()
         compatibility = self._compatibility(manifest)
         lifecycle_state = 'validated' if compatibility['ok'] else 'incompatible'
-        reg = self.load_registry()
-        installs = reg.get('managedInstalls') if isinstance(reg.get('managedInstalls'), dict) else {}
-        item_versions = installs.get(item_id) if isinstance(installs.get(item_id), dict) else {}
-        item_versions[version] = {
+        install_row = {
             'manifestPath': str(manifest_path),
             'installPath': str(install_path),
             'sourceType': source_type,
@@ -664,27 +750,31 @@ class CatalogEngine:
             'checksumVerified': bool((checksums or {}).get('checksumVerified', False)),
             'checksums': checksums if isinstance(checksums, dict) else {},
             'signatureVerified': bool((checksums or {}).get('signatureVerified', False)),
-            'signatureStatus': str((checksums or {}).get('signatureStatus', 'not-configured')).strip() or 'not-configured',
+            'signatureStatus': str((checksums or {}).get('signatureStatus', 'not-present')).strip() or 'not-present',
             'signatureKeyId': str((checksums or {}).get('signatureKeyId', '')).strip(),
         }
-        installs[item_id] = item_versions
-        reg['managedInstalls'] = installs
-        managed = reg.get('managedManifests') if isinstance(reg.get('managedManifests'), dict) else {}
-        managed[item_id] = {
-            'manifestPath': str(manifest_path),
-            'installedAt': now_iso(),
-        }
-        reg['managedManifests'] = managed
-        item_state = reg.get('itemState') if isinstance(reg.get('itemState'), dict) else {}
-        state_row = item_state.get(item_id) if isinstance(item_state.get(item_id), dict) else {}
-        state_row.setdefault('enabled', False if lifecycle_state != 'validated' else bool(manifest.get('defaultEnabled', True)))
-        state_row['selectedVersion'] = version
-        state_row['updatedAt'] = now_iso()
-        if lifecycle_state != 'validated':
-            state_row['enabled'] = False
-        item_state[item_id] = state_row
-        reg['itemState'] = item_state
-        self.save_registry(reg)
+        trust = self._trust_evaluation(install_row)
+
+        def _apply(reg: dict) -> dict:
+            installs = reg['managedInstalls']
+            item_versions = installs.get(item_id) if isinstance(installs.get(item_id), dict) else {}
+            item_versions[version] = install_row
+            installs[item_id] = item_versions
+            reg['managedManifests'][item_id] = {
+                'manifestPath': str(manifest_path),
+                'installedAt': now_iso(),
+            }
+            item_state = reg['itemState']
+            state_row = item_state.get(item_id) if isinstance(item_state.get(item_id), dict) else {}
+            state_row.setdefault('enabled', lifecycle_state == 'validated' and trust['ok'] and bool(manifest.get('defaultEnabled', True)))
+            state_row['selectedVersion'] = version
+            state_row['updatedAt'] = now_iso()
+            if lifecycle_state != 'validated' or not trust['ok']:
+                state_row['enabled'] = False
+            item_state[item_id] = state_row
+            return reg
+
+        self._mutate_registry(_apply)
         item = self.get_item(item_id)
         return {'ok': True, 'item': item}
 
@@ -701,13 +791,16 @@ class CatalogEngine:
         errors = self._validate_manifest(manifest, manifest_path)
         if errors:
             raise ValueError('; '.join(errors))
+        # install-local performs no checksum or signature verification; record
+        # that honestly. In require-checksum/require-signature modes the item
+        # is registered but stays untrusted: it cannot be enabled or invoked.
         return self._persist_install(
             manifest,
             manifest_path,
             source_type='local',
             source_path=str(manifest_path),
             install_path=manifest_path.parent.resolve(),
-            checksums={'checksumVerified': False, 'signatureVerified': False, 'signatureStatus': 'not-configured', 'files': {}},
+            checksums={'checksumVerified': False, 'signatureVerified': False, 'signatureStatus': 'not-present', 'files': {}},
         )
 
     def install_bundle(self, bundle_path_value: str) -> dict:
@@ -761,46 +854,48 @@ class CatalogEngine:
 
     def uninstall_item(self, item_id: str, version: str = '') -> dict:
         item_id = str(item_id or '').strip()
-        reg = self.load_registry()
-        installs = reg.get('managedInstalls') if isinstance(reg.get('managedInstalls'), dict) else {}
-        item_versions = installs.get(item_id) if isinstance(installs.get(item_id), dict) else {}
-        if not item_versions:
+        current = self.load_registry()
+        current_versions = current['managedInstalls'].get(item_id) if isinstance(current['managedInstalls'].get(item_id), dict) else {}
+        if not current_versions:
             raise ValueError('catalog item not found')
         target_version = str(version or '').strip()
         if not target_version:
-            target_version = sorted(item_versions.keys(), key=parse_version, reverse=True)[0]
-        row = item_versions.get(target_version)
+            target_version = sorted(current_versions.keys(), key=parse_version, reverse=True)[0]
+        row = current_versions.get(target_version)
         if not isinstance(row, dict):
             raise ValueError('catalog item version not found')
         install_path = Path(str(row.get('installPath', '')).strip())
         if install_path.exists() and str(install_path).startswith(str(self.extensions_root)):
             shutil.rmtree(install_path)
-        item_versions.pop(target_version, None)
-        if item_versions:
-            installs[item_id] = item_versions
-        else:
-            installs.pop(item_id, None)
-        reg['managedInstalls'] = installs
-        managed = reg.get('managedManifests') if isinstance(reg.get('managedManifests'), dict) else {}
-        if item_versions:
-            latest_version = sorted(item_versions.keys(), key=parse_version, reverse=True)[0]
-            managed[item_id] = {'manifestPath': str(item_versions[latest_version].get('manifestPath', '')), 'installedAt': now_iso()}
-        else:
-            managed.pop(item_id, None)
-        reg['managedManifests'] = managed
-        item_state = reg.get('itemState') if isinstance(reg.get('itemState'), dict) else {}
-        state_row = item_state.get(item_id) if isinstance(item_state.get(item_id), dict) else {}
-        if state_row:
+
+        def _apply(reg: dict) -> dict:
+            installs = reg['managedInstalls']
+            item_versions = installs.get(item_id) if isinstance(installs.get(item_id), dict) else {}
+            item_versions.pop(target_version, None)
+            if item_versions:
+                installs[item_id] = item_versions
+            else:
+                installs.pop(item_id, None)
+            managed = reg['managedManifests']
             if item_versions:
                 latest_version = sorted(item_versions.keys(), key=parse_version, reverse=True)[0]
-                state_row['selectedVersion'] = latest_version
-                state_row['enabled'] = False
-                state_row['updatedAt'] = now_iso()
-                item_state[item_id] = state_row
+                managed[item_id] = {'manifestPath': str(item_versions[latest_version].get('manifestPath', '')), 'installedAt': now_iso()}
             else:
-                item_state.pop(item_id, None)
-        reg['itemState'] = item_state
-        self.save_registry(reg)
+                managed.pop(item_id, None)
+            item_state = reg['itemState']
+            state_row = item_state.get(item_id) if isinstance(item_state.get(item_id), dict) else {}
+            if state_row:
+                if item_versions:
+                    latest_version = sorted(item_versions.keys(), key=parse_version, reverse=True)[0]
+                    state_row['selectedVersion'] = latest_version
+                    state_row['enabled'] = False
+                    state_row['updatedAt'] = now_iso()
+                    item_state[item_id] = state_row
+                else:
+                    item_state.pop(item_id, None)
+            return reg
+
+        self._mutate_registry(_apply)
         return {'ok': True, 'id': item_id, 'version': target_version, 'removed': True}
 
 
@@ -898,20 +993,42 @@ def main() -> int:
     ap.add_argument('--umbrella-root', default=str(Path(__file__).resolve().parents[2]))
     ap.add_argument('--registry', default='control-plane/observability/catalog/registry.json')
     ap.add_argument('--extensions-root', default='control-plane/extensions')
-    ap.add_argument('--scan-root', action='append', default=['skills', 'plugins'])
+    ap.add_argument(
+        '--scan-root',
+        action='append',
+        default=None,
+        help='repo-relative directory to scan for manifests (repeatable; replaces the default of: skills, plugins)',
+    )
+    ap.add_argument(
+        '--trusted-scan-root',
+        action='append',
+        default=None,
+        help=(
+            'scan root whose discovered manifests may honor defaultEnabled (repeatable; '
+            "default: skills). Manifests found under any other scan root are registered "
+            "but stay disabled until enabled explicitly. Pass --trusted-scan-root '' to trust none."
+        ),
+    )
     ap.add_argument('--signature-mode', default='permissive')
     ap.add_argument('--trusted-key-dir', default='')
     ap.add_argument('--token', default='')
     args = ap.parse_args()
 
+    scan_roots = [str(x).strip() for x in (args.scan_root or []) if str(x).strip()] or ['skills', 'plugins']
+    if args.trusted_scan_root is None:
+        trusted_scan_roots = ['skills']
+    else:
+        trusted_scan_roots = [str(x).strip() for x in args.trusted_scan_root if str(x).strip()]
+
     root = Path(args.umbrella_root).resolve()
     engine = CatalogEngine(
         umbrella_root=root,
         registry_path=args.registry,
-        scan_roots=args.scan_root,
+        scan_roots=scan_roots,
         extensions_root=args.extensions_root,
         signature_mode=args.signature_mode,
         trusted_key_dir=args.trusted_key_dir,
+        trusted_scan_roots=trusted_scan_roots,
     )
     handler = handler_factory(engine=engine, token=args.token.strip())
     httpd = ThreadingHTTPServer((args.host, args.port), handler)

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 import uuid
 import urllib.error
 import urllib.parse
@@ -16,6 +17,7 @@ from urllib.parse import unquote, urlparse
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 from services.id_utils import validate_identifier
 from services.memory.auth import check_auth
+from services.persistence import atomic_write_json, file_lock, update_json
 from services.runtime_model import call_model_broker, discover_broker_url, load_model_broker, load_model_provider, mask_secret, provider_enabled, save_model_provider
 
 LEGACY_ACTION_ALIASES = {
@@ -46,11 +48,6 @@ def load_json(path: Path, default):
         return json.loads(path.read_text(encoding='utf-8'))
     except Exception:
         return default
-
-
-def write_json(path: Path, obj: dict):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, indent=2) + '\n', encoding='utf-8')
 
 
 def compact_text(value: str, limit: int = 280) -> str:
@@ -96,9 +93,18 @@ class SessionStore:
     def __init__(self, root: Path):
         self.root = root / 'control-plane' / 'observability' / 'sessions'
         self.root.mkdir(parents=True, exist_ok=True)
+        # Per-session in-process locks, combined with the cross-process file
+        # lock in services.persistence (which is not reentrant — never nest on
+        # the same session within one thread).
+        self._locks_guard = threading.Lock()
+        self._session_locks: dict[str, threading.Lock] = {}
 
     def _path(self, session_id: str) -> Path:
         return self.root / session_id / 'session.json'
+
+    def _session_lock(self, session_id: str) -> threading.Lock:
+        with self._locks_guard:
+            return self._session_locks.setdefault(session_id, threading.Lock())
 
     def create(self, *, session_id: str, agent_id: str, title: str, metadata: dict, heartbeat_ttl_sec: int) -> dict:
         town_hall_shop_id = validate_identifier(str(metadata.get('townHallShopId', 'town-hall')).strip() or 'town-hall', 'shopId')
@@ -147,7 +153,8 @@ class SessionStore:
             'createdAt': created_at,
             'updatedAt': created_at,
         }
-        write_json(self._path(session_id), session)
+        with self._session_lock(session_id), file_lock(self._path(session_id)):
+            atomic_write_json(self._path(session_id), session)
         return session
 
     def get(self, session_id: str) -> dict | None:
@@ -158,16 +165,42 @@ class SessionStore:
         return data if isinstance(data, dict) else None
 
     def save(self, session: dict):
+        """Full-snapshot write. Only safe while the session is not yet visible
+        to concurrent writers (bootstrap); everywhere else use update()."""
         session['updatedAt'] = now_iso()
-        write_json(self._path(str(session.get('sessionId', ''))), session)
+        session_id = str(session.get('sessionId', ''))
+        with self._session_lock(session_id), file_lock(self._path(session_id)):
+            atomic_write_json(self._path(session_id), session)
+
+    def update(self, session_id: str, mutator) -> dict:
+        """Locked read-modify-write: apply ``mutator`` to the freshly read
+        session under both the in-process and cross-process locks so
+        concurrent writers (e.g. a heartbeat during orchestrate_turn) can no
+        longer lose writes. The mutator may raise to abort without writing."""
+        path = self._path(session_id)
+        if not path.exists():
+            raise ValueError('session not found')
+
+        def _apply(current):
+            if not isinstance(current, dict):
+                raise ValueError('session not found')
+            updated = mutator(current)
+            updated['updatedAt'] = now_iso()
+            return updated
+
+        with self._session_lock(session_id):
+            return update_json(path, _apply, default=None)
 
 
 class ShopProfileStore:
     def __init__(self, root: Path):
         self.path = root / 'control-plane' / 'observability' / 'session-profiles' / 'profiles.json'
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
         if not self.path.exists():
-            write_json(self.path, {'profiles': {}, 'updatedAt': now_iso()})
+            with self._lock, file_lock(self.path):
+                if not self.path.exists():
+                    atomic_write_json(self.path, {'profiles': {}, 'updatedAt': now_iso()})
 
     def load(self) -> dict:
         data = load_json(self.path, {'profiles': {}, 'updatedAt': now_iso()})
@@ -177,9 +210,20 @@ class ShopProfileStore:
             data['profiles'] = {}
         return data
 
-    def save(self, payload: dict):
-        payload['updatedAt'] = now_iso()
-        write_json(self.path, payload)
+    def update(self, mutator) -> dict:
+        """Locked read-modify-write of the profiles payload."""
+
+        def _apply(current):
+            if not isinstance(current, dict):
+                current = {'profiles': {}, 'updatedAt': now_iso()}
+            if not isinstance(current.get('profiles'), dict):
+                current['profiles'] = {}
+            updated = mutator(current)
+            updated['updatedAt'] = now_iso()
+            return updated
+
+        with self._lock:
+            return update_json(self.path, _apply, default=None)
 
 
 class AgentPackageStore:
@@ -522,24 +566,29 @@ class SessionEngine:
         metadata: dict | None = None,
     ) -> dict:
         profile_id = validate_identifier(profile_id, 'profileId')
-        payload = self.profile_store.load()
-        profiles = payload.get('profiles') if isinstance(payload.get('profiles'), dict) else {}
-        previous = profiles.get(profile_id) if isinstance(profiles.get(profile_id), dict) else {}
-        profile = {
-            'profileId': profile_id,
-            'name': str(name or '').strip() or profile_id,
-            'shopType': str(shop_type or 'business').strip() or 'business',
-            'defaultTitle': str(default_title or 'Worker').strip() or 'Worker',
-            'defaultShopName': str(default_shop_name or '').strip() or str(name or profile_id).strip() or profile_id,
-            'enabledActionIds': [str(x).strip() for x in (enabled_action_ids or []) if str(x).strip()],
-            'metadata': metadata if isinstance(metadata, dict) else {},
-            'createdAt': str(previous.get('createdAt', '')).strip() or now_iso(),
-            'updatedAt': now_iso(),
-        }
-        profiles[profile_id] = profile
-        payload['profiles'] = profiles
-        self.profile_store.save(payload)
-        return {'ok': True, 'profile': self._profile_payload(profile)}
+        saved: dict = {}
+
+        def _apply(payload: dict) -> dict:
+            profiles = payload.get('profiles') if isinstance(payload.get('profiles'), dict) else {}
+            previous = profiles.get(profile_id) if isinstance(profiles.get(profile_id), dict) else {}
+            profile = {
+                'profileId': profile_id,
+                'name': str(name or '').strip() or profile_id,
+                'shopType': str(shop_type or 'business').strip() or 'business',
+                'defaultTitle': str(default_title or 'Worker').strip() or 'Worker',
+                'defaultShopName': str(default_shop_name or '').strip() or str(name or profile_id).strip() or profile_id,
+                'enabledActionIds': [str(x).strip() for x in (enabled_action_ids or []) if str(x).strip()],
+                'metadata': metadata if isinstance(metadata, dict) else {},
+                'createdAt': str(previous.get('createdAt', '')).strip() or now_iso(),
+                'updatedAt': now_iso(),
+            }
+            profiles[profile_id] = profile
+            payload['profiles'] = profiles
+            saved['profile'] = profile
+            return payload
+
+        self.profile_store.update(_apply)
+        return {'ok': True, 'profile': self._profile_payload(saved['profile'])}
 
     def _resolve_shop_profile(self, profile_id: str) -> dict | None:
         if not str(profile_id or '').strip():
@@ -742,43 +791,46 @@ class SessionEngine:
         reason: str,
         metadata: dict | None = None,
     ) -> dict:
-        session = self.store.get(session_id)
-        if not session:
-            raise ValueError('session not found')
-        turns = session.get('turns') if isinstance(session.get('turns'), list) else []
-        turn = next((t for t in turns if isinstance(t, dict) and t.get('turnId') == turn_id), None)
-        if not turn:
-            raise ValueError('turn not found')
-        delegation_id = validate_identifier(f'delegation-{uuid.uuid4().hex[:12]}', 'delegationId')
-        delegation = {
-            'delegationId': delegation_id,
-            'turnId': turn_id,
-            'delegatedByAgentId': str(session.get('mayorAgentId', '')).strip(),
-            'shopId': '',
-            'requestedShopId': str(requested_shop_id or '').strip(),
-            'requestedShopProfileId': str(requested_shop_profile_id or '').strip(),
-            'requestedRole': str(requested_role or '').strip(),
-            'resolvedShopProfileId': '',
-            'resolvedOwnerAgentId': '',
-            'planStepId': plan_step_id,
-            'dependsOn': depends_on,
-            'actionId': str(action_id or '').strip(),
-            'state': 'SKIPPED',
-            'skipReason': reason,
-            'failurePolicy': failure_policy,
-            'createdAt': now_iso(),
-            'completedAt': now_iso(),
-            'metadata': metadata or {},
-        }
-        delegations = session.get('delegations') if isinstance(session.get('delegations'), list) else []
-        delegations.append(delegation)
-        session['delegations'] = delegations
-        delegation_ids = turn.get('delegationIds') if isinstance(turn.get('delegationIds'), list) else []
-        delegation_ids.append(delegation_id)
-        turn['delegationIds'] = delegation_ids
-        session['turns'] = turns
-        self.store.save(session)
-        return delegation
+        recorded: dict = {}
+
+        def _skip(session: dict) -> dict:
+            turns = session.get('turns') if isinstance(session.get('turns'), list) else []
+            turn = next((t for t in turns if isinstance(t, dict) and t.get('turnId') == turn_id), None)
+            if not turn:
+                raise ValueError('turn not found')
+            delegation_id = validate_identifier(f'delegation-{uuid.uuid4().hex[:12]}', 'delegationId')
+            delegation = {
+                'delegationId': delegation_id,
+                'turnId': turn_id,
+                'delegatedByAgentId': str(session.get('mayorAgentId', '')).strip(),
+                'shopId': '',
+                'requestedShopId': str(requested_shop_id or '').strip(),
+                'requestedShopProfileId': str(requested_shop_profile_id or '').strip(),
+                'requestedRole': str(requested_role or '').strip(),
+                'resolvedShopProfileId': '',
+                'resolvedOwnerAgentId': '',
+                'planStepId': plan_step_id,
+                'dependsOn': depends_on,
+                'actionId': str(action_id or '').strip(),
+                'state': 'SKIPPED',
+                'skipReason': reason,
+                'failurePolicy': failure_policy,
+                'createdAt': now_iso(),
+                'completedAt': now_iso(),
+                'metadata': metadata or {},
+            }
+            delegations = session.get('delegations') if isinstance(session.get('delegations'), list) else []
+            delegations.append(delegation)
+            session['delegations'] = delegations
+            delegation_ids = turn.get('delegationIds') if isinstance(turn.get('delegationIds'), list) else []
+            delegation_ids.append(delegation_id)
+            turn['delegationIds'] = delegation_ids
+            session['turns'] = turns
+            recorded['delegation'] = delegation
+            return session
+
+        self.store.update(session_id, _skip)
+        return recorded['delegation']
 
     def _effective_shop_action_ids(self, shop: dict, catalog_actions: dict[str, dict]) -> list[str]:
         action_governance = shop.get('actionGovernance') if isinstance(shop.get('actionGovernance'), dict) else {}
@@ -1290,15 +1342,19 @@ class SessionEngine:
 
     def add_message(self, session_id: str, role: str, content: str, metadata: dict | None = None) -> dict:
         session_id = validate_identifier(session_id, 'sessionId')
-        session = self.store.get(session_id)
-        if not session:
+        if not self.store.get(session_id):
             raise ValueError('session not found')
         role = str(role or '').strip()
         if role not in {'system', 'user', 'assistant', 'tool'}:
             raise ValueError('role must be one of system, user, assistant, tool')
-        message = self._append_message_row(session, role, content, metadata)
-        self.store.save(session)
-        return {'ok': True, 'session': self._session_payload(session), 'message': message}
+        appended: dict = {}
+
+        def _append(session: dict) -> dict:
+            appended['message'] = self._append_message_row(session, role, content, metadata)
+            return session
+
+        session = self.store.update(session_id, _append)
+        return {'ok': True, 'session': self._session_payload(session), 'message': appended['message']}
 
     def converse(
         self,
@@ -1321,19 +1377,23 @@ class SessionEngine:
         agent_id, shop_id, agent, shop = self._resolve_conversation_target(session, target)
         role = str(agent.get('role', '')).strip() or 'worker'
         prompt_text = self._prompt_text(str((shop.get('metadata') or {}).get('promptTemplate', '')))
-        self._append_message_row(
-            session,
-            'user',
-            content,
-            {
-                'target': str(target or '').strip() or agent_id,
-                'targetAgentId': agent_id,
-                'targetShopId': shop_id,
-                'conversationModeHint': str(conversation_mode_hint or '').strip(),
-            },
-        )
-        self.store.save(session)
-        session = self.store.get(session_id) or session
+
+        def _append_user(fresh: dict) -> dict:
+            self._apply_liveness(fresh)
+            self._append_message_row(
+                fresh,
+                'user',
+                content,
+                {
+                    'target': str(target or '').strip() or agent_id,
+                    'targetAgentId': agent_id,
+                    'targetShopId': shop_id,
+                    'conversationModeHint': str(conversation_mode_hint or '').strip(),
+                },
+            )
+            return fresh
+
+        session = self.store.update(session_id, _append_user)
 
         if role == 'mayor':
             direct = self._converse_direct(
@@ -1374,26 +1434,31 @@ class SessionEngine:
                 orchestrated = self.orchestrate_turn(session_id=session_id, turn_id=turn_id, plan=plan, metadata={'source': 'session-converse', 'allowDelegation': True})
                 reconciliation = orchestrated.get('reconciliation') if isinstance(orchestrated.get('reconciliation'), dict) else {}
                 reply = str(reconciliation.get('summary', '')).strip() or compact_text(str(direct.get('reply', '')).strip() or 'The delegated work is complete.')
-                session = self.store.get(session_id) or session
-                message = self._append_message_row(
-                    session,
-                    'assistant',
-                    reply,
-                    {
-                        'targetAgentId': agent_id,
-                        'targetShopId': shop_id,
-                        'modeResolved': 'delegate',
-                        'turnId': turn_id,
-                        'delegationIds': [str(row.get('delegationId', '')).strip() for row in (orchestrated.get('delegations') or []) if isinstance(row, dict)],
-                        'providerUsed': bool(direct.get('providerUsed', False)),
-                        'providerType': str(direct.get('providerType', '')).strip(),
-                        'connectionUsed': str(direct.get('connectionUsed', '')).strip(),
-                        'modelUsed': str(direct.get('modelUsed', '')).strip(),
-                        'fallbackUsed': bool(direct.get('fallbackUsed', False)),
-                        'latencyMs': int(direct.get('latencyMs', 0) or 0),
-                    },
-                )
-                self.store.save(session)
+                appended: dict = {}
+
+                def _append_summary(fresh: dict) -> dict:
+                    appended['message'] = self._append_message_row(
+                        fresh,
+                        'assistant',
+                        reply,
+                        {
+                            'targetAgentId': agent_id,
+                            'targetShopId': shop_id,
+                            'modeResolved': 'delegate',
+                            'turnId': turn_id,
+                            'delegationIds': [str(row.get('delegationId', '')).strip() for row in (orchestrated.get('delegations') or []) if isinstance(row, dict)],
+                            'providerUsed': bool(direct.get('providerUsed', False)),
+                            'providerType': str(direct.get('providerType', '')).strip(),
+                            'connectionUsed': str(direct.get('connectionUsed', '')).strip(),
+                            'modelUsed': str(direct.get('modelUsed', '')).strip(),
+                            'fallbackUsed': bool(direct.get('fallbackUsed', False)),
+                            'latencyMs': int(direct.get('latencyMs', 0) or 0),
+                        },
+                    )
+                    return fresh
+
+                session = self.store.update(session_id, _append_summary)
+                message = appended['message']
                 return {
                     'ok': True,
                     'target': agent_id,
@@ -1426,25 +1491,30 @@ class SessionEngine:
                     'error': {'message': reply_error},
                     'invocation': direct.get('invocation'),
                 }
-            session = self.store.get(session_id) or session
-            message = self._append_message_row(
-                session,
-                'assistant',
-                reply,
-                {
-                    'targetAgentId': agent_id,
-                    'targetShopId': shop_id,
-                    'modeResolved': 'direct',
-                    'actionId': direct.get('actionId', ''),
-                    'providerUsed': bool(direct.get('providerUsed', False)),
-                    'providerType': str(direct.get('providerType', '')).strip(),
-                    'connectionUsed': str(direct.get('connectionUsed', '')).strip(),
-                    'modelUsed': str(direct.get('modelUsed', '')).strip(),
-                    'fallbackUsed': bool(direct.get('fallbackUsed', False)),
-                    'latencyMs': int(direct.get('latencyMs', 0) or 0),
-                },
-            )
-            self.store.save(session)
+            appended_direct: dict = {}
+
+            def _append_direct(fresh: dict) -> dict:
+                appended_direct['message'] = self._append_message_row(
+                    fresh,
+                    'assistant',
+                    reply,
+                    {
+                        'targetAgentId': agent_id,
+                        'targetShopId': shop_id,
+                        'modeResolved': 'direct',
+                        'actionId': direct.get('actionId', ''),
+                        'providerUsed': bool(direct.get('providerUsed', False)),
+                        'providerType': str(direct.get('providerType', '')).strip(),
+                        'connectionUsed': str(direct.get('connectionUsed', '')).strip(),
+                        'modelUsed': str(direct.get('modelUsed', '')).strip(),
+                        'fallbackUsed': bool(direct.get('fallbackUsed', False)),
+                        'latencyMs': int(direct.get('latencyMs', 0) or 0),
+                    },
+                )
+                return fresh
+
+            session = self.store.update(session_id, _append_direct)
+            message = appended_direct['message']
             return {
                 'ok': True,
                 'target': agent_id,
@@ -1490,25 +1560,30 @@ class SessionEngine:
                 'error': {'message': reply_error},
                 'invocation': direct.get('invocation'),
             }
-        session = self.store.get(session_id) or session
-        message = self._append_message_row(
-            session,
-            'assistant',
-            reply,
-            {
-                'targetAgentId': agent_id,
-                'targetShopId': shop_id,
-                'modeResolved': str(direct.get('mode', 'direct')).strip() or 'direct',
-                'actionId': direct.get('actionId', ''),
-                'providerUsed': bool(direct.get('providerUsed', False)),
-                'providerType': str(direct.get('providerType', '')).strip(),
-                'connectionUsed': str(direct.get('connectionUsed', '')).strip(),
-                'modelUsed': str(direct.get('modelUsed', '')).strip(),
-                'fallbackUsed': bool(direct.get('fallbackUsed', False)),
-                'latencyMs': int(direct.get('latencyMs', 0) or 0),
-            },
-        )
-        self.store.save(session)
+        appended_worker: dict = {}
+
+        def _append_worker(fresh: dict) -> dict:
+            appended_worker['message'] = self._append_message_row(
+                fresh,
+                'assistant',
+                reply,
+                {
+                    'targetAgentId': agent_id,
+                    'targetShopId': shop_id,
+                    'modeResolved': str(direct.get('mode', 'direct')).strip() or 'direct',
+                    'actionId': direct.get('actionId', ''),
+                    'providerUsed': bool(direct.get('providerUsed', False)),
+                    'providerType': str(direct.get('providerType', '')).strip(),
+                    'connectionUsed': str(direct.get('connectionUsed', '')).strip(),
+                    'modelUsed': str(direct.get('modelUsed', '')).strip(),
+                    'fallbackUsed': bool(direct.get('fallbackUsed', False)),
+                    'latencyMs': int(direct.get('latencyMs', 0) or 0),
+                },
+            )
+            return fresh
+
+        session = self.store.update(session_id, _append_worker)
+        message = appended_worker['message']
         return {
             'ok': True,
             'target': agent_id,
@@ -1532,11 +1607,7 @@ class SessionEngine:
         seen_by = str(seen_by or '').strip() or 'system'
         if seen_by not in {'mayor', 'originator', 'worker', 'system'}:
             raise ValueError('seenBy must be one of mayor, originator, worker, system')
-        session = self.store.get(session_id)
-        if not session:
-            raise ValueError('session not found')
-        self._touch_session(session, seen_by=seen_by)
-        self.store.save(session)
+        session = self.store.update(session_id, lambda fresh: self._touch_session(fresh, seen_by=seen_by))
         return {'ok': True, 'session': self._session_payload(session)}
 
     def heartbeat_agent(self, session_id: str, agent_id: str, *, seen_by: str) -> dict:
@@ -1545,11 +1616,10 @@ class SessionEngine:
         seen_by = str(seen_by or '').strip() or 'worker'
         if seen_by not in {'mayor', 'originator', 'worker', 'system'}:
             raise ValueError('seenBy must be one of mayor, originator, worker, system')
-        session = self.store.get(session_id)
-        if not session:
-            raise ValueError('session not found')
-        self._touch_session(session, seen_by=seen_by, touched_agent_id=agent_id)
-        self.store.save(session)
+        session = self.store.update(
+            session_id,
+            lambda fresh: self._touch_session(fresh, seen_by=seen_by, touched_agent_id=agent_id),
+        )
         payload = self._session_payload(session)
         agents = payload.get('agents') if isinstance(payload.get('agents'), list) else []
         shops = payload.get('shops') if isinstance(payload.get('shops'), dict) else {}
@@ -1571,43 +1641,46 @@ class SessionEngine:
         metadata: dict | None = None,
     ) -> dict:
         session_id = validate_identifier(session_id, 'sessionId')
-        session = self.store.get(session_id)
-        if not session:
-            raise ValueError('session not found')
-        self._assert_session_available(session)
-        creator_id = self._ensure_authorized_creator(session, created_by_agent_id)
-        sub_agent_id = validate_identifier(sub_agent_id or f'sub-agent-{uuid.uuid4().hex[:12]}', 'subAgentId')
-        if sub_agent_id in self._sub_agent_map(session):
-            raise ValueError('sub-agent already exists in session')
-        resolved_shop_id, shop, agent = self._resolve_sub_agent_target(
-            session,
-            agent_id=agent_id,
-            shop_id=shop_id,
-            shop_profile_id=shop_profile_id,
-            role=role,
-        )
-        created_at = now_iso()
-        sub_agent = {
-            'subAgentId': sub_agent_id,
-            'agentId': str(agent.get('agentId', '')).strip(),
-            'role': str(agent.get('role', '')).strip(),
-            'shopId': resolved_shop_id,
-            'shopProfileId': str(shop.get('shopProfileId', '')).strip(),
-            'state': 'idle',
-            'parentSessionId': session_id,
-            'createdByAgentId': creator_id,
-            'assignmentPolicy': assignment_policy if isinstance(assignment_policy, dict) else {},
-            'subAgentMemory': {},
-            'metadata': metadata if isinstance(metadata, dict) else {},
-            'createdAt': created_at,
-            'lastHeartbeatAt': created_at,
-            'lastSeenBy': self._creator_role(session, creator_id),
-        }
-        sub_agents = session.get('subAgents') if isinstance(session.get('subAgents'), list) else []
-        sub_agents.append(sub_agent)
-        session['subAgents'] = sub_agents
-        self.store.save(session)
-        return {'ok': True, 'session': self._session_payload(session), 'subAgent': sub_agent}
+        created: dict = {}
+
+        def _create(session: dict) -> dict:
+            self._assert_session_available(session)
+            creator_id = self._ensure_authorized_creator(session, created_by_agent_id)
+            resolved_sub_agent_id = validate_identifier(sub_agent_id or f'sub-agent-{uuid.uuid4().hex[:12]}', 'subAgentId')
+            if resolved_sub_agent_id in self._sub_agent_map(session):
+                raise ValueError('sub-agent already exists in session')
+            resolved_shop_id, shop, agent = self._resolve_sub_agent_target(
+                session,
+                agent_id=agent_id,
+                shop_id=shop_id,
+                shop_profile_id=shop_profile_id,
+                role=role,
+            )
+            created_at = now_iso()
+            sub_agent = {
+                'subAgentId': resolved_sub_agent_id,
+                'agentId': str(agent.get('agentId', '')).strip(),
+                'role': str(agent.get('role', '')).strip(),
+                'shopId': resolved_shop_id,
+                'shopProfileId': str(shop.get('shopProfileId', '')).strip(),
+                'state': 'idle',
+                'parentSessionId': session_id,
+                'createdByAgentId': creator_id,
+                'assignmentPolicy': assignment_policy if isinstance(assignment_policy, dict) else {},
+                'subAgentMemory': {},
+                'metadata': metadata if isinstance(metadata, dict) else {},
+                'createdAt': created_at,
+                'lastHeartbeatAt': created_at,
+                'lastSeenBy': self._creator_role(session, creator_id),
+            }
+            sub_agents = session.get('subAgents') if isinstance(session.get('subAgents'), list) else []
+            sub_agents.append(sub_agent)
+            session['subAgents'] = sub_agents
+            created['subAgent'] = sub_agent
+            return session
+
+        session = self.store.update(session_id, _create)
+        return {'ok': True, 'session': self._session_payload(session), 'subAgent': created['subAgent']}
 
     def list_sub_agents(self, session_id: str) -> dict:
         session = self.get_session(session_id)
@@ -1621,17 +1694,17 @@ class SessionEngine:
         seen_by = str(seen_by or '').strip() or 'worker'
         if seen_by not in {'mayor', 'originator', 'worker', 'system'}:
             raise ValueError('seenBy must be one of mayor, originator, worker, system')
-        session = self.store.get(session_id)
-        if not session:
-            raise ValueError('session not found')
-        sub_agents = session.get('subAgents') if isinstance(session.get('subAgents'), list) else []
-        sub_agent = next((row for row in sub_agents if isinstance(row, dict) and row.get('subAgentId') == sub_agent_id), None)
-        if not sub_agent:
-            raise ValueError('sub-agent not found')
-        self._touch_session(session, seen_by=seen_by, touched_agent_id=str(sub_agent.get('agentId', '')).strip())
-        sub_agent['lastHeartbeatAt'] = now_iso()
-        sub_agent['lastSeenBy'] = seen_by
-        self.store.save(session)
+        def _touch(session: dict) -> dict:
+            sub_agents = session.get('subAgents') if isinstance(session.get('subAgents'), list) else []
+            sub_agent = next((row for row in sub_agents if isinstance(row, dict) and row.get('subAgentId') == sub_agent_id), None)
+            if not sub_agent:
+                raise ValueError('sub-agent not found')
+            self._touch_session(session, seen_by=seen_by, touched_agent_id=str(sub_agent.get('agentId', '')).strip())
+            sub_agent['lastHeartbeatAt'] = now_iso()
+            sub_agent['lastSeenBy'] = seen_by
+            return session
+
+        session = self.store.update(session_id, _touch)
         payload = self._session_payload(session)
         sub_agents_payload = payload.get('subAgents') if isinstance(payload.get('subAgents'), list) else []
         refreshed_sub_agent = next((row for row in sub_agents_payload if isinstance(row, dict) and row.get('subAgentId') == sub_agent_id), None)
@@ -1670,35 +1743,41 @@ class SessionEngine:
             turn_out = self.create_turn(session_id=session_id, objective=objective, requested_by=creator_id, metadata={'source': 'sub-agent-assignment'})
             turn = turn_out.get('turn') if isinstance(turn_out.get('turn'), dict) else {}
             turn_id = str(turn.get('turnId', '')).strip()
-            session = self.store.get(session_id) or session
-            sub_agents = session.get('subAgents') if isinstance(session.get('subAgents'), list) else []
-            sub_agent = next((row for row in sub_agents if isinstance(row, dict) and row.get('subAgentId') == sub_agent_id), sub_agent)
         assignment_id = validate_identifier(f'assignment-{uuid.uuid4().hex[:12]}', 'assignmentId')
-        assignment = {
-            'assignmentId': assignment_id,
-            'turnId': turn_id,
-            'subAgentId': sub_agent_id,
-            'agentId': str(sub_agent.get('agentId', '')).strip(),
-            'shopId': str(sub_agent.get('shopId', '')).strip(),
-            'objective': str(objective or '').strip(),
-            'status': 'assigned',
-            'dependsOn': [validate_identifier(str(x).strip(), 'assignmentId') for x in (depends_on or []) if str(x).strip()],
-            'resultRefs': {},
-            'createdByAgentId': creator_id,
-            'createdAt': now_iso(),
-            'metadata': metadata if isinstance(metadata, dict) else {},
-        }
-        assignments = session.get('assignments') if isinstance(session.get('assignments'), list) else []
-        assignments.append(assignment)
-        sub_agent['state'] = 'running'
-        sub_agent['lastAssignmentId'] = assignment_id
-        session['assignments'] = assignments
-        session['subAgents'] = sub_agents
-        self.store.save(session)
+        assigned: dict = {}
+
+        def _assign(fresh: dict) -> dict:
+            fresh_sub_agents = fresh.get('subAgents') if isinstance(fresh.get('subAgents'), list) else []
+            target = next((row for row in fresh_sub_agents if isinstance(row, dict) and row.get('subAgentId') == sub_agent_id), sub_agent)
+            assignment = {
+                'assignmentId': assignment_id,
+                'turnId': turn_id,
+                'subAgentId': sub_agent_id,
+                'agentId': str(target.get('agentId', '')).strip(),
+                'shopId': str(target.get('shopId', '')).strip(),
+                'objective': str(objective or '').strip(),
+                'status': 'assigned',
+                'dependsOn': [validate_identifier(str(x).strip(), 'assignmentId') for x in (depends_on or []) if str(x).strip()],
+                'resultRefs': {},
+                'createdByAgentId': creator_id,
+                'createdAt': now_iso(),
+                'metadata': metadata if isinstance(metadata, dict) else {},
+            }
+            fresh_assignments = fresh.get('assignments') if isinstance(fresh.get('assignments'), list) else []
+            fresh_assignments.append(assignment)
+            target['state'] = 'running'
+            target['lastAssignmentId'] = assignment_id
+            fresh['assignments'] = fresh_assignments
+            fresh['subAgents'] = fresh_sub_agents
+            assigned['assignment'] = assignment
+            assigned['subAgent'] = target
+            return fresh
+
+        self.store.update(session_id, _assign)
         result = self.delegate_turn(
             session_id=session_id,
             turn_id=turn_id,
-            shop_id=str(sub_agent.get('shopId', '')).strip(),
+            shop_id=str(assigned['subAgent'].get('shopId', '')).strip(),
             shop_profile_id='',
             role='',
             action_id=action_id,
@@ -1709,30 +1788,36 @@ class SessionEngine:
                 'assignmentId': assignment_id,
             },
         )
-        session = self.store.get(session_id) or session
-        sub_agents = session.get('subAgents') if isinstance(session.get('subAgents'), list) else []
-        assignments = session.get('assignments') if isinstance(session.get('assignments'), list) else []
-        sub_agent = next((row for row in sub_agents if isinstance(row, dict) and row.get('subAgentId') == sub_agent_id), sub_agent)
-        assignment = next((row for row in assignments if isinstance(row, dict) and row.get('assignmentId') == assignment_id), assignment)
         invocation = result.get('invocation') if isinstance(result.get('invocation'), dict) else {}
         delegation = result.get('delegation') if isinstance(result.get('delegation'), dict) else {}
-        assignment['status'] = 'completed' if bool(result.get('ok', False)) else 'failed'
-        assignment['completedAt'] = now_iso()
-        assignment['resultRefs'] = {
-            'turnId': turn_id,
-            'delegationId': str(delegation.get('delegationId', '')).strip(),
-            'invocationId': str(invocation.get('invocationId', '')).strip(),
-        }
-        sub_agent['state'] = 'completed' if bool(result.get('ok', False)) else 'failed'
-        sub_agent['lastResultRefs'] = assignment['resultRefs']
-        session['subAgents'] = sub_agents
-        session['assignments'] = assignments
-        self.store.save(session)
+        finalized: dict = {}
+
+        def _finalize(fresh: dict) -> dict:
+            fresh_sub_agents = fresh.get('subAgents') if isinstance(fresh.get('subAgents'), list) else []
+            fresh_assignments = fresh.get('assignments') if isinstance(fresh.get('assignments'), list) else []
+            target = next((row for row in fresh_sub_agents if isinstance(row, dict) and row.get('subAgentId') == sub_agent_id), assigned['subAgent'])
+            assignment = next((row for row in fresh_assignments if isinstance(row, dict) and row.get('assignmentId') == assignment_id), assigned['assignment'])
+            assignment['status'] = 'completed' if bool(result.get('ok', False)) else 'failed'
+            assignment['completedAt'] = now_iso()
+            assignment['resultRefs'] = {
+                'turnId': turn_id,
+                'delegationId': str(delegation.get('delegationId', '')).strip(),
+                'invocationId': str(invocation.get('invocationId', '')).strip(),
+            }
+            target['state'] = 'completed' if bool(result.get('ok', False)) else 'failed'
+            target['lastResultRefs'] = assignment['resultRefs']
+            fresh['subAgents'] = fresh_sub_agents
+            fresh['assignments'] = fresh_assignments
+            finalized['assignment'] = assignment
+            finalized['subAgent'] = target
+            return fresh
+
+        session = self.store.update(session_id, _finalize)
         return {
             'ok': bool(result.get('ok', False)),
             'session': self._session_payload(session),
-            'subAgent': sub_agent,
-            'assignment': assignment,
+            'subAgent': finalized['subAgent'],
+            'assignment': finalized['assignment'],
             'delegation': delegation,
             'invocation': invocation,
         }
@@ -1761,82 +1846,86 @@ class SessionEngine:
         metadata: dict | None = None,
     ) -> dict:
         session_id = validate_identifier(session_id, 'sessionId')
-        session = self.store.get(session_id)
-        if not session:
-            raise ValueError('session not found')
-        self._assert_session_available(session)
-        creator_id = str(created_by_agent_id or '').strip() or str(session.get('mayorAgentId', '')).strip()
-        creator_id = self._ensure_authorized_creator(session, creator_id)
-        agent_id = validate_identifier(agent_id, 'agentId')
-        shop_id = validate_identifier(shop_id, 'shopId')
-        package = self._resolve_agent_package(agent_package_id)
-        package_profile_id = str(package.get('shopProfileId', '')).strip() if package else ''
-        resolved_profile_id = str(shop_profile_id or '').strip() or package_profile_id
-        profile = self._resolve_shop_profile(resolved_profile_id)
-        agents = session.get('agents') if isinstance(session.get('agents'), list) else []
-        if any(isinstance(agent, dict) and agent.get('agentId') == agent_id for agent in agents):
-            raise ValueError('agent already registered in session')
-        shops = session.get('shops') if isinstance(session.get('shops'), dict) else {}
-        if shop_id in shops:
-            raise ValueError('shop already exists in session')
-        package_role = str(package.get('role', '')).strip() if package else ''
-        package_title = str(package.get('defaultTitle', '')).strip() if package else ''
-        package_shop_name = str(package.get('defaultShopName', '')).strip() if package else ''
-        package_enabled_action_ids = package.get('enabledActionIds') if isinstance(package, dict) and isinstance(package.get('enabledActionIds'), list) else []
-        package_metadata = package.get('metadata') if isinstance(package, dict) and isinstance(package.get('metadata'), dict) else {}
-        resolved_role = str(role or '').strip() or package_role or 'worker'
-        resolved_title = str(title or '').strip() or package_title or (str(profile.get('defaultTitle', '')).strip() if profile else '') or 'Worker'
-        resolved_shop_name = str(shop_name or '').strip() or package_shop_name or (str(profile.get('defaultShopName', '')).strip() if profile else '') or shop_id
-        profile_enabled_action_ids = profile.get('enabledActionIds') if isinstance(profile, dict) and isinstance(profile.get('enabledActionIds'), list) else []
-        resolved_enabled_action_ids = [
-            str(x).strip()
-            for x in (enabled_action_ids if enabled_action_ids is not None else (package_enabled_action_ids or profile_enabled_action_ids)) or []
-            if str(x).strip()
-        ]
-        profile_metadata = profile.get('metadata') if isinstance(profile, dict) and isinstance(profile.get('metadata'), dict) else {}
-        resolved_metadata = {**profile_metadata, **package_metadata, **(metadata or {})}
-        resolved_shop_type = (str(profile.get('shopType', '')).strip() if profile else '') or (str(package.get('shopType', '')).strip() if package else '') or 'business'
-        worker = {
-            'agentId': agent_id,
-            'role': resolved_role,
-            'title': resolved_title,
-            'shopId': shop_id,
-            'agentPackageId': str(package.get('packageId', '')).strip() if package else '',
-            'shopProfileId': str(profile.get('profileId', '')).strip() if profile else '',
-            'createdByAgentId': creator_id,
-            'createdAt': now_iso(),
-            'lastHeartbeatAt': now_iso(),
-            'lastSeenBy': creator_id,
-        }
-        shop = {
-            'shopId': shop_id,
-            'name': resolved_shop_name,
-            'ownerAgentId': agent_id,
-            'shopType': resolved_shop_type,
-            'agentPackageId': str(package.get('packageId', '')).strip() if package else '',
-            'shopProfileId': str(profile.get('profileId', '')).strip() if profile else '',
-            'enabledActionIds': resolved_enabled_action_ids,
-            'actionGovernance': self._build_action_governance(
-                resolved_enabled_action_ids,
-                creator_id,
-                source='shop-profile-origination' if profile else 'shop-origination',
-            ),
-            'metadata': {
-                **resolved_metadata,
+        registered: dict = {}
+
+        def _register(session: dict) -> dict:
+            self._assert_session_available(session)
+            creator_id = str(created_by_agent_id or '').strip() or str(session.get('mayorAgentId', '')).strip()
+            creator_id = self._ensure_authorized_creator(session, creator_id)
+            worker_agent_id = validate_identifier(agent_id, 'agentId')
+            worker_shop_id = validate_identifier(shop_id, 'shopId')
+            package = self._resolve_agent_package(agent_package_id)
+            package_profile_id = str(package.get('shopProfileId', '')).strip() if package else ''
+            resolved_profile_id = str(shop_profile_id or '').strip() or package_profile_id
+            profile = self._resolve_shop_profile(resolved_profile_id)
+            agents = session.get('agents') if isinstance(session.get('agents'), list) else []
+            if any(isinstance(agent, dict) and agent.get('agentId') == worker_agent_id for agent in agents):
+                raise ValueError('agent already registered in session')
+            shops = session.get('shops') if isinstance(session.get('shops'), dict) else {}
+            if worker_shop_id in shops:
+                raise ValueError('shop already exists in session')
+            package_role = str(package.get('role', '')).strip() if package else ''
+            package_title = str(package.get('defaultTitle', '')).strip() if package else ''
+            package_shop_name = str(package.get('defaultShopName', '')).strip() if package else ''
+            package_enabled_action_ids = package.get('enabledActionIds') if isinstance(package, dict) and isinstance(package.get('enabledActionIds'), list) else []
+            package_metadata = package.get('metadata') if isinstance(package, dict) and isinstance(package.get('metadata'), dict) else {}
+            resolved_role = str(role or '').strip() or package_role or 'worker'
+            resolved_title = str(title or '').strip() or package_title or (str(profile.get('defaultTitle', '')).strip() if profile else '') or 'Worker'
+            resolved_shop_name = str(shop_name or '').strip() or package_shop_name or (str(profile.get('defaultShopName', '')).strip() if profile else '') or worker_shop_id
+            profile_enabled_action_ids = profile.get('enabledActionIds') if isinstance(profile, dict) and isinstance(profile.get('enabledActionIds'), list) else []
+            resolved_enabled_action_ids = [
+                str(x).strip()
+                for x in (enabled_action_ids if enabled_action_ids is not None else (package_enabled_action_ids or profile_enabled_action_ids)) or []
+                if str(x).strip()
+            ]
+            profile_metadata = profile.get('metadata') if isinstance(profile, dict) and isinstance(profile.get('metadata'), dict) else {}
+            resolved_metadata = {**profile_metadata, **package_metadata, **(metadata or {})}
+            resolved_shop_type = (str(profile.get('shopType', '')).strip() if profile else '') or (str(package.get('shopType', '')).strip() if package else '') or 'business'
+            worker = {
+                'agentId': worker_agent_id,
+                'role': resolved_role,
+                'title': resolved_title,
+                'shopId': worker_shop_id,
+                'agentPackageId': str(package.get('packageId', '')).strip() if package else '',
+                'shopProfileId': str(profile.get('profileId', '')).strip() if profile else '',
                 'createdByAgentId': creator_id,
-                'runtimeId': str(package.get('runtimeId', '')).strip() if package else '',
-                'capabilityFamilies': package.get('capabilityFamilies') if isinstance(package, dict) and isinstance(package.get('capabilityFamilies'), list) else [],
-            },
-            'createdAt': now_iso(),
-            'lastHeartbeatAt': now_iso(),
-            'lastSeenBy': creator_id,
-        }
-        agents.append(worker)
-        shops[shop_id] = shop
-        session['agents'] = agents
-        session['shops'] = shops
-        self.store.save(session)
-        return {'ok': True, 'session': self._session_payload(session), 'agent': worker, 'shop': shop}
+                'createdAt': now_iso(),
+                'lastHeartbeatAt': now_iso(),
+                'lastSeenBy': creator_id,
+            }
+            shop = {
+                'shopId': worker_shop_id,
+                'name': resolved_shop_name,
+                'ownerAgentId': worker_agent_id,
+                'shopType': resolved_shop_type,
+                'agentPackageId': str(package.get('packageId', '')).strip() if package else '',
+                'shopProfileId': str(profile.get('profileId', '')).strip() if profile else '',
+                'enabledActionIds': resolved_enabled_action_ids,
+                'actionGovernance': self._build_action_governance(
+                    resolved_enabled_action_ids,
+                    creator_id,
+                    source='shop-profile-origination' if profile else 'shop-origination',
+                ),
+                'metadata': {
+                    **resolved_metadata,
+                    'createdByAgentId': creator_id,
+                    'runtimeId': str(package.get('runtimeId', '')).strip() if package else '',
+                    'capabilityFamilies': package.get('capabilityFamilies') if isinstance(package, dict) and isinstance(package.get('capabilityFamilies'), list) else [],
+                },
+                'createdAt': now_iso(),
+                'lastHeartbeatAt': now_iso(),
+                'lastSeenBy': creator_id,
+            }
+            agents.append(worker)
+            shops[worker_shop_id] = shop
+            session['agents'] = agents
+            session['shops'] = shops
+            registered['agent'] = worker
+            registered['shop'] = shop
+            return session
+
+        session = self.store.update(session_id, _register)
+        return {'ok': True, 'session': self._session_payload(session), 'agent': registered['agent'], 'shop': registered['shop']}
 
     def originate_worker(
         self,
@@ -1889,65 +1978,75 @@ class SessionEngine:
         catalog_actions = self._catalog_action_map()
         if action_id not in catalog_actions:
             raise ValueError('action is not present in the catalog')
-        shops = session.get('shops') if isinstance(session.get('shops'), dict) else {}
-        shop = shops.get(shop_id) if isinstance(shops.get(shop_id), dict) else None
-        if not shop:
-            raise ValueError('shop not found')
-        manager_id = self._assert_shop_manager(session, shop, managed_by_agent_id)
-        action_governance = shop.get('actionGovernance') if isinstance(shop.get('actionGovernance'), dict) else {}
-        previous = action_governance.get(action_id) if isinstance(action_governance.get(action_id), dict) else {}
-        action_governance[action_id] = {
-            'actionId': action_id,
-            'installed': bool(previous.get('installed', False)) if installed is None else bool(installed),
-            'enabled': bool(enabled),
-            'managedByAgentId': manager_id,
-            'managedAt': now_iso(),
-            'source': str((metadata or {}).get('source', 'shop-governance')).strip() or 'shop-governance',
-            'metadata': metadata or {},
-        }
-        if enabled and not action_governance[action_id]['installed']:
-            action_governance[action_id]['installed'] = True
-        shop['actionGovernance'] = action_governance
-        shop['enabledActionIds'] = sorted(
-            {
-                action_key
-                for action_key, row in action_governance.items()
-                if isinstance(row, dict) and bool(row.get('installed', False)) and bool(row.get('enabled', False))
+        governed: dict = {}
+
+        def _govern(fresh: dict) -> dict:
+            shops = fresh.get('shops') if isinstance(fresh.get('shops'), dict) else {}
+            shop = shops.get(shop_id) if isinstance(shops.get(shop_id), dict) else None
+            if not shop:
+                raise ValueError('shop not found')
+            manager_id = self._assert_shop_manager(fresh, shop, managed_by_agent_id)
+            action_governance = shop.get('actionGovernance') if isinstance(shop.get('actionGovernance'), dict) else {}
+            previous = action_governance.get(action_id) if isinstance(action_governance.get(action_id), dict) else {}
+            action_governance[action_id] = {
+                'actionId': action_id,
+                'installed': bool(previous.get('installed', False)) if installed is None else bool(installed),
+                'enabled': bool(enabled),
+                'managedByAgentId': manager_id,
+                'managedAt': now_iso(),
+                'source': str((metadata or {}).get('source', 'shop-governance')).strip() or 'shop-governance',
+                'metadata': metadata or {},
             }
-        )
-        shops[shop_id] = shop
-        session['shops'] = shops
-        self.store.save(session)
+            if enabled and not action_governance[action_id]['installed']:
+                action_governance[action_id]['installed'] = True
+            shop['actionGovernance'] = action_governance
+            shop['enabledActionIds'] = sorted(
+                {
+                    action_key
+                    for action_key, row in action_governance.items()
+                    if isinstance(row, dict) and bool(row.get('installed', False)) and bool(row.get('enabled', False))
+                }
+            )
+            shops[shop_id] = shop
+            fresh['shops'] = shops
+            governed['shop'] = shop
+            governed['actionState'] = action_governance[action_id]
+            return fresh
+
+        session = self.store.update(session_id, _govern)
         payload = self._session_payload(session)
         return {
             'ok': True,
             'session': payload,
-            'shop': (payload.get('shops') or {}).get(shop_id, shop),
-            'actionState': action_governance[action_id],
+            'shop': (payload.get('shops') or {}).get(shop_id, governed['shop']),
+            'actionState': governed['actionState'],
         }
 
     def create_turn(self, session_id: str, objective: str, requested_by: str, metadata: dict | None = None) -> dict:
         session_id = validate_identifier(session_id, 'sessionId')
-        session = self.store.get(session_id)
-        if not session:
-            raise ValueError('session not found')
-        self._assert_session_available(session)
-        turn = {
-            'turnId': validate_identifier(f'turn-{uuid.uuid4().hex[:12]}', 'turnId'),
-            'objective': str(objective or '').strip(),
-            'requestedBy': str(requested_by or '').strip() or 'user',
-            'state': 'OPEN',
-            'orchestrationMode': 'manual',
-            'delegationIds': [],
-            'reconciliation': None,
-            'metadata': metadata or {},
-            'createdAt': now_iso(),
-        }
-        turns = session.get('turns') if isinstance(session.get('turns'), list) else []
-        turns.append(turn)
-        session['turns'] = turns
-        self.store.save(session)
-        return {'ok': True, 'session': self._session_payload(session), 'turn': turn}
+        created: dict = {}
+
+        def _create(session: dict) -> dict:
+            self._assert_session_available(session)
+            turn = {
+                'turnId': validate_identifier(f'turn-{uuid.uuid4().hex[:12]}', 'turnId'),
+                'objective': str(objective or '').strip(),
+                'requestedBy': str(requested_by or '').strip() or 'user',
+                'state': 'OPEN',
+                'orchestrationMode': 'manual',
+                'delegationIds': [],
+                'reconciliation': None,
+                'metadata': metadata or {},
+                'createdAt': now_iso(),
+            }
+            turns = session.get('turns') if isinstance(session.get('turns'), list) else []
+            turns.append(turn)
+            session['turns'] = turns
+            created['turn'] = turn
+            return session
+
+        session = self.store.update(session_id, _create)
+        return {'ok': True, 'session': self._session_payload(session), 'turn': created['turn']}
 
     def invoke_action(
         self,
@@ -2032,20 +2131,28 @@ class SessionEngine:
             'result': execution,
             'createdAt': now_iso(),
         }
-        session['invocations'].append(invocation)
-        if bool(execution.get('ok', False)):
-            plugin_result = (((execution.get('result') or {}).get('pluginResult')) or {})
-            content = json.dumps(plugin_result, ensure_ascii=False)
-            session['messages'].append(
-                {
-                    'messageId': f'msg-{uuid.uuid4().hex[:12]}',
-                    'role': 'tool',
-                    'content': content,
-                    'metadata': {'actionId': original_action_id, 'resolvedActionId': resolved_action_id, 'invocationId': invocation_id, 'shopId': target_shop_id, 'executingAgentId': executing_agent_id, **runtime},
-                    'createdAt': now_iso(),
-                }
-            )
-        self.store.save(session)
+        def _record(fresh: dict) -> dict:
+            self._apply_liveness(fresh)
+            invocations = fresh.get('invocations') if isinstance(fresh.get('invocations'), list) else []
+            invocations.append(invocation)
+            fresh['invocations'] = invocations
+            if bool(execution.get('ok', False)):
+                plugin_result = (((execution.get('result') or {}).get('pluginResult')) or {})
+                content = json.dumps(plugin_result, ensure_ascii=False)
+                messages = fresh.get('messages') if isinstance(fresh.get('messages'), list) else []
+                messages.append(
+                    {
+                        'messageId': f'msg-{uuid.uuid4().hex[:12]}',
+                        'role': 'tool',
+                        'content': content,
+                        'metadata': {'actionId': original_action_id, 'resolvedActionId': resolved_action_id, 'invocationId': invocation_id, 'shopId': target_shop_id, 'executingAgentId': executing_agent_id, **runtime},
+                        'createdAt': now_iso(),
+                    }
+                )
+                fresh['messages'] = messages
+            return fresh
+
+        session = self.store.update(session_id, _record)
         return {'ok': bool(execution.get('ok', False)), 'session': self._session_payload(session), 'invocation': invocation}
 
     def delegate_turn(
@@ -2066,47 +2173,58 @@ class SessionEngine:
         allow_expired = bool((metadata or {}).get('allowExpiredSession', False))
         self._assert_session_available(session, allow_expired=allow_expired)
         turn_id = validate_identifier(turn_id, 'turnId')
-        turns = session.get('turns') if isinstance(session.get('turns'), list) else []
-        turn = next((t for t in turns if isinstance(t, dict) and t.get('turnId') == turn_id), None)
-        if not turn:
-            raise ValueError('turn not found')
-        resolved_shop_id, resolved_shop = self._resolve_turn_target(
-            session,
-            shop_id=shop_id,
-            shop_profile_id=shop_profile_id,
-            role=role,
-        )
-        delegation_id = validate_identifier(f'delegation-{uuid.uuid4().hex[:12]}', 'delegationId')
-        delegation = {
-            'delegationId': delegation_id,
-            'turnId': turn_id,
-            'delegatedByAgentId': str(session.get('mayorAgentId', '')).strip(),
-            'shopId': resolved_shop_id,
-            'requestedShopId': str(shop_id or '').strip(),
-            'requestedShopProfileId': str(shop_profile_id or '').strip(),
-            'requestedRole': str(role or '').strip(),
-            'resolvedShopProfileId': str(resolved_shop.get('shopProfileId', '')).strip(),
-            'resolvedOwnerAgentId': str(resolved_shop.get('ownerAgentId', '')).strip(),
-            'planStepId': str((metadata or {}).get('planStepId', '')).strip(),
-            'dependsOn': [str(x).strip() for x in ((metadata or {}).get('dependsOn') or []) if str(x).strip()],
-            'actionId': str(action_id or '').strip(),
-            'resolvedActionId': self._resolve_action_alias(str(action_id or '').strip())[1],
-            'runtimeRequested': self._requested_runtime(metadata),
-            'runtimeResolved': 'umbrella-agent-runtime',
-            'runtimeClass': 'umbrella-agent-runtime',
-            'runtimeReason': 'delegated_shop_action',
-            'state': 'IN_PROGRESS',
-            'createdAt': now_iso(),
-            'metadata': metadata or {},
-        }
-        delegations = session.get('delegations') if isinstance(session.get('delegations'), list) else []
-        delegations.append(delegation)
-        session['delegations'] = delegations
-        turn['state'] = 'IN_PROGRESS'
-        delegation_ids = turn.get('delegationIds') if isinstance(turn.get('delegationIds'), list) else []
-        delegation_ids.append(delegation_id)
-        turn['delegationIds'] = delegation_ids
-        self.store.save(session)
+        started: dict = {}
+
+        def _start(fresh: dict) -> dict:
+            self._apply_liveness(fresh)
+            turns = fresh.get('turns') if isinstance(fresh.get('turns'), list) else []
+            turn = next((t for t in turns if isinstance(t, dict) and t.get('turnId') == turn_id), None)
+            if not turn:
+                raise ValueError('turn not found')
+            resolved_shop_id, resolved_shop = self._resolve_turn_target(
+                fresh,
+                shop_id=shop_id,
+                shop_profile_id=shop_profile_id,
+                role=role,
+            )
+            delegation_id = validate_identifier(f'delegation-{uuid.uuid4().hex[:12]}', 'delegationId')
+            delegation = {
+                'delegationId': delegation_id,
+                'turnId': turn_id,
+                'delegatedByAgentId': str(fresh.get('mayorAgentId', '')).strip(),
+                'shopId': resolved_shop_id,
+                'requestedShopId': str(shop_id or '').strip(),
+                'requestedShopProfileId': str(shop_profile_id or '').strip(),
+                'requestedRole': str(role or '').strip(),
+                'resolvedShopProfileId': str(resolved_shop.get('shopProfileId', '')).strip(),
+                'resolvedOwnerAgentId': str(resolved_shop.get('ownerAgentId', '')).strip(),
+                'planStepId': str((metadata or {}).get('planStepId', '')).strip(),
+                'dependsOn': [str(x).strip() for x in ((metadata or {}).get('dependsOn') or []) if str(x).strip()],
+                'actionId': str(action_id or '').strip(),
+                'resolvedActionId': self._resolve_action_alias(str(action_id or '').strip())[1],
+                'runtimeRequested': self._requested_runtime(metadata),
+                'runtimeResolved': 'umbrella-agent-runtime',
+                'runtimeClass': 'umbrella-agent-runtime',
+                'runtimeReason': 'delegated_shop_action',
+                'state': 'IN_PROGRESS',
+                'createdAt': now_iso(),
+                'metadata': metadata or {},
+            }
+            delegations = fresh.get('delegations') if isinstance(fresh.get('delegations'), list) else []
+            delegations.append(delegation)
+            fresh['delegations'] = delegations
+            turn['state'] = 'IN_PROGRESS'
+            delegation_ids = turn.get('delegationIds') if isinstance(turn.get('delegationIds'), list) else []
+            delegation_ids.append(delegation_id)
+            turn['delegationIds'] = delegation_ids
+            started['turn'] = turn
+            started['delegation'] = delegation
+            started['resolvedShopId'] = resolved_shop_id
+            return fresh
+
+        self.store.update(session_id, _start)
+        delegation_id = str(started['delegation'].get('delegationId', ''))
+        resolved_shop_id = started['resolvedShopId']
         result = self.invoke_action(
             session_id=session_id,
             action_id=action_id,
@@ -2116,18 +2234,23 @@ class SessionEngine:
             turn_id=turn_id,
             delegation_id=delegation_id,
         )
-        session = self.store.get(session_id) or session
-        turns = session.get('turns') if isinstance(session.get('turns'), list) else []
-        delegations = session.get('delegations') if isinstance(session.get('delegations'), list) else []
-        turn = next((t for t in turns if isinstance(t, dict) and t.get('turnId') == turn_id), turn)
-        delegation = next((d for d in delegations if isinstance(d, dict) and d.get('delegationId') == delegation_id), delegation)
-        delegation['state'] = 'COMPLETED' if bool(result.get('ok', False)) else 'FAILED'
-        delegation['completedAt'] = now_iso()
-        turn['state'] = 'COMPLETED' if bool(result.get('ok', False)) else 'FAILED'
-        session['turns'] = turns
-        session['delegations'] = delegations
-        self.store.save(session)
-        return {'ok': bool(result.get('ok', False)), 'session': self._session_payload(session), 'delegation': delegation, 'invocation': result.get('invocation')}
+        finalized: dict = {}
+
+        def _finalize(fresh: dict) -> dict:
+            turns = fresh.get('turns') if isinstance(fresh.get('turns'), list) else []
+            delegations = fresh.get('delegations') if isinstance(fresh.get('delegations'), list) else []
+            turn = next((t for t in turns if isinstance(t, dict) and t.get('turnId') == turn_id), started['turn'])
+            delegation = next((d for d in delegations if isinstance(d, dict) and d.get('delegationId') == delegation_id), started['delegation'])
+            delegation['state'] = 'COMPLETED' if bool(result.get('ok', False)) else 'FAILED'
+            delegation['completedAt'] = now_iso()
+            turn['state'] = 'COMPLETED' if bool(result.get('ok', False)) else 'FAILED'
+            fresh['turns'] = turns
+            fresh['delegations'] = delegations
+            finalized['delegation'] = delegation
+            return fresh
+
+        session = self.store.update(session_id, _finalize)
+        return {'ok': bool(result.get('ok', False)), 'session': self._session_payload(session), 'delegation': finalized['delegation'], 'invocation': result.get('invocation')}
 
     def orchestrate_turn(
         self,
@@ -2143,18 +2266,25 @@ class SessionEngine:
         allow_expired = bool((metadata or {}).get('allowExpiredSession', False))
         self._assert_session_available(session, allow_expired=allow_expired)
         turn_id = validate_identifier(turn_id, 'turnId')
-        turns = session.get('turns') if isinstance(session.get('turns'), list) else []
-        turn = next((t for t in turns if isinstance(t, dict) and t.get('turnId') == turn_id), None)
-        if not turn:
-            raise ValueError('turn not found')
-        if not isinstance(plan, list) or not plan:
-            raise ValueError('plan must include at least one delegation')
         orchestration_id = validate_identifier(f'orchestration-{uuid.uuid4().hex[:12]}', 'orchestrationId')
-        turn['state'] = 'IN_PROGRESS'
-        turn['orchestrationMode'] = 'fanout'
-        turn['orchestrationId'] = orchestration_id
-        turn['orchestrationMetadata'] = metadata or {}
-        self.store.save(session)
+        started: dict = {}
+
+        def _start(fresh: dict) -> dict:
+            self._apply_liveness(fresh)
+            turns = fresh.get('turns') if isinstance(fresh.get('turns'), list) else []
+            turn = next((t for t in turns if isinstance(t, dict) and t.get('turnId') == turn_id), None)
+            if not turn:
+                raise ValueError('turn not found')
+            if not isinstance(plan, list) or not plan:
+                raise ValueError('plan must include at least one delegation')
+            turn['state'] = 'IN_PROGRESS'
+            turn['orchestrationMode'] = 'fanout'
+            turn['orchestrationId'] = orchestration_id
+            turn['orchestrationMetadata'] = metadata or {}
+            started['turn'] = turn
+            return fresh
+
+        self.store.update(session_id, _start)
 
         delegation_results: list[dict] = []
         invocation_results: list[dict] = []
@@ -2230,77 +2360,88 @@ class SessionEngine:
                     break
             step_order.append(plan_step_id)
 
-        session = self.store.get(session_id) or session
-        turns = session.get('turns') if isinstance(session.get('turns'), list) else []
-        turn = next((t for t in turns if isinstance(t, dict) and t.get('turnId') == turn_id), turn)
-        turn['orchestrationMode'] = 'dependency-graph' if plan_contains_dependencies else 'fanout'
-        turn['planStepOrder'] = step_order
         completed = [d for d in delegation_results if str(d.get('state', '')).strip() == 'COMPLETED']
         failed = [d for d in delegation_results if str(d.get('state', '')).strip() == 'FAILED']
         skipped = [d for d in delegation_results if str(d.get('state', '')).strip() == 'SKIPPED']
-        mayor_summary = self._reconciliation_summary(turn, delegation_results, invocation_results)
-        reconciliation = {
-            'reconciliationId': validate_identifier(f'reconcile-{uuid.uuid4().hex[:12]}', 'reconciliationId'),
-            'orchestrationId': orchestration_id,
-            'completedDelegations': len(completed),
-            'failedDelegations': len(failed),
-            'skippedDelegations': len(skipped),
-            'summary': mayor_summary,
-            'createdAt': now_iso(),
-        }
-        turn['state'] = 'COMPLETED' if not failed and not skipped else ('PARTIAL' if completed else 'FAILED')
-        turn['reconciliation'] = reconciliation
-        session['turns'] = turns
-        session['messages'].append(
-            {
-                'messageId': f'msg-{uuid.uuid4().hex[:12]}',
-                'role': 'assistant',
-                'content': mayor_summary,
-                'metadata': {'turnId': turn_id, 'orchestrationId': orchestration_id, 'kind': 'mayor-summary'},
+        finished: dict = {}
+
+        def _finish(fresh: dict) -> dict:
+            turns = fresh.get('turns') if isinstance(fresh.get('turns'), list) else []
+            turn = next((t for t in turns if isinstance(t, dict) and t.get('turnId') == turn_id), started['turn'])
+            turn['orchestrationMode'] = 'dependency-graph' if plan_contains_dependencies else 'fanout'
+            turn['planStepOrder'] = step_order
+            mayor_summary = self._reconciliation_summary(turn, delegation_results, invocation_results)
+            reconciliation = {
+                'reconciliationId': validate_identifier(f'reconcile-{uuid.uuid4().hex[:12]}', 'reconciliationId'),
+                'orchestrationId': orchestration_id,
+                'completedDelegations': len(completed),
+                'failedDelegations': len(failed),
+                'skippedDelegations': len(skipped),
+                'summary': mayor_summary,
                 'createdAt': now_iso(),
             }
-        )
-        self.store.save(session)
+            turn['state'] = 'COMPLETED' if not failed and not skipped else ('PARTIAL' if completed else 'FAILED')
+            turn['reconciliation'] = reconciliation
+            fresh['turns'] = turns
+            messages = fresh.get('messages') if isinstance(fresh.get('messages'), list) else []
+            messages.append(
+                {
+                    'messageId': f'msg-{uuid.uuid4().hex[:12]}',
+                    'role': 'assistant',
+                    'content': mayor_summary,
+                    'metadata': {'turnId': turn_id, 'orchestrationId': orchestration_id, 'kind': 'mayor-summary'},
+                    'createdAt': now_iso(),
+                }
+            )
+            fresh['messages'] = messages
+            finished['turn'] = turn
+            finished['reconciliation'] = reconciliation
+            return fresh
+
+        session = self.store.update(session_id, _finish)
         return {
             'ok': not failed,
             'session': self._session_payload(session),
-            'turn': turn,
+            'turn': finished['turn'],
             'delegations': delegation_results,
             'invocations': invocation_results,
-            'reconciliation': reconciliation,
+            'reconciliation': finished['reconciliation'],
         }
 
     def compact_session(self, session_id: str, keep_last_messages: int = 10) -> dict:
         session_id = validate_identifier(session_id, 'sessionId')
-        session = self.store.get(session_id)
-        if not session:
-            raise ValueError('session not found')
-        keep_last_messages = max(1, int(keep_last_messages))
-        messages = session.get('messages') if isinstance(session.get('messages'), list) else []
-        if len(messages) <= keep_last_messages:
-            compacted = {
-                'compactionId': validate_identifier(f'compact-{uuid.uuid4().hex[:12]}', 'compactionId'),
-                'keptMessages': len(messages),
-                'droppedMessages': 0,
-                'summary': 'no compaction needed',
-                'createdAt': now_iso(),
-            }
-        else:
-            dropped = messages[:-keep_last_messages]
-            kept = messages[-keep_last_messages:]
-            compacted = {
-                'compactionId': validate_identifier(f'compact-{uuid.uuid4().hex[:12]}', 'compactionId'),
-                'keptMessages': len(kept),
-                'droppedMessages': len(dropped),
-                'summary': f'compacted {len(dropped)} earlier messages into a retained summary record',
-                'createdAt': now_iso(),
-            }
-            session['messages'] = kept
-        compactions = session.get('compactions') if isinstance(session.get('compactions'), list) else []
-        compactions.append(compacted)
-        session['compactions'] = compactions
-        self.store.save(session)
-        return {'ok': True, 'session': self._session_payload(session), 'compaction': compacted}
+        keep_last = max(1, int(keep_last_messages))
+        result: dict = {}
+
+        def _compact(session: dict) -> dict:
+            messages = session.get('messages') if isinstance(session.get('messages'), list) else []
+            if len(messages) <= keep_last:
+                compacted = {
+                    'compactionId': validate_identifier(f'compact-{uuid.uuid4().hex[:12]}', 'compactionId'),
+                    'keptMessages': len(messages),
+                    'droppedMessages': 0,
+                    'summary': 'no compaction needed',
+                    'createdAt': now_iso(),
+                }
+            else:
+                dropped = messages[:-keep_last]
+                kept = messages[-keep_last:]
+                compacted = {
+                    'compactionId': validate_identifier(f'compact-{uuid.uuid4().hex[:12]}', 'compactionId'),
+                    'keptMessages': len(kept),
+                    'droppedMessages': len(dropped),
+                    'summary': f'compacted {len(dropped)} earlier messages into a retained summary record',
+                    'createdAt': now_iso(),
+                }
+                session['messages'] = kept
+            compactions = session.get('compactions') if isinstance(session.get('compactions'), list) else []
+            compactions.append(compacted)
+            session['compactions'] = compactions
+            result['compaction'] = compacted
+            return session
+
+        session = self.store.update(session_id, _compact)
+        return {'ok': True, 'session': self._session_payload(session), 'compaction': result['compaction']}
 
 
 def handler_factory(engine: SessionEngine, token: str):

@@ -55,6 +55,15 @@ def err(code: str, message: str, request_id: str) -> dict:
 
 
 class RouterEngine:
+    """Advisory routing service.
+
+    Authoritative runtime resolution happens in the execution service
+    (services/execution/app.py) at dispatch time; the orchestrator does not
+    consult the router in its run loop. These endpoints exist for operators
+    and tooling to preview how a step would be routed under
+    control-plane/router/runtime-routing.json.
+    """
+
     def __init__(self, routing_path: Path, capability_path: Path, catalog_url: str = '', mesh_token: str = ''):
         self.routing_path = routing_path
         self.config = load_json(routing_path, {})
@@ -227,7 +236,7 @@ class RouterEngine:
         )
 
     def reroute_step(self, from_runtime: str, step: dict) -> dict:
-        reroute = (self.config.get('reroute') or {})
+        reroute = (self.config.get('capabilityReroute') or {})
         enabled = bool(reroute.get('enabled', False))
         if not enabled:
             return {
@@ -237,7 +246,7 @@ class RouterEngine:
                 'toRuntime': None,
             }
 
-        fb = (reroute.get('fallbackRuntimes') or {}).get(from_runtime, [])
+        fb = self._fallback_runtimes(from_runtime)
         if not fb:
             return {
                 'rerouted': False,

@@ -1,5 +1,6 @@
 {
   "id": "umbrella.router.runtime-routing.v2",
+  "resolutionAuthority": "execution-service",
   "supportedRuntimes": [
     "native",
     "umbrella-agent-runtime"
@@ -12,9 +13,5 @@
   "rules": [
     {"matchAction": "memory.promote", "runtime": "native"},
     {"matchAction": "memory.hydrate", "runtime": "native"}
-  ],
-  "reroute": {
-    "enabled": false,
-    "fallbackRuntimes": {}
-  }
+  ]
 }
