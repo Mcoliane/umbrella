@@ -52,6 +52,8 @@ Umbrella is the layer that decides:
 
 ## Architecture
 
+**See [ARCHITECTURE.md](ARCHITECTURE.md) for the full architecture — topology, dispatch flow, the town model, the code agent, and design decisions, with diagrams.**
+
 Core control-plane services:
 - `policy`
 - `lifecycle`
@@ -310,6 +312,7 @@ User/operator docs:
 - [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md)
 
 Architecture docs:
+- [ARCHITECTURE.md](ARCHITECTURE.md)
 - [docs/platform-tui.md](docs/platform-tui.md)
 - [docs/model-provider-setup.md](docs/model-provider-setup.md)
 - [services/model_broker/README.md](services/model_broker/README.md)
