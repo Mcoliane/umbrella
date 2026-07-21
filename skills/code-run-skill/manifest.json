@@ -24,7 +24,7 @@
     "requiresFeatures": []
   },
   "executionPolicy": {
-    "envAllowlist": [],
+    "envAllowlist": ["HOME", "USER", "PATH", "TMPDIR", "LANG"],
     "network": "none",
     "fs": "scratch-only",
     "maxRuntimeSec": 60,
