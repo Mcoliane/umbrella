@@ -1,19 +1,71 @@
-name: Umbrella0.4 Contract Gate
+name: Contract Gate
+
+# This repository is standalone: the contract suite and pattern gate run from
+# the repo root. (Earlier revisions filtered on a nonexistent 'umbrella0.4/**'
+# subtree and never ran.)
+#
+# CI-safety of the suite: every contract test binds services to 127.0.0.1 on
+# ephemeral ports chosen by binding to port 0, and no test reaches an external
+# network. GitHub-hosted runners permit unrestricted loopback binds, so the
+# ENTIRE suite runs in CI — no subset is carved out.
 
 on:
   push:
-    paths:
-      - 'umbrella0.4/**'
-      - '.github/workflows/contract-gate.yml'
+    branches: [main]
   pull_request:
-    paths:
-      - 'umbrella0.4/**'
-      - '.github/workflows/contract-gate.yml'
+
+concurrency:
+  group: contract-gate-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  exec-bit-lint:
+    name: Executable-bit lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fail on non-executable committed scripts
+        run: |
+          # A contract test committed as mode 100644 fails with rc=126 on
+          # every fresh clone. Catch that class in review, before the gate
+          # itself runs. helpers/ files are sourced (not executed) and exempt.
+          set -euo pipefail
+          bad=""
+          for f in tests/contract/*.sh \
+                   scripts/control-plane/* \
+                   scripts/tools/* \
+                   scripts/umbrellactl \
+                   scripts/umbrella-tui \
+                   scripts/dist/build-release.sh \
+                   install.sh; do
+            [ -f "$f" ] || continue
+            if [ ! -x "$f" ]; then
+              bad="${bad}${f}"$'\n'
+            fi
+          done
+          if [ -n "$bad" ]; then
+            echo "The following scripts are committed without the executable bit (mode 100644):"
+            printf '%s' "$bad"
+            echo "Fix with: git update-index --chmod=+x <file>  (or chmod +x and re-commit)"
+            exit 1
+          fi
+          echo "executable-bit lint: OK"
+
   contracts:
+    name: Contracts (Python ${{ matrix.python-version }})
+    needs: exec-bit-lint
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # The two edges of the supported interpreter range declared in
+        # runtime/runtime.lock.json (>= 3.9). Development also happens on
+        # newer interpreters; the suite is stdlib-only.
+        python-version: ['3.9', '3.12']
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,15 +73,22 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: ${{ matrix.python-version }}
 
-      - name: Make Contract Gate Executable
-        run: chmod +x umbrella0.4/tests/contract/run-all-contracts.sh
+      - name: Run contract gate
+        run: ./tests/contract/run-all-contracts.sh
 
-      - name: Run Contract Gate
-        run: ./umbrella0.4/tests/contract/run-all-contracts.sh
+      - name: Verify pattern coverage
+        run: ./scripts/control-plane/verify-patterns --require-docs
 
-      - name: Verify Pattern Coverage
-        run: |
-          chmod +x umbrella0.4/scripts/control-plane/verify-patterns
-          ./umbrella0.4/scripts/control-plane/verify-patterns --umbrella-root ./umbrella0.4 --require-docs
+      - name: Upload service logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-gate-logs-py${{ matrix.python-version }}
+          path: |
+            tmp/**/*.err
+            tmp/**/*.out
+            control-plane/runtime/logs/
+          if-no-files-found: ignore
+          retention-days: 7

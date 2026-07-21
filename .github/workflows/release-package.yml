@@ -1,4 +1,7 @@
-name: Umbrella0.4 Release Package
+name: Release Package
+
+# Builds the versioned release tarball from the repo root. (Earlier revisions
+# invoked scripts under a nonexistent 'umbrella0.4/**' subtree and never ran.)
 
 on:
   workflow_dispatch:
@@ -9,6 +12,7 @@ on:
         type: string
   push:
     tags:
+      - 'v*'
       - 'umbrella0.4-v*'
 
 jobs:
@@ -22,19 +26,24 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
 
-      - name: Build Release Artifact
+      - name: Build release artifact
         run: |
-          chmod +x umbrella0.4/scripts/dist/build-release.sh
           if [ -n "${{ github.event.inputs.version }}" ]; then
-            ./umbrella0.4/scripts/dist/build-release.sh --version "${{ github.event.inputs.version }}"
+            ./scripts/dist/build-release.sh --version "${{ github.event.inputs.version }}"
           else
-            ./umbrella0.4/scripts/dist/build-release.sh
+            ./scripts/dist/build-release.sh
           fi
 
-      - name: Upload Release Artifacts
+      - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
           name: umbrella0.4-release
-          path: umbrella0.4/dist/releases/*
+          # The staging directory also lives under dist/releases; upload only
+          # the archive, checksum, and release manifest.
+          path: |
+            dist/releases/*.tar.gz
+            dist/releases/*.sha256
+            dist/releases/*.release.json
+          if-no-files-found: error

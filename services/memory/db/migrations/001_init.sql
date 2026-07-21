@@ -48,3 +48,16 @@ CREATE TABLE IF NOT EXISTS events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_namespace_id ON events(namespace, event_id);
+
+-- Schema versioning: every statement in this baseline is idempotent
+-- (IF NOT EXISTS / OR IGNORE), so re-applying 001 on an existing database is
+-- a no-op. Forward migrations (002_*.sql, ...) are applied in order by
+-- services/memory/db/migrate.py and recorded here.
+CREATE TABLE IF NOT EXISTS schema_version (
+  version INTEGER PRIMARY KEY,
+  filename TEXT NOT NULL,
+  applied_at TEXT NOT NULL
+);
+
+INSERT OR IGNORE INTO schema_version(version, filename, applied_at)
+VALUES (1, '001_init.sql', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
