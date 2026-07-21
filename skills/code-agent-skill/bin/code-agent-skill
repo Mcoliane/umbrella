@@ -23,7 +23,11 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+CONTEXT_BUDGET = 48000     # chars of message history before compaction kicks in
+KEEP_RECENT = 8            # most-recent turns always kept verbatim
 
 MAX_ITERATIONS_DEFAULT = 30
 CMD_TIMEOUT = 180          # per run() command
@@ -235,13 +239,64 @@ def parse_action(text: str) -> dict:
         return {"tool": "_error", "error": f"could not parse JSON action: {ex}"}
 
 
+def _chars(messages: list) -> int:
+    return sum(len(str(m.get("content", ""))) for m in messages)
+
+
+def trim_messages(messages: list) -> list:
+    """Keep the loop within a context budget: always retain the system prompt and
+    the task, keep the most recent turns verbatim, and compact the middle into a
+    short 'progress so far' note (older file reads/writes are the main bloat)."""
+    if len(messages) <= 2 + KEEP_RECENT or _chars(messages) <= CONTEXT_BUDGET:
+        return messages
+    head, tail = messages[:2], messages[-KEEP_RECENT:]
+    actions = []
+    for m in messages[2:-KEEP_RECENT]:
+        if m.get("role") != "assistant":
+            continue
+        a = parse_action(str(m.get("content", "")))
+        t = a.get("tool")
+        if t == "write_file":
+            actions.append(f"wrote {a.get('path')}")
+        elif t == "edit_file":
+            actions.append(f"edited {a.get('path')}")
+        elif t == "run":
+            actions.append(f"ran `{str(a.get('command', ''))[:70]}`")
+        elif t == "read_file":
+            actions.append(f"read {a.get('path')}")
+    note = "PROGRESS SO FAR (older steps compacted to save context): " + "; ".join(actions[-60:] or ["(none)"])
+    return head + [{"role": "user", "content": note}] + tail
+
+
+def plan_subtasks(model_cfg: dict, ws: Workspace, task: str) -> dict:
+    """Ask the model to decompose the task into independent, disjoint-file subtasks
+    that can be built in parallel. Returns {parallelizable, subtasks:[{title,detail,files}]}."""
+    try:
+        content = chat(model_cfg, [
+            {"role": "system", "content":
+                "You are a tech lead planning parallel work. Decompose the task into INDEPENDENT subtasks that "
+                "touch DISJOINT files so separate workers can build them at the same time without conflicting. "
+                "Do NOT force it: if the task is small or inherently sequential, set parallelizable=false. "
+                "Reply with ONLY one JSON object: "
+                '{"parallelizable": true|false, "subtasks": [{"title": str, "detail": str, "files": [str]}]}. '
+                "Aim for 2-4 subtasks when parallelizable. Each subtask's files must not overlap another's."},
+            {"role": "user", "content": f"TASK:\n{task}\n\nWorking dir currently:\n{ws.list_dir('.')}"},
+        ], temperature=0.0)
+        obj = parse_action(content)
+        if isinstance(obj, dict) and isinstance(obj.get("subtasks"), list):
+            return obj
+    except Exception:  # noqa: BLE001 — planning is best-effort; fall back to a single loop
+        pass
+    return {"parallelizable": False, "subtasks": []}
+
+
 def run_loop(model_cfg: dict, ws: Workspace, task: str, max_iters: int, extra_system: str = "") -> tuple[list, int, bool]:
     messages = [{"role": "system", "content": SYSTEM + (("\n\n" + extra_system) if extra_system else "")},
                 {"role": "user", "content": f"TASK:\n{task}\n\nThe working directory currently contains:\n{ws.list_dir('.')}"}]
     verified = False
     iters = 0
     for iters in range(1, max_iters + 1):
-        content = chat(model_cfg, messages)
+        content = chat(model_cfg, trim_messages(messages))
         messages.append({"role": "assistant", "content": content})
         action = parse_action(content)
         tool = str(action.get("tool", "")).strip()
@@ -298,7 +353,47 @@ def main() -> int:
 
     try:
         ensure_repo(wd)
-        _, iters, verified = run_loop(model_cfg, ws, task, max_iters)
+        want_parallel = bool(inputs.get("parallel", True))
+        max_workers = max(1, min(int(inputs.get("maxWorkers", 4) or 4), 6))
+        plan = plan_subtasks(model_cfg, ws, task) if want_parallel else {"parallelizable": False, "subtasks": []}
+        subtasks = [s for s in (plan.get("subtasks") or []) if isinstance(s, dict) and s.get("files")][:8]
+        iters = 0
+        strategy = "single"
+
+        if plan.get("parallelizable") and len(subtasks) >= 2:
+            strategy = f"parallel({len(subtasks)} workers)"
+
+            def _work(st: dict) -> int:
+                owned = [str(f) for f in (st.get("files") or [])]
+                extra = (
+                    "You are ONE of several workers building a project IN PARALLEL. "
+                    f"Create/edit ONLY these files: {owned}. Do NOT touch any other file. "
+                    "Verify only your own files (e.g. python3 -m py_compile <file>, or import them); "
+                    "the integrator runs the full test suite afterwards. Call finish when your files are done."
+                )
+                _, it, _ = run_loop(
+                    model_cfg, ws, f"{st.get('title', 'subtask')}: {st.get('detail', '')}",
+                    max_iters=max(6, max_iters // 2), extra_system=extra,
+                )
+                return it
+
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                iters += sum(pool.map(_work, subtasks))
+
+            built = sorted({str(f) for st in subtasks for f in (st.get("files") or [])})
+            _, it, verified = run_loop(
+                model_cfg, ws,
+                "Parallel workers built these files: " + ", ".join(built) +
+                ".\nIntegrate them into a coherent, working project for the original task, fix any "
+                "integration issues, add any missing glue, and RUN THE FULL TEST SUITE until it passes.\n\n"
+                f"ORIGINAL TASK:\n{task}",
+                max_iters=max_iters,
+                extra_system="You are the integrator. Wire the parallel parts together and VERIFY the whole project with tests.",
+            )
+            iters += it
+        else:
+            _, it, verified = run_loop(model_cfg, ws, task, max_iters)
+            iters += it
 
         review = inputs.get("review", True)
         if review:
@@ -324,7 +419,8 @@ def main() -> int:
 
         print(json.dumps({
             "ok": True,
-            "summary": f"code agent completed {iters} step(s); verified={verified}",
+            "summary": f"code agent completed {iters} step(s) via {strategy}; verified={verified}",
+            "strategy": strategy,
             "verified": verified,
             "iterations": iters,
             "workingDir": str(wd),
