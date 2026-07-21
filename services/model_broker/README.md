@@ -37,8 +37,7 @@ Current endpoints:
 - `POST /v1/chat/respond`
 
 Current provider support:
-- `zai`
-- `openai-compatible`
+- `openai-compatible` — any OpenAI-compatible `/chat/completions` endpoint
 
 The broker is intended to be the only service that talks to provider APIs directly.
 `skill.chat.respond` now calls the broker and falls back locally only when the broker or a connection is unavailable.

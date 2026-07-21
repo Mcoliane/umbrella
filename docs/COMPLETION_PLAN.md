@@ -331,8 +331,8 @@ JSON/Prometheus export).
    execution per the d9003cc two-path direction?
 5. **TUI framework** — bless shipped curses (amending platform-tui.md), or port
    to Textual as the spec mandates (ends the stdlib-only property)?
-6. **Provider strategy** — is Z.ai-first + manual openai-compatible the 0.4
-   scope, or do Anthropic/OpenAI adapters belong in this release?
+6. **Provider strategy** — is a single generic OpenAI-compatible connection the
+   0.4 scope, or do dedicated Anthropic/OpenAI adapters belong in this release?
 7. **Distribution targets** — are Docker images and release tarballs real
    deliverables, or delete them for 0.4 in favor of clone + install.sh?
 8. **Threat model** — single-user localhost, or same-host multi-user (moves

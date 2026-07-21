@@ -1,13 +1,22 @@
 # Model Provider Setup
 
-Umbrella conversation now goes through the internal `model-broker` service.
+Umbrella conversation goes through the internal `model-broker` service.
 
 That means:
-- the TUI still exposes one `/model` setup flow
+- the TUI exposes one `/model` setup flow
 - `skill.chat.respond` no longer talks to provider APIs directly
 - the broker owns provider connections and normalized inference
-- browser login state is still not reused directly
-- the preferred live provider is now `Z.ai`
+- browser login state is not reused directly
+
+Umbrella is provider-agnostic. It works with **any** OpenAI-compatible
+`/chat/completions` endpoint. You supply three things:
+
+- `baseUrl` — the API base, e.g. `https://api.example.com/v1`
+- `defaultModel` — the model id the endpoint exposes, e.g. `my-model`
+- `apiKey` — the API key/token for that endpoint
+
+There are no provider presets and no built-in commercial backend. Point the
+broker at whatever OpenAI-compatible endpoint you run or subscribe to.
 
 ## Files
 
@@ -22,28 +31,52 @@ is live runtime state, created on first save. The tracked, documented template i
 `model-broker.example.json` — it ships disabled with no connections, and the
 runtime initializes from it (with `enabled=false`) when `model-broker.json` is
 missing.
-`model-provider.json` is now a compatibility template. Runtime writes go to broker config, not back into that tracked file.
+`model-provider.json` is a compatibility template. Runtime writes go to broker
+config, not back into that tracked file.
 
 ## TUI setup
 
 From Town Hall:
 
 - `/model` shows current provider status
-- `/model setup` writes provider config and API key
-- `/model glm5` applies the recommended Z.ai general-chat preset: general
-  endpoint `https://api.z.ai/api/paas/v4` with model `glm-5-turbo`
-- `/model glm47` applies the Z.ai coding preset: coding endpoint
-  `https://api.z.ai/api/coding/paas/v4` with model `glm-4.7`
+- `/model setup` prompts for `baseUrl`, `defaultModel`, and the API key, then
+  writes the provider config and key
 - `/model test` sends a small test request through the model broker
 - `/model use <model>` changes the default model
 - `/model disable` disables provider-backed conversation
 
-Fastest path for Z.ai:
+Fastest path:
 
-1. `/model glm5`
-2. paste your Z.ai key
+1. `/model setup`
+2. enter your endpoint `baseUrl`, a `defaultModel`, and paste your API key
 3. `/model test`
 4. talk to `mayor`
+
+## Configuring via the broker API
+
+Instead of the TUI you can configure a connection directly on the model-broker
+service (default `http://127.0.0.1:8782`):
+
+```bash
+curl -X POST http://127.0.0.1:8782/v1/connections \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "connectionId": "default",
+        "providerId": "openai-compatible",
+        "baseUrl": "https://api.example.com/v1",
+        "defaultModel": "my-model",
+        "apiKey": "sk-...",
+        "enabled": true
+      }'
+```
+
+Test it before relying on it:
+
+```bash
+curl -X POST http://127.0.0.1:8782/v1/connections/test \
+  -H 'Content-Type: application/json' \
+  -d '{ "connectionId": "default" }'
+```
 
 ## Compatibility config shape
 
@@ -52,14 +85,15 @@ Fastest path for Z.ai:
   "version": "umbrella.model-provider.v1",
   "enabled": true,
   "provider": {
-    "type": "zai",
-    "baseUrl": "https://api.z.ai/api/paas/v4",
-    "defaultModel": "glm-5-turbo",
-    "timeoutSec": 30
+    "id": "default",
+    "type": "openai-compatible",
+    "baseUrl": "https://api.example.com/v1",
+    "defaultModel": "my-model",
+    "timeoutSec": 120
   },
   "agentDefaults": {
-    "umbrella.mayor.v1": { "model": "glm-5-turbo" },
-    "umbrella.originator.v1": { "model": "glm-4.5-air" }
+    "umbrella.mayor.v1": { "model": "my-model" },
+    "umbrella.originator.v1": { "model": "my-model" }
   }
 }
 ```
@@ -84,15 +118,18 @@ Secrets:
     "allowFallback": true
   },
   "providers": {
-    "zai": {
-      "type": "zai"
+    "openai-compatible": {
+      "id": "openai-compatible",
+      "type": "openai-compatible",
+      "supportsApiKey": true,
+      "supportsOAuth": false
     }
   },
   "connections": {
     "default": {
-      "providerId": "zai",
-      "baseUrl": "https://api.z.ai/api/paas/v4",
-      "defaultModel": "glm-5-turbo",
+      "providerId": "openai-compatible",
+      "baseUrl": "https://api.example.com/v1",
+      "defaultModel": "my-model",
       "enabled": true
     }
   }
@@ -101,14 +138,18 @@ Secrets:
 
 ## Behavior
 
-- If a configured `zai` broker connection is enabled, `skill.chat.respond` uses the broker.
-- If no provider is configured, conversation falls back to deterministic local replies.
+- If an enabled connection is configured, `skill.chat.respond` uses the broker.
+- If no provider is configured, conversation falls back to deterministic local
+  replies.
 - Conversation metadata records whether fallback was used.
 
-## Current provider story
+## Provider story
 
-- preferred active path: `Z.ai` with API key auth
-- secondary compatibility path: `openai-compatible`
-- deferred path: OpenAI OAuth reuse through an upstream gateway or separate broker connection model
+- active path: any OpenAI-compatible `/chat/completions` endpoint, with API key
+  auth, configured through `/model setup` or `POST /v1/connections`
+- deferred path: OAuth reuse through an upstream gateway or a separate broker
+  connection model
 
-Umbrella runtime calls models as a platform service. That means it should use API-style provider credentials or a broker-managed gateway, not a borrowed chat login session.
+Umbrella runtime calls models as a platform service. That means it should use
+API-style provider credentials or a broker-managed gateway, not a borrowed chat
+login session.

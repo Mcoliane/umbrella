@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import json
+import random
 import time
 import urllib.error
 import urllib.request
 
-# Transient upstream failures (e.g. DeepSeek 502/503 under load) are retried with
-# a short backoff so a provider blip doesn't surface as a failed conversation.
+# Transient upstream failures (5xx under load, dropped connections, read
+# timeouts) are retried with exponential backoff plus jitter so a provider blip
+# doesn't surface as a failed conversation. Jitter avoids synchronized retries
+# when several agents hit the same blip at once.
 _RETRY_STATUSES = {500, 502, 503, 504}
-_MAX_ATTEMPTS = 3
+_MAX_ATTEMPTS = 4
 _BACKOFF_SEC = 0.6
 
 
@@ -30,11 +33,18 @@ def _urlopen_json(req: urllib.request.Request, timeout_sec: float) -> dict:
             last_exc = exc
             if exc.code not in _RETRY_STATUSES or attempt == _MAX_ATTEMPTS - 1:
                 raise
-        except urllib.error.URLError as exc:
+        except OSError as exc:
+            # OSError is the common base of urllib.error.URLError (connect-phase
+            # failures, DNS), socket.timeout / TimeoutError (read-phase timeouts
+            # while awaiting or reading the response), and ConnectionError /
+            # ConnectionResetError (mid-response drops). HTTPError is handled
+            # above, so this catches exactly the transient transport failures the
+            # module docstring promises to retry — including the read timeouts
+            # that a plain URLError clause would miss.
             last_exc = exc
             if attempt == _MAX_ATTEMPTS - 1:
                 raise
-        time.sleep(_BACKOFF_SEC * (attempt + 1))
+        time.sleep(_BACKOFF_SEC * (2 ** attempt) + random.uniform(0, 0.3))
     if last_exc:
         raise last_exc
     raise RuntimeError("request failed with no response")
