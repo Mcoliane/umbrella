@@ -19,6 +19,8 @@
 ## `401 UNAUTHORIZED` from services
 
 - Ensure runner/CLI uses the mesh token generated during bringup.
+- All mesh services are token-gated, including the durable memory service, session, catalog, and plugin-host.
+- The token is written next to the service manifest as `service-token.txt` (default installed location: `~/.local/umbrella0.4/app/control-plane/runtime/service-token.txt`).
 - For installed usage, prefer `umbrellactl` and `umbrella-runner` wrappers.
 
 ## CLI command not found after install
@@ -32,5 +34,6 @@
 - Run:
   - `umbrella-manage shutdown`
 - If needed, delete stale manifest and restart:
-  - `rm -f ~/.local/umbrella0.4/runtime/service-manifest.json`
+  - `rm -f ~/.local/umbrella0.4/app/control-plane/runtime/service-manifest.json`
   - `umbrella-manage bringup`
+- The manifest lives under `<umbrella-root>/control-plane/runtime/` (or under `$UMBRELLA_RUNTIME_ROOT/control-plane/runtime/` if that variable is set); for a source checkout that is `<repo>/control-plane/runtime/service-manifest.json`.

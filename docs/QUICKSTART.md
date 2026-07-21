@@ -48,8 +48,10 @@ umbrella-manage shutdown
 - Signed agent bootstrap flow (`scripts/bootstrap/register-agent`)
 - Approval-gated orchestration and resume support
 - Automatic short-term memory via memory-core APIs and CLI helpers
-- Explicit long-term node memory APIs/tools for structured knowledge
+- Explicit long-term node memory APIs/tools for structured knowledge (durable memory service started by `bringup`)
 
 ## Node memory note
 
-`umbrella-manage bringup` starts the default control-plane mesh, which includes `memory-core` but does not automatically start the durable node-memory service (`services/memory`). The node-memory APIs and tools are part of the architecture, but they must be started separately when you want the long-term knowledge plane available.
+`umbrella-manage bringup` starts both memory layers: `memory-core` and the durable node-memory service (`services/memory`). The durable service is mesh-token-authenticated like the rest of the mesh, and its state lives under `control-plane/observability/` (SQLite database plus boundary journals). No separate startup step is needed for the long-term knowledge plane.
+
+One honesty note: durable node search (`memory.search` / `POST /v1/nodes/search`) is currently a case-insensitive substring scan over node title and content — not semantic or ranked search. See [memory-boundary-contract.md](memory-boundary-contract.md) and `docs/COMPLETION_PLAN.md` (WS10).

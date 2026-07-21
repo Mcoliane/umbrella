@@ -22,7 +22,7 @@ Owns:
 
 Must not own:
 
-- semantic graph relationships
+- graph relationships (nodes/edges)
 - authoritative long-term history
 - archival knowledge records
 
@@ -31,9 +31,15 @@ Must not own:
 Owns:
 
 - durable nodes/edges/events
-- semantic query/search surfaces
+- query/search surfaces over durable knowledge
 - versioned (`etag`) conflict-aware updates
 - audit/history-grade records
+
+Honesty note on search: the shipped `POST /v1/nodes/search` is a
+case-insensitive **substring scan** over node title and content text
+(`services/memory/search.py`). There is no semantic search, no full-text
+index, no ranking, and no pagination today. Ranked SQLite FTS5 search is
+roadmap work — see `docs/COMPLETION_PLAN.md` (WS10).
 
 Must not own:
 
@@ -60,7 +66,7 @@ Must not own:
 - Using `services/memory` as per-step runtime scratch.
 - Hidden bidirectional auto-sync.
 - Dual-write with no designated owner.
-- Blocking orchestrator hot path on graph/semantic queries.
+- Blocking orchestrator hot path on graph/search queries.
 
 ## 6) Consistency Contract
 
@@ -76,7 +82,7 @@ Promote from `memory-core` into `services/memory` when any condition is true:
 - data is needed beyond the current run/session
 - data is required for audit/explanation
 - data represents stable fact/policy/relationship/decision
-- data is needed for future semantic discovery
+- data is needed for future discovery through node search (today a substring scan; see Layer B note above)
 
 Otherwise keep it in `memory-core`.
 

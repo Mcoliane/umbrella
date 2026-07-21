@@ -22,7 +22,7 @@ This session model treats the first-contact agent as the mayor of the town:
 - dependency graphs can declare `onDependencyFailure` with `skip`, `fail-fast`, or `continue`
 - turn orchestration metadata can set default `onDependencyFailure` and `retryBudget`, with per-step overrides
 - sessions, agents, and shops carry heartbeat state so stale or expired towns can be detected explicitly
-- the session can compact older conversation history into retained summary records
+- the session can compact older conversation history: `POST /v1/sessions/{id}/compact` **drops** messages older than the last `keepLastMessages` (default 10) and appends a compaction record with kept/dropped counts and a fixed placeholder summary string — the dropped message content is deleted, not summarized; model-generated summarization has not been built (see `docs/COMPLETION_PLAN.md`)
 - invocations and delegations persist runtime selection metadata so the town record shows whether work ran through the Umbrella agent runtime or another supported runtime
 - legacy compatibility aliases such as `memory.get`, `memory.search`, and `memory.link` can be invoked from a shop when the corresponding `skill.*` action is enabled; the invocation ledger preserves both the requested and resolved action ids
 
