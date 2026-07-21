@@ -1,0 +1,357 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Umbrella0.4 durable-state backup/restore
+
+Usage:
+  umbrella-backup create  [--app-dir PATH] [--output FILE] [--include-runs] [--no-secrets]
+  umbrella-backup restore --archive FILE [--app-dir PATH] [--force]
+
+What a backup snapshots (relative to the app dir):
+  control-plane/observability/memory-service    durable knowledge graph (memory.db,
+                                                snapshotted with the SQLite backup API,
+                                                consistent even while the service runs)
+  control-plane/observability/memory-boundary   promotion queue/DLQ/processed/parked
+  control-plane/observability/sessions          session transcripts
+  control-plane/observability/session-profiles  shop profiles (town state)
+  control-plane/observability/catalog           catalog registry
+  control-plane/observability/policy            policy service state
+  control-plane/memory-core/store.json          memory-core shared store
+  control-plane/approvals                       approval records + resume journal
+  control-plane/extensions                      installed plugins
+  control-plane/runtime/*.secrets.json          provider secrets (omit with --no-secrets)
+  control-plane/observability/runs              run history (only with --include-runs)
+
+App dir resolution: --app-dir, else $UMBRELLA_HOME, else install.appDir from
+~/.umbrella/config.json. The backup tarball is written mode 0600 because it
+can contain provider secrets.
+
+Restore replaces each state path present in the archive wholesale (snapshot
+semantics) and refuses to run while the service mesh is up unless --force.
+EOF
+}
+
+CMD="${1:-}"
+if [[ -z "$CMD" || "$CMD" == "-h" || "$CMD" == "--help" ]]; then
+  usage
+  [[ "$CMD" == "-h" || "$CMD" == "--help" ]] && exit 0
+  exit 2
+fi
+shift || true
+
+APP_DIR=""
+OUTPUT=""
+ARCHIVE=""
+INCLUDE_RUNS="0"
+INCLUDE_SECRETS="1"
+FORCE="0"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --app-dir)
+      APP_DIR="$2"
+      shift 2
+      ;;
+    --output)
+      OUTPUT="$2"
+      shift 2
+      ;;
+    --archive)
+      ARCHIVE="$2"
+      shift 2
+      ;;
+    --include-runs)
+      INCLUDE_RUNS="1"
+      shift 1
+      ;;
+    --no-secrets)
+      INCLUDE_SECRETS="0"
+      shift 1
+      ;;
+    --force)
+      FORCE="1"
+      shift 1
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+resolve_app_dir() {
+  if [[ -n "$APP_DIR" ]]; then
+    APP_DIR="$(python3 -c 'import os,sys; print(os.path.abspath(os.path.expanduser(sys.argv[1])))' "$APP_DIR")"
+  elif [[ -n "${UMBRELLA_HOME:-}" ]]; then
+    APP_DIR="$UMBRELLA_HOME"
+  elif [[ -f "$HOME/.umbrella/config.json" ]]; then
+    APP_DIR="$(python3 - "$HOME/.umbrella/config.json" <<'PY'
+import json, sys
+from pathlib import Path
+obj = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+print(str((obj.get('install') or {}).get('appDir', '')).strip())
+PY
+)"
+  fi
+  if [[ -z "$APP_DIR" || ! -d "$APP_DIR" ]]; then
+    echo "cannot resolve app dir (pass --app-dir, set UMBRELLA_HOME, or install first): '$APP_DIR'" >&2
+    exit 1
+  fi
+}
+
+mesh_running() {
+  # Best-effort: any live pid recorded in a known service manifest.
+  python3 - "$APP_DIR" <<'PY'
+import json, os, sys
+from pathlib import Path
+app_dir = Path(sys.argv[1])
+candidates = [
+    app_dir / 'control-plane' / 'runtime' / 'service-manifest.json',
+    app_dir / 'control-plane' / 'runtime' / 'platform-manifest.json',
+    app_dir.parent / 'runtime' / 'service-manifest.json',
+]
+for manifest in candidates:
+    if not manifest.is_file():
+        continue
+    try:
+        obj = json.loads(manifest.read_text(encoding='utf-8'))
+    except Exception:
+        continue
+    for svc in (obj.get('services') or {}).values():
+        try:
+            pid = int(svc.get('pid', 0))
+        except Exception:
+            continue
+        if pid > 0:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                continue
+            print(f'{manifest}:{pid}')
+            raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+create_impl() {
+  resolve_app_dir
+  if [[ -z "$OUTPUT" ]]; then
+    OUTPUT="$PWD/umbrella-backup-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
+  fi
+  OUTPUT="$(python3 -c 'import os,sys; print(os.path.abspath(os.path.expanduser(sys.argv[1])))' "$OUTPUT")"
+  mkdir -p "$(dirname "$OUTPUT")"
+
+  local stage
+  stage="$(mktemp -d "${TMPDIR:-/tmp}/umbrella-backup.XXXXXX")"
+  # Expand now: the trap runs at script exit, after the local is gone.
+  trap "rm -rf '$stage'" EXIT
+
+  python3 - "$APP_DIR" "$stage" "$INCLUDE_RUNS" "$INCLUDE_SECRETS" <<'PY'
+import json, shutil, sqlite3, sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+app_dir = Path(sys.argv[1])
+stage = Path(sys.argv[2])
+include_runs = sys.argv[3] == '1'
+include_secrets = sys.argv[4] == '1'
+
+STATE_PATHS = [
+    'control-plane/observability/memory-service',
+    'control-plane/observability/memory-boundary',
+    'control-plane/observability/sessions',
+    'control-plane/observability/session-profiles',
+    'control-plane/observability/catalog',
+    'control-plane/observability/policy',
+    'control-plane/memory-core/store.json',
+    'control-plane/approvals',
+    'control-plane/extensions',
+]
+if include_runs:
+    STATE_PATHS.append('control-plane/observability/runs')
+
+state_root = stage / 'state'
+captured = []
+
+def copy_path(rel: str):
+    src = app_dir / rel
+    if not src.exists():
+        return False
+    dst = state_root / rel
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if src.is_dir():
+        # SQLite files are snapshotted separately for consistency.
+        shutil.copytree(
+            src, dst,
+            ignore=shutil.ignore_patterns('*.db', '*.db-wal', '*.db-shm'),
+        )
+    else:
+        shutil.copy2(src, dst)
+    return True
+
+for rel in STATE_PATHS:
+    if copy_path(rel):
+        captured.append(rel)
+
+# Consistent SQLite snapshots (safe while the service is running).
+for db in sorted(app_dir.glob('control-plane/observability/*/*.db')):
+    rel = db.relative_to(app_dir)
+    if str(rel.parent) not in {p for p in STATE_PATHS if (app_dir / p).is_dir()}:
+        continue
+    dst = state_root / rel
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    src_conn = sqlite3.connect(str(db))
+    dst_conn = sqlite3.connect(str(dst))
+    try:
+        src_conn.backup(dst_conn)
+    finally:
+        dst_conn.close()
+        src_conn.close()
+    captured.append(str(rel))
+
+if include_secrets:
+    for secret in sorted(app_dir.glob('control-plane/runtime/*.secrets.json')):
+        rel = secret.relative_to(app_dir)
+        dst = state_root / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(secret, dst)
+        captured.append(str(rel))
+
+version = 'unknown'
+version_file = app_dir / 'VERSION'
+if version_file.is_file():
+    version = version_file.read_text(encoding='utf-8').strip()
+
+manifest = {
+    'schema': 'umbrella.backup.v1',
+    'createdAt': datetime.now(timezone.utc).isoformat(),
+    'appDir': str(app_dir),
+    'appVersion': version,
+    'includesRuns': include_runs,
+    'includesSecrets': include_secrets,
+    'paths': sorted(captured),
+}
+(stage / 'backup-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+print(json.dumps({'ok': True, 'captured': sorted(captured)}, indent=2))
+PY
+
+  (umask 077; tar -C "$stage" -czf "$OUTPUT" .)
+  chmod 600 "$OUTPUT"
+  echo "[umbrella-backup] wrote $OUTPUT"
+}
+
+restore_impl() {
+  resolve_app_dir
+  if [[ -z "$ARCHIVE" ]]; then
+    echo "restore requires --archive FILE" >&2
+    exit 2
+  fi
+  ARCHIVE="$(python3 -c 'import os,sys; print(os.path.abspath(os.path.expanduser(sys.argv[1])))' "$ARCHIVE")"
+  if [[ ! -f "$ARCHIVE" ]]; then
+    echo "archive not found: $ARCHIVE" >&2
+    exit 1
+  fi
+
+  if [[ "$FORCE" != "1" ]]; then
+    local live=""
+    set +e
+    live="$(mesh_running)"
+    local rc=$?
+    set -e
+    if [[ "$rc" -eq 0 ]]; then
+      echo "refusing to restore while services appear to be running ($live)" >&2
+      echo "run 'umbrella-manage shutdown' first, or pass --force" >&2
+      exit 1
+    fi
+  fi
+
+  local stage
+  stage="$(mktemp -d "${TMPDIR:-/tmp}/umbrella-restore.XXXXXX")"
+  # Expand now: the trap runs at script exit, after the local is gone.
+  trap "rm -rf '$stage'" EXIT
+  tar -C "$stage" -xzf "$ARCHIVE"
+
+  if [[ ! -f "$stage/backup-manifest.json" ]]; then
+    echo "not an umbrella backup: backup-manifest.json missing in archive" >&2
+    exit 1
+  fi
+
+  python3 - "$stage" "$APP_DIR" <<'PY'
+import json, shutil, sys
+from pathlib import Path
+
+stage = Path(sys.argv[1])
+app_dir = Path(sys.argv[2])
+manifest = json.loads((stage / 'backup-manifest.json').read_text(encoding='utf-8'))
+if manifest.get('schema') != 'umbrella.backup.v1':
+    print(f"unsupported backup schema: {manifest.get('schema')}", file=sys.stderr)
+    raise SystemExit(1)
+
+state_root = stage / 'state'
+restored = []
+# Restore whole top-level entries wholesale (snapshot semantics): everything
+# directly under state/ is replaced at its corresponding app-dir path.
+for src in sorted(state_root.rglob('*')):
+    if not (src.is_file() or src.is_symlink()):
+        continue
+    rel = src.relative_to(state_root)
+    dst = app_dir / rel
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if src.name.endswith('.db'):
+        # Drop stale WAL/SHM so the restored snapshot is authoritative.
+        for suffix in ('-wal', '-shm'):
+            leftover = dst.parent / (dst.name + suffix)
+            if leftover.exists():
+                leftover.unlink()
+    shutil.copy2(src, dst)
+    restored.append(str(rel))
+
+# Wholesale replacement: remove files under restored directories that the
+# snapshot does not contain, so queues/DLQs match the snapshot exactly.
+snapshot_dirs = set()
+for rel in manifest.get('paths', []):
+    src = state_root / rel
+    if src.is_dir():
+        snapshot_dirs.add(rel)
+for rel in sorted(snapshot_dirs):
+    src_dir = state_root / rel
+    dst_dir = app_dir / rel
+    if not dst_dir.is_dir():
+        continue
+    snapshot_files = {p.relative_to(src_dir) for p in src_dir.rglob('*') if p.is_file()}
+    for p in sorted(dst_dir.rglob('*')):
+        if p.is_file() and p.relative_to(dst_dir) not in snapshot_files:
+            p.unlink()
+
+print(json.dumps({
+    'ok': True,
+    'appDir': str(app_dir),
+    'backupCreatedAt': manifest.get('createdAt'),
+    'backupAppVersion': manifest.get('appVersion'),
+    'restoredFileCount': len(restored),
+}, indent=2))
+PY
+
+  echo "[umbrella-backup] restore complete; run 'umbrella-manage bringup' to start services"
+}
+
+case "$CMD" in
+  create)
+    create_impl
+    ;;
+  restore)
+    restore_impl
+    ;;
+  *)
+    echo "unknown command: $CMD" >&2
+    usage
+    exit 2
+    ;;
+esac

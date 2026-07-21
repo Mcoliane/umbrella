@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""Apply pending memory-service schema migrations to a database.
+
+Resolves the database the same way the mesh launcher does:
+  --db-path wins; otherwise
+  <runtime-root>/control-plane/observability/memory-service/memory.db, where
+  runtime-root is --umbrella-root or $UMBRELLA_RUNTIME_ROOT or the repo root.
+
+No-op (exit 0) when the database is already at the latest schema version.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+from services.memory.db.migrate import apply_migrations  # noqa: E402
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description='Apply pending memory-service schema migrations')
+    ap.add_argument('--db-path', default='')
+    ap.add_argument('--umbrella-root', default=os.environ.get('UMBRELLA_RUNTIME_ROOT', '') or str(ROOT))
+    args = ap.parse_args()
+
+    if args.db_path:
+        db_path = Path(args.db_path).expanduser().resolve()
+    else:
+        root = Path(args.umbrella_root).expanduser().resolve()
+        db_path = root / 'control-plane' / 'observability' / 'memory-service' / 'memory.db'
+
+    try:
+        result = apply_migrations(db_path)
+    except Exception as ex:
+        print(json.dumps({'ok': False, 'dbPath': str(db_path), 'error': str(ex)}, indent=2))
+        return 1
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

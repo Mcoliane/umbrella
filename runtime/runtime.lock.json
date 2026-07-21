@@ -1,17 +1,13 @@
 {
   "schema": "umbrella.runtime.lock.v1",
   "python": {
-    "recommended": "3.11.9",
-    "minimum": "3.11.0",
-    "maximumExclusive": "3.12.0"
-  },
-  "tooling": {
-    "pip": "24.2",
-    "setuptools": "75.1.0",
-    "wheel": "0.44.0"
+    "recommended": "3.12",
+    "minimum": "3.9.0"
   },
   "notes": [
-    "Umbrella0.4 services currently use Python standard library modules only.",
-    "Pinning is still applied to packaging/runtime tooling for reproducibility."
+    "Umbrella0.4 services use Python standard library modules only; there are no runtime pip dependencies.",
+    "Supported range is >=3.9: the contract suite is green on 3.9.6 and CI exercises 3.9 and 3.12. Development also happens on newer interpreters (3.14); no upper bound is enforced because none is evidenced.",
+    "install.sh enforces python.minimum from this file with a real version check.",
+    "The installer no longer creates a virtual environment: nothing consumed it at runtime, so it was removed rather than kept as dead weight."
   ]
 }

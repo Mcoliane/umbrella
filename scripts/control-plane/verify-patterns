@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -120,7 +121,8 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def load_contract_tests(contract_gate_path: Path) -> list[str]:
+def load_referenced_tests(contract_gate_path: Path) -> list[str]:
+    """Test names the contract-gate runner claims to run (parsed from its text)."""
     tests: list[str] = []
     for raw in contract_gate_path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
@@ -132,6 +134,13 @@ def load_contract_tests(contract_gate_path: Path) -> list[str]:
             continue
         tests.append(line[start : end + 3])
     return sorted(set(tests))
+
+
+def load_tests_on_disk(tests_dir: Path) -> list[str]:
+    """Test files that actually exist in tests/contract/."""
+    if not tests_dir.is_dir():
+        return []
+    return sorted(p.name for p in tests_dir.glob("test-*.sh") if p.is_file())
 
 
 def missing(root: Path, rel_paths: Iterable[str]) -> list[str]:
@@ -151,7 +160,21 @@ def main() -> int:
 
     root = Path(args.umbrella_root).resolve()
     contract_gate_path = root / args.contract_gate
-    contract_tests = load_contract_tests(contract_gate_path) if contract_gate_path.exists() else []
+    tests_dir = root / "tests" / "contract"
+
+    referenced_tests = load_referenced_tests(contract_gate_path) if contract_gate_path.exists() else []
+    tests_on_disk = load_tests_on_disk(tests_dir)
+    on_disk_set = set(tests_on_disk)
+
+    # A pattern's coverage only counts when the test both exists on disk and
+    # is wired into the gate. Entries the runner references but that do not
+    # exist are phantoms: they used to silently certify FULL coverage over a
+    # gate that could not run.
+    phantom_tests = [t for t in referenced_tests if t not in on_disk_set]
+    contract_tests = [t for t in referenced_tests if t in on_disk_set]
+    non_executable_tests = [
+        t for t in contract_tests if not os.access(tests_dir / t, os.X_OK)
+    ]
 
     docs_required = (
         "docs/pattern-closure-plan.md",
@@ -160,6 +183,8 @@ def main() -> int:
 
     rows = []
     overall_ok = True
+    if phantom_tests or non_executable_tests:
+        overall_ok = False
     for rule in PATTERNS:
         missing_files = missing(root, rule.required_files)
         missing_tests = [t for t in rule.required_contract_tests if t not in contract_tests]
@@ -190,6 +215,9 @@ def main() -> int:
         "umbrellaRoot": str(root),
         "contractGate": str(contract_gate_path),
         "contractTestCount": len(contract_tests),
+        "contractTestsOnDiskCount": len(tests_on_disk),
+        "phantomContractTests": phantom_tests,
+        "nonExecutableContractTests": non_executable_tests,
         "docsRequired": bool(args.require_docs),
         "docsMissing": docs_missing,
         "patterns": rows,
