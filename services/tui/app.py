@@ -51,6 +51,15 @@ class UmbrellaTui:
             return f"[{detail}]" if detail else "[model]"
         return ""
 
+    def _active_model_label(self) -> str:
+        """Short label for the model currently answering, for the header bar."""
+        if self._model_warning():
+            return "off (fallback)"
+        home = self.state.home if isinstance(self.state.home, dict) else {}
+        provider = home.get("modelProvider") if isinstance(home.get("modelProvider"), dict) else {}
+        meta = provider.get("provider") if isinstance(provider.get("provider"), dict) else {}
+        return str(meta.get("defaultModel", "")).strip() or "unset"
+
     def _model_warning(self) -> str:
         home = self.state.home if isinstance(self.state.home, dict) else {}
         provider = home.get("modelProvider") if isinstance(home.get("modelProvider"), dict) else {}
@@ -635,7 +644,10 @@ class UmbrellaTui:
         session = self.session_payload
         title = str(session.get("title", "Town Hall")).strip() or "Town Hall"
         session_id = self.state.selected_session_id or "no-town"
-        header = f" Umbrella Town Hall | {title} | {session_id} | target={self.state.active_target} "
+        header = (
+            f" Umbrella Town Hall | {title} | {session_id} | "
+            f"target={self.state.active_target} | model={self._active_model_label()} "
+        )
         screen.attron(curses.A_REVERSE)
         screen.addstr(0, 0, " " * max(1, width - 1))
         screen.addstr(0, 0, _clip(header, width - 1))
