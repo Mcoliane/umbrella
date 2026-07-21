@@ -29,15 +29,7 @@ EXEC_URL="http://127.0.0.1:$EXEC_PORT"
 APPROVAL_URL="http://127.0.0.1:$APPROVAL_PORT"
 ORCH_URL="http://127.0.0.1:$ORCH_PORT"
 
-RECON_STUB="$ROOT/tmp/reconcile-ok.sh"
 mkdir -p "$ROOT/tmp"
-cat > "$RECON_STUB" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-echo '{"ok":true}'
-exit 0
-SH
-chmod +x "$RECON_STUB"
 
 python3 "$ROOT/services/policy/app.py" --host 127.0.0.1 --port "$POLICY_PORT" --umbrella-root "$ROOT" >"$ROOT/tmp/umbrella04-policy.out" 2>"$ROOT/tmp/umbrella04-policy.err" &
 P1=$!
@@ -104,7 +96,6 @@ wait_health "$ORCH_URL/v1/orchestrator/health"
   --execution-url "$EXEC_URL" \
   --approval-url "$APPROVAL_URL" \
   --orchestrator-url "$ORCH_URL" \
-  --reconcile-cmd "$RECON_STUB" \
   >"$ROOT/tmp/umbrella04-runner.out"
 
 ROOT="$ROOT" RUN_ID="$RUN_ID" python3 - <<'PY'

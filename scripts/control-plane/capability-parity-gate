@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -55,7 +56,14 @@ def main() -> int:
     args = ap.parse_args()
 
     cmd = args.reconcile_cmd
-    resolved = shutil.which(cmd) if not Path(cmd).is_absolute() else cmd
+    if Path(cmd).is_absolute():
+        resolved = cmd
+    else:
+        resolved = shutil.which(cmd)
+        if not resolved:
+            shipped = Path(args.umbrella_root).resolve() / 'scripts' / 'tools' / cmd
+            if shipped.is_file() and os.access(str(shipped), os.X_OK):
+                resolved = str(shipped)
     if not resolved:
         print(
             json.dumps(

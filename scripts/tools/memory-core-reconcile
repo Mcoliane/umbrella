@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""Reconcile the memory-core store consumed by the capability-parity preflight.
+
+Modes (exactly one is required):
+  --strict   Validate only; the store is never modified. Checks that the store
+             parses as JSON, the top level is an object with a 'namespaces'
+             object, namespace and key identifiers pass the shared
+             services/id_utils.py rules, and every entry row is a
+             JSON-serializable object.
+  --fix      Write a timestamped backup next to the store, then repair it
+             non-destructively: structure is normalized and only entries that
+             are malformed beyond use are removed. Valid data is never
+             modified or deleted. A store that already validates is left
+             untouched (no backup, no rewrite).
+
+A missing store file is OK (nothing to reconcile) so bringup order cannot
+create false blocks.
+
+Output is human-readable lines followed by a final single-line JSON payload:
+  {"ok": <bool>, "checked": <entries examined>, "problems": [...]}
+Exit code is 0 iff ok.
+"""
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import sys
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parents[2]))
+from services.id_utils import validate_identifier
+
+
+STANDARD_NAMESPACES = ('agent', 'team', 'global')
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def empty_store() -> dict:
+    return {'namespaces': {ns: {} for ns in STANDARD_NAMESPACES}, 'updatedAt': now_iso()}
+
+
+def problem(code: str, where: str, detail: str) -> dict:
+    return {'code': code, 'where': where, 'detail': detail}
+
+
+def reconcile(data, fix: bool) -> tuple[int, list[dict], dict]:
+    checked = 0
+    problems: list[dict] = []
+
+    if not isinstance(data, dict):
+        problems.append(problem('store_not_object', '$', f'top level is {type(data).__name__}, expected object'))
+        return checked, problems, (empty_store() if fix else {})
+
+    namespaces = data.get('namespaces')
+    if not isinstance(namespaces, dict):
+        problems.append(problem('namespaces_not_object', '$.namespaces', f"'namespaces' is {type(namespaces).__name__}, expected object"))
+        namespaces = {}
+        if fix:
+            data['namespaces'] = namespaces
+
+    for ns_name in list(namespaces.keys()):
+        entries = namespaces[ns_name]
+        try:
+            validate_identifier(ns_name, 'namespace')
+        except ValueError as ex:
+            problems.append(problem('invalid_namespace', f'$.namespaces.{ns_name}', str(ex)))
+            if fix:
+                del namespaces[ns_name]
+            continue
+        if not isinstance(entries, dict):
+            problems.append(problem('namespace_not_object', f'$.namespaces.{ns_name}', f'namespace is {type(entries).__name__}, expected object'))
+            if fix:
+                namespaces[ns_name] = {}
+            continue
+        for key in list(entries.keys()):
+            row = entries[key]
+            checked += 1
+            where = f'$.namespaces.{ns_name}.{key}'
+            try:
+                validate_identifier(key, 'key')
+            except ValueError as ex:
+                problems.append(problem('invalid_key', where, str(ex)))
+                if fix:
+                    del entries[key]
+                continue
+            if not isinstance(row, dict):
+                problems.append(problem('entry_not_object', where, f'entry is {type(row).__name__}, expected object'))
+                if fix:
+                    del entries[key]
+                continue
+            try:
+                json.dumps(row, allow_nan=False)
+            except (TypeError, ValueError) as ex:
+                problems.append(problem('entry_not_json_serializable', where, str(ex)))
+                if fix:
+                    del entries[key]
+
+    if fix:
+        for ns in STANDARD_NAMESPACES:
+            if not isinstance(namespaces.get(ns), dict):
+                namespaces[ns] = {}
+
+    return checked, problems, data
+
+
+def write_store(store_path: Path, data: dict):
+    data['updatedAt'] = now_iso()
+    tmp_path = store_path.with_name(f'.{store_path.name}.{uuid.uuid4().hex}.tmp')
+    tmp_path.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8')
+    tmp_path.replace(store_path)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    mode = ap.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--strict', action='store_true', help='validate the store without modifying it; exit 0 iff valid')
+    mode.add_argument('--fix', action='store_true', help='back up the store, then repair it non-destructively')
+    ap.add_argument('--umbrella-root', default=str(Path(__file__).resolve().parents[2]))
+    ap.add_argument('--store', default='', help='explicit store path (default: <umbrella-root>/control-plane/memory-core/store.json)')
+    args = ap.parse_args()
+
+    root = Path(args.umbrella_root).resolve()
+    store_path = Path(args.store).resolve() if str(args.store).strip() else root / 'control-plane' / 'memory-core' / 'store.json'
+
+    if not store_path.exists():
+        print(f'store not found at {store_path}; nothing to reconcile')
+        print(json.dumps({'ok': True, 'checked': 0, 'problems': []}))
+        return 0
+
+    # --fix is a read-modify-write cycle: hold the same cross-process lock the
+    # memory-core service takes around its own writes so a live service cannot
+    # interleave and lose updates. Held until process exit (short-lived CLI).
+    if args.fix:
+        lock_path = store_path.with_name(store_path.name + '.lock')
+        lock_handle = open(lock_path, 'w')
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+
+    try:
+        raw = store_path.read_bytes()
+    except OSError as ex:
+        problems = [problem('store_unreadable', str(store_path), str(ex))]
+        print(f'cannot read store at {store_path}: {ex}')
+        print(json.dumps({'ok': False, 'checked': 0, 'problems': problems}))
+        return 1
+
+    parse_problem = None
+    data = None
+    try:
+        data = json.loads(raw.decode('utf-8'))
+    except Exception as ex:
+        parse_problem = problem('store_not_json', str(store_path), str(ex))
+
+    if parse_problem is None:
+        checked, problems, _ = reconcile(data, fix=False)
+    else:
+        checked, problems = 0, [parse_problem]
+
+    if args.strict or not problems:
+        for p in problems:
+            print(f"PROBLEM [{p['code']}] {p['where']}: {p['detail']}")
+        noun = 'entry' if checked == 1 else 'entries'
+        verdict = 'valid' if not problems else f'{len(problems)} problem(s) found'
+        print(f'checked {checked} {noun} in {store_path}: {verdict}')
+        if args.fix and not problems:
+            print('store is valid; no repair needed')
+        print(json.dumps({'ok': not problems, 'checked': checked, 'problems': problems}))
+        return 0 if not problems else 1
+
+    # --fix with problems present: back up, repair, re-validate.
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    backup_path = store_path.with_name(f'{store_path.name}.backup.{stamp}')
+    backup_path.write_bytes(raw)
+    print(f'backup written to {backup_path}')
+
+    if parse_problem is not None:
+        repaired = empty_store()
+    else:
+        _, _, repaired = reconcile(data, fix=True)
+    write_store(store_path, repaired)
+    for p in problems:
+        print(f"REPAIRED [{p['code']}] {p['where']}: {p['detail']}")
+
+    post_checked, post_problems, _ = reconcile(json.loads(store_path.read_text(encoding='utf-8')), fix=False)
+    ok = not post_problems
+    noun = 'entry' if post_checked == 1 else 'entries'
+    print(f"repair {'complete' if ok else 'incomplete'}: {len(problems)} problem(s) addressed, {post_checked} {noun} remain")
+    out = {'ok': ok, 'checked': checked, 'problems': problems, 'backup': str(backup_path)}
+    if post_problems:
+        out['remainingProblems'] = post_problems
+    print(json.dumps(out))
+    return 0 if ok else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

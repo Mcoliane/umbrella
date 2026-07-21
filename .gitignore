@@ -30,6 +30,8 @@ control-plane/runtime/service-manifest.json
 control-plane/runtime/logs/
 control-plane/runtime/service-token.txt
 control-plane/memory-core/store.json
+control-plane/memory-core/store.json.lock
+control-plane/memory-core/store.json.backup.*
 
 # Installer/user-local artifacts
 .venv/
