@@ -1,0 +1,69 @@
+{
+  "id": "code.agent.skill",
+  "name": "Code Agent Skill",
+  "version": "0.1.0",
+  "apiVersion": "umbrella.catalog.manifest.v1",
+  "kind": "skill",
+  "runtime": "python",
+  "entrypoint": "bin/code-agent-skill",
+  "defaultEnabled": true,
+  "isolationMode": "process",
+  "compatibility": {
+    "umbrella": { "minVersion": "0.4.0" },
+    "pluginHostRuntimes": ["python"],
+    "apiVersions": ["umbrella.catalog.manifest.v1"],
+    "actionSchemaVersions": ["umbrella.catalog.action.v1"],
+    "requiresFeatures": []
+  },
+  "executionPolicy": {
+    "envAllowlist": ["HOME", "USER", "PATH", "TMPDIR", "LANG", "SHELL"],
+    "network": "http-outbound",
+    "fs": "scratch-only",
+    "maxRuntimeSec": 900,
+    "maxOutputBytes": 262144,
+    "maxInputBytes": 262144,
+    "isolationProfile": "http-outbound"
+  },
+  "sessionHooks": {
+    "suggestedContexts": ["code", "engineering"]
+  },
+  "actions": [
+    {
+      "id": "skill.code.agent",
+      "title": "Autonomous Code Agent",
+      "description": "Implement a coding task in a git-backed working directory by running an agentic loop: explore, plan, edit files, run tests/linters, iterate until verified, then self-review the diff. Returns a summary and the git diff.",
+      "requiredCapabilities": [],
+      "policyHints": {
+        "riskClass": "high",
+        "approvalMode": "required",
+        "memoryAccess": "none",
+        "fsAccess": "scratch-only",
+        "networkAccess": "http-outbound",
+        "processAccess": "unrestricted-subprocess",
+        "delegationAllowed": true,
+        "subAgentAllowed": true
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task": { "type": "string" },
+          "workingDir": { "type": "string" },
+          "maxIterations": { "type": "integer" },
+          "review": { "type": "boolean" },
+          "commit": { "type": "boolean" }
+        },
+        "required": ["task"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "summary": { "type": "string" },
+          "diff": { "type": "string" },
+          "iterations": { "type": "integer" },
+          "verified": { "type": "boolean" },
+          "workingDir": { "type": "string" }
+        }
+      }
+    }
+  ]
+}
