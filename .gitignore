@@ -31,8 +31,10 @@ control-plane/runtime/logs/
 control-plane/runtime/service-token.txt
 control-plane/runtime/model-broker.json
 control-plane/memory-core/store.json
-control-plane/memory-core/store.json.lock
 control-plane/memory-core/store.json.backup.*
+
+# Advisory lock sidecars created by services/persistence.py
+*.json.lock
 
 # Installer/user-local artifacts
 .venv/
