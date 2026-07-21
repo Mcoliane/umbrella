@@ -47,7 +47,9 @@ def main() -> int:
     )
     token = str(context.get('memoryToken', '')).strip() or os.environ.get('UMBRELLA_MEMORY_TOKEN', '')
 
-    repo_root = Path(__file__).resolve().parents[3]
+    # Relocation contract: plugin-host injects UMBRELLA_ROOT so this skill
+    # still finds repo tools when installed under control-plane/extensions/.
+    repo_root = Path(os.environ.get('UMBRELLA_ROOT') or Path(__file__).resolve().parents[3])
     tool_path = repo_root / 'scripts' / 'tools' / 'memory-search'
     if tool_path.exists():
         cmd = [sys.executable, str(tool_path), '--base-url', base_url, '--namespace', namespace, '--query', query, '--k', str(k)]

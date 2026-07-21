@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import urllib.error
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[3]
+# Relocation contract: plugin-host injects UMBRELLA_ROOT so this skill still
+# finds the umbrella tree when installed under control-plane/extensions/.
+# The parents[3] fallback only covers running in-place from skills/.
+ROOT = Path(os.environ.get('UMBRELLA_ROOT') or Path(__file__).resolve().parents[3])
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
