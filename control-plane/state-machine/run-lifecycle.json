@@ -16,6 +16,8 @@
   ],
   "transitions": [
     {"from": "PENDING", "to": "RUNNING"},
+    {"from": "PENDING", "to": "FAILED"},
+    {"from": "PENDING", "to": "BLOCKED"},
     {"from": "RUNNING", "to": "RETRYING"},
     {"from": "RETRYING", "to": "RUNNING"},
     {"from": "RUNNING", "to": "SUCCEEDED"},
@@ -30,13 +32,17 @@
     "timeout",
     "retry_exhausted",
     "adapter_error",
+    "command_failed",
     "dependency_unavailable",
     "dependency_request_failed",
     "execution_policy_denied",
     "execution_validation_failed",
     "execution_runtime_failed",
+    "runtime_capability_unsupported",
     "approval_required",
     "approval_denied",
+    "orchestrator_crash",
+    "orchestrator_error",
     "parity_drift",
     "scheduler_no_dispatchable_steps"
   ]

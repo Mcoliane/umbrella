@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import socket
 import subprocess
 import sys
 import uuid
@@ -61,6 +62,32 @@ def dependency_failure(source: str, reason: str, message: str, *, status: str = 
         'stderr': message,
         'command': [source],
     }
+
+
+def classify_network_error(source: str, ex: Exception) -> dict:
+    """Classify a downstream request failure by exception type.
+
+    HTTPError is a URLError subclass, so classification dispatches on type
+    here instead of relying on except-clause ordering. Wall-clock timeouts
+    are reported with the honest 'timeout' reason rather than a generic
+    dependency failure.
+    """
+    if isinstance(ex, urllib.error.HTTPError):
+        body = ''
+        try:
+            body = ex.read().decode('utf-8')
+        except Exception:
+            body = ''
+        reason = 'execution_validation_failed' if ex.code == 400 else 'dependency_request_failed'
+        category = 'validation' if ex.code == 400 else 'dependency'
+        return dependency_failure(source, reason, f'HTTP {ex.code}: {body or ex.reason}', category=category)
+    if (
+        isinstance(ex, (TimeoutError, socket.timeout))
+        or isinstance(getattr(ex, 'reason', None), (TimeoutError, socket.timeout))
+        or 'timed out' in str(ex).lower()
+    ):
+        return dependency_failure(source, 'timeout', f'{source} request timed out: {ex}', category='runtime')
+    return dependency_failure(source, 'dependency_unavailable', str(ex))
 
 
 class ExecutionEngine:
@@ -162,17 +189,8 @@ class ExecutionEngine:
         }
         try:
             return self._post_json(self.plugin_host_url, '/v1/plugin-host/invoke', {'actionId': action_id, 'invocation': invocation}, timeout=int(step_spec.get('timeoutSec', 30)) + 5)
-        except urllib.error.URLError as ex:
-            return dependency_failure('plugin-host', 'dependency_unavailable', str(ex))
-        except urllib.error.HTTPError as ex:
-            body = ''
-            try:
-                body = ex.read().decode('utf-8')
-            except Exception:
-                body = ''
-            reason = 'execution_validation_failed' if ex.code == 400 else 'dependency_request_failed'
-            category = 'validation' if ex.code == 400 else 'dependency'
-            return dependency_failure('plugin-host', reason, f'HTTP {ex.code}: {body or ex.reason}', category=category)
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as ex:
+            return classify_network_error('plugin-host', ex)
 
     def _requested_runtime(self, step_spec: dict) -> str:
         requested = str(step_spec.get('runtime') or '').strip()
@@ -219,6 +237,12 @@ class ExecutionEngine:
         }
 
     def _resolve_runtime(self, action_info: dict, step_spec: dict, catalog_action: dict | None) -> dict:
+        """Authoritative runtime resolution.
+
+        The execution service is the single resolver in the dispatch path:
+        the orchestrator submits steps here without consulting the router,
+        and the router's route-step endpoint is advisory only.
+        """
         requested = self._requested_runtime(step_spec)
         resolved_action = str(action_info.get('resolvedActionId', '')).strip()
         supported_runtimes = list(action_info.get('supportedRuntimes') or [])
@@ -291,6 +315,10 @@ class ExecutionEngine:
 
     def _submit_native_action(self, run_id: str, step_id: str, step_spec: dict, resolved_action: str) -> dict | None:
         action = str(resolved_action or '').strip()
+        try:
+            step_timeout = max(1, int(step_spec.get('timeoutSec', 30) or 30))
+        except (TypeError, ValueError):
+            step_timeout = 30
         if action == 'memoryWrite':
             namespace = str(step_spec.get('namespace', '')).strip()
             key = str(step_spec.get('key', '')).strip()
@@ -303,18 +331,10 @@ class ExecutionEngine:
                         'value': step_spec.get('value'),
                         'metadata': step_spec.get('metadata') if isinstance(step_spec.get('metadata'), dict) else {},
                     },
+                    timeout=step_timeout,
                 )
-            except urllib.error.URLError as ex:
-                return dependency_failure('memory-core', 'dependency_unavailable', str(ex))
-            except urllib.error.HTTPError as ex:
-                body = ''
-                try:
-                    body = ex.read().decode('utf-8')
-                except Exception:
-                    body = ''
-                reason = 'execution_validation_failed' if ex.code == 400 else 'dependency_request_failed'
-                category = 'validation' if ex.code == 400 else 'dependency'
-                return dependency_failure('memory-core', reason, f'HTTP {ex.code}: {body or ex.reason}', category=category)
+            except (urllib.error.URLError, TimeoutError, socket.timeout) as ex:
+                return classify_network_error('memory-core', ex)
             return {
                 'ok': bool(out.get('ok', False)),
                 'exitCode': 0 if bool(out.get('ok', False)) else 1,
@@ -331,18 +351,9 @@ class ExecutionEngine:
             namespace = str(step_spec.get('namespace', '')).strip()
             key = str(step_spec.get('key', '')).strip()
             try:
-                out = self._post_memory('/v1/memory-core/get', {'namespace': namespace, 'key': key})
-            except urllib.error.URLError as ex:
-                return dependency_failure('memory-core', 'dependency_unavailable', str(ex))
-            except urllib.error.HTTPError as ex:
-                body = ''
-                try:
-                    body = ex.read().decode('utf-8')
-                except Exception:
-                    body = ''
-                reason = 'execution_validation_failed' if ex.code == 400 else 'dependency_request_failed'
-                category = 'validation' if ex.code == 400 else 'dependency'
-                return dependency_failure('memory-core', reason, f'HTTP {ex.code}: {body or ex.reason}', category=category)
+                out = self._post_memory('/v1/memory-core/get', {'namespace': namespace, 'key': key}, timeout=step_timeout)
+            except (urllib.error.URLError, TimeoutError, socket.timeout) as ex:
+                return classify_network_error('memory-core', ex)
             exists = bool(out.get('exists', False))
             expected = step_spec.get('expectValue', None)
             status = 'SUCCESS'
@@ -365,18 +376,9 @@ class ExecutionEngine:
             namespace = str(step_spec.get('namespace', '')).strip()
             key = str(step_spec.get('key', '')).strip()
             try:
-                out = self._post_memory('/v1/memory-core/delete', {'namespace': namespace, 'key': key})
-            except urllib.error.URLError as ex:
-                return dependency_failure('memory-core', 'dependency_unavailable', str(ex))
-            except urllib.error.HTTPError as ex:
-                body = ''
-                try:
-                    body = ex.read().decode('utf-8')
-                except Exception:
-                    body = ''
-                reason = 'execution_validation_failed' if ex.code == 400 else 'dependency_request_failed'
-                category = 'validation' if ex.code == 400 else 'dependency'
-                return dependency_failure('memory-core', reason, f'HTTP {ex.code}: {body or ex.reason}', category=category)
+                out = self._post_memory('/v1/memory-core/delete', {'namespace': namespace, 'key': key}, timeout=step_timeout)
+            except (urllib.error.URLError, TimeoutError, socket.timeout) as ex:
+                return classify_network_error('memory-core', ex)
             ok = bool(out.get('ok', False))
             return {
                 'ok': ok,
@@ -389,18 +391,9 @@ class ExecutionEngine:
         if action == 'memoryList':
             namespace = str(step_spec.get('namespace', '')).strip()
             try:
-                out = self._post_memory('/v1/memory-core/list', {'namespace': namespace})
-            except urllib.error.URLError as ex:
-                return dependency_failure('memory-core', 'dependency_unavailable', str(ex))
-            except urllib.error.HTTPError as ex:
-                body = ''
-                try:
-                    body = ex.read().decode('utf-8')
-                except Exception:
-                    body = ''
-                reason = 'execution_validation_failed' if ex.code == 400 else 'dependency_request_failed'
-                category = 'validation' if ex.code == 400 else 'dependency'
-                return dependency_failure('memory-core', reason, f'HTTP {ex.code}: {body or ex.reason}', category=category)
+                out = self._post_memory('/v1/memory-core/list', {'namespace': namespace}, timeout=step_timeout)
+            except (urllib.error.URLError, TimeoutError, socket.timeout) as ex:
+                return classify_network_error('memory-core', ex)
             ok = bool(out.get('ok', False))
             return {
                 'ok': ok,
@@ -424,18 +417,9 @@ class ExecutionEngine:
                 return dependency_failure('execution', 'execution_validation_failed', 'memory.promote requires inputs.namespace and inputs.key', category='validation')
             actor = str(((step_spec.get('metadata') or {}).get('actor')) or 'execution:memory.promote').strip() or 'execution:memory.promote'
             try:
-                src = self._post_memory('/v1/memory-core/get', {'namespace': namespace, 'key': key})
-            except urllib.error.URLError as ex:
-                return dependency_failure('memory-core', 'dependency_unavailable', str(ex))
-            except urllib.error.HTTPError as ex:
-                body = ''
-                try:
-                    body = ex.read().decode('utf-8')
-                except Exception:
-                    body = ''
-                reason = 'execution_validation_failed' if ex.code == 400 else 'dependency_request_failed'
-                category = 'validation' if ex.code == 400 else 'dependency'
-                return dependency_failure('memory-core', reason, f'HTTP {ex.code}: {body or ex.reason}', category=category)
+                src = self._post_memory('/v1/memory-core/get', {'namespace': namespace, 'key': key}, timeout=step_timeout)
+            except (urllib.error.URLError, TimeoutError, socket.timeout) as ex:
+                return classify_network_error('memory-core', ex)
             if not bool(src.get('exists', False)):
                 return dependency_failure('memory-core', 'execution_validation_failed', f'memory-core key not found: {namespace}/{key}', category='validation')
             tags = [str(t).strip() for t in (inputs.get('tags') or []) if str(t).strip()]
@@ -467,23 +451,14 @@ class ExecutionEngine:
             process_queue = bool(inputs.get('processQueue', False))
             try:
                 if queue:
-                    out = self._post_memory_service('/v1/promotions/queue', payload, actor=actor)
+                    out = self._post_memory_service('/v1/promotions/queue', payload, timeout=step_timeout, actor=actor)
                     if process_queue:
-                        processed = self._post_memory_service('/v1/promotions/process-queue', {'maxItems': int(inputs.get('maxItems', 1) or 1)}, actor=actor)
+                        processed = self._post_memory_service('/v1/promotions/process-queue', {'maxItems': int(inputs.get('maxItems', 1) or 1)}, timeout=step_timeout, actor=actor)
                         out = {'queued': out, 'processed': processed}
                 else:
-                    out = self._post_memory_service('/v1/promotions', payload, actor=actor)
-            except urllib.error.URLError as ex:
-                return dependency_failure('memory', 'dependency_unavailable', str(ex))
-            except urllib.error.HTTPError as ex:
-                body = ''
-                try:
-                    body = ex.read().decode('utf-8')
-                except Exception:
-                    body = ''
-                reason = 'execution_validation_failed' if ex.code == 400 else 'dependency_request_failed'
-                category = 'validation' if ex.code == 400 else 'dependency'
-                return dependency_failure('memory', reason, f'HTTP {ex.code}: {body or ex.reason}', category=category)
+                    out = self._post_memory_service('/v1/promotions', payload, timeout=step_timeout, actor=actor)
+            except (urllib.error.URLError, TimeoutError, socket.timeout) as ex:
+                return classify_network_error('memory', ex)
             return {
                 'ok': True,
                 'exitCode': 0,
@@ -513,18 +488,9 @@ class ExecutionEngine:
                 },
             }
             try:
-                hydration = self._post_memory_service('/v1/hydrations/payload', payload, actor=actor)
-            except urllib.error.URLError as ex:
-                return dependency_failure('memory', 'dependency_unavailable', str(ex))
-            except urllib.error.HTTPError as ex:
-                body = ''
-                try:
-                    body = ex.read().decode('utf-8')
-                except Exception:
-                    body = ''
-                reason = 'execution_validation_failed' if ex.code == 400 else 'dependency_request_failed'
-                category = 'validation' if ex.code == 400 else 'dependency'
-                return dependency_failure('memory', reason, f'HTTP {ex.code}: {body or ex.reason}', category=category)
+                hydration = self._post_memory_service('/v1/hydrations/payload', payload, timeout=step_timeout, actor=actor)
+            except (urllib.error.URLError, TimeoutError, socket.timeout) as ex:
+                return classify_network_error('memory', ex)
             mem = hydration.get('memoryCore') if isinstance(hydration.get('memoryCore'), dict) else {}
             if not mem:
                 return dependency_failure('memory', 'execution_validation_failed', 'hydration payload missing memoryCore object', category='validation')
@@ -537,18 +503,10 @@ class ExecutionEngine:
                         'value': mem.get('value'),
                         'metadata': mem.get('metadata') if isinstance(mem.get('metadata'), dict) else {},
                     },
+                    timeout=step_timeout,
                 )
-            except urllib.error.URLError as ex:
-                return dependency_failure('memory-core', 'dependency_unavailable', str(ex))
-            except urllib.error.HTTPError as ex:
-                body = ''
-                try:
-                    body = ex.read().decode('utf-8')
-                except Exception:
-                    body = ''
-                reason = 'execution_validation_failed' if ex.code == 400 else 'dependency_request_failed'
-                category = 'validation' if ex.code == 400 else 'dependency'
-                return dependency_failure('memory-core', reason, f'HTTP {ex.code}: {body or ex.reason}', category=category)
+            except (urllib.error.URLError, TimeoutError, socket.timeout) as ex:
+                return classify_network_error('memory-core', ex)
             ok = bool(put_out.get('ok', False))
             return {
                 'ok': ok,
@@ -665,15 +623,8 @@ class ExecutionEngine:
         if action:
             try:
                 auth = self._authorize_step(step_spec=policy_step)
-            except urllib.error.URLError as ex:
-                return dependency_failure('policy', 'dependency_unavailable', str(ex))
-            except urllib.error.HTTPError as ex:
-                body = ''
-                try:
-                    body = ex.read().decode('utf-8')
-                except Exception:
-                    body = ''
-                return dependency_failure('policy', 'dependency_request_failed', f'HTTP {ex.code}: {body or ex.reason}')
+            except (urllib.error.URLError, TimeoutError, socket.timeout) as ex:
+                return classify_network_error('policy', ex)
             if not bool(auth.get('allowed', False)):
                 return {
                     'ok': False,
@@ -690,15 +641,8 @@ class ExecutionEngine:
         if resolved_action:
             try:
                 catalog_action = self._catalog_action(resolved_action)
-            except urllib.error.URLError as ex:
-                return dependency_failure('catalog', 'dependency_unavailable', str(ex))
-            except urllib.error.HTTPError as ex:
-                body = ''
-                try:
-                    body = ex.read().decode('utf-8')
-                except Exception:
-                    body = ''
-                return dependency_failure('catalog', 'dependency_request_failed', f'HTTP {ex.code}: {body or ex.reason}')
+            except (urllib.error.URLError, TimeoutError, socket.timeout) as ex:
+                return classify_network_error('catalog', ex)
         runtime = self._resolve_runtime(action_info, step_spec, catalog_action)
         if runtime['runtimeRequested'] and not bool(runtime.get('runtimeSupported', True)) and not str(runtime.get('runtimeReason', '')).startswith('capability_reroute:'):
             return self._with_runtime_metadata(self._runtime_capability_unsupported(runtime, action), runtime)

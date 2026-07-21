@@ -2,114 +2,121 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "umbrella.control-plane.step-spec.v1",
   "title": "Umbrella StepSpec",
+  "description": "A plan step as actually accepted by the orchestrator, scheduler, router, and execution services. Steps dispatch down one of two paths: command steps (a non-empty 'command' field; the orchestrator posts to execution /v1/execution/submit-command, which runs it via /bin/sh -c) and action steps (no 'command'; the orchestrator posts the whole step to /v1/execution/submit-step-spec, which authorizes the 'action' with policy, resolves a runtime, and dispatches to a native handler or the plugin host). When both fields are present the command path wins and 'action' is ignored. Services ignore fields they do not read, so additional properties are permitted.",
   "type": "object",
   "required": [
-    "stepId",
-    "objective",
-    "runtime",
-    "action",
-    "inputs",
-    "workdir",
-    "timeoutSec",
-    "timeoutClass",
-    "riskClass"
+    "stepId"
+  ],
+  "anyOf": [
+    {
+      "required": ["command"]
+    },
+    {
+      "required": ["action"]
+    }
   ],
   "properties": {
     "stepId": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "description": "Unique id within the plan; referenced by dependsOn. The orchestrator falls back to 'id' and then a positional 'step-<n>' when absent, but plans should always set stepId."
     },
     "objective": {
       "type": "string",
-      "minLength": 1
+      "description": "Human-readable purpose of the step. Informational only; no service reads it."
     },
-    "runtime": {
+    "command": {
       "type": "string",
-      "minLength": 1
-    },
-    "action": {
-      "type": "string",
-      "minLength": 1
-    },
-    "inputs": {
-      "type": "object",
-      "default": {}
+      "minLength": 1,
+      "description": "Shell command executed via /bin/sh -c in 'workdir'. Presence of this field selects the command dispatch path (execution /v1/execution/submit-command)."
     },
     "workdir": {
       "type": "string",
-      "default": "."
+      "default": ".",
+      "description": "Working directory for command steps; relative paths resolve against the umbrella root. Ignored by action steps."
     },
     "timeoutSec": {
       "type": "integer",
-      "minimum": 1
+      "minimum": 1,
+      "description": "Wall-clock timeout for the step. Defaults when omitted: 300 for command steps, 30 for action steps."
     },
     "timeoutClass": {
       "type": "string",
-      "enum": ["short", "medium", "long", "custom"]
+      "enum": ["short", "medium", "long", "custom"],
+      "description": "Informational label; not enforced by any service (timeoutSec is what execution applies)."
     },
     "riskClass": {
       "type": "string",
-      "enum": ["low", "medium", "high"]
+      "enum": ["low", "medium", "high"],
+      "description": "Informational label; the policy service computes its own effective riskClass per action and does not read this field."
     },
-    "retryPolicy": {
+    "action": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Action id for action steps, resolved through the runtime capability contract. Native actions handled in-process by execution: memoryWrite, memoryRead, memoryDelete, memoryList, memory.promote, memory.hydrate. Other action ids resolve through the catalog and dispatch to the umbrella-agent-runtime (plugin host)."
+    },
+    "runtime": {
+      "type": "string",
+      "description": "Requested runtime for action steps (also accepted as metadata.runtimeRequested). Router and execution resolve it against control-plane/router/runtime-capabilities.json and may reroute when capabilityReroute is enabled."
+    },
+    "inputs": {
       "type": "object",
-      "properties": {
-        "class": {
-          "type": "string",
-          "enum": ["none", "transient", "deterministic"]
-        },
-        "maxAttempts": {
-          "type": "integer",
-          "minimum": 1
-        }
-      },
-      "additionalProperties": false
+      "description": "Action inputs. memory.promote reads inputs.namespace, key, tags/tagsCsv, targetNamespace, nodeId, kind, title, idempotencyKey, queue, processQueue, maxItems; memory.hydrate reads inputs.nodeId, targetNamespace, targetKey, phase. Plugin-host actions receive the whole object as invocation.inputs."
     },
-    "runtimeHints": {
-      "type": "object",
-      "default": {}
+    "namespace": {
+      "type": "string",
+      "description": "memory-core namespace, read top-level by the native memoryWrite/memoryRead/memoryDelete/memoryList actions."
     },
-    "expectedArtifacts": {
+    "key": {
+      "type": "string",
+      "description": "memory-core key, read top-level by the native memoryWrite/memoryRead/memoryDelete actions."
+    },
+    "value": {
+      "description": "Payload written by the native memoryWrite action. Any JSON value."
+    },
+    "expectValue": {
+      "description": "Optional expected value for the native memoryRead action; the step FAILs when the stored value differs."
+    },
+    "agentId": {
+      "type": "string",
+      "description": "Acting agent identity (also accepted as metadata.agentId). Policy uses it for registration and tool-capability checks on privileged actions."
+    },
+    "dependsOn": {
       "type": "array",
       "items": {
         "type": "string"
-      }
-    },
-    "idempotencyKey": {
-      "type": "string",
-      "minLength": 1
-    },
-    "compensation": {
-      "type": "object",
-      "properties": {
-        "enabled": {"type": "boolean"},
-        "note": {"type": "string"}
       },
-      "additionalProperties": false
+      "description": "stepIds that must reach SUCCESS before the scheduler dispatches this step."
     },
     "requiresApproval": {
-      "type": "boolean"
+      "type": "boolean",
+      "description": "When true the orchestrator requests approval under 'approvalKey' (default '<runId>:<stepId>') and blocks the run until it is APPROVED."
     },
-    "escalation": {
-      "type": "object",
-      "properties": {
-        "enableReroute": {"type": "boolean"},
-        "requireApproval": {"type": "boolean"}
-      },
-      "additionalProperties": false
+    "approvalKey": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Approval key used when requiresApproval is true."
     },
     "metadata": {
-      "type": "object"
-    },
-    "memoryHints": {
       "type": "object",
+      "description": "Per-step context read by policy and execution. Execution injects metadata.boundaryContext (phase defaults to 'active-run', plus runId/stepId) and metadata.originalActionId/resolvedActionId before policy authorization.",
       "properties": {
-        "namespace": {"type": "string"},
-        "consistency": {"type": "string", "enum": ["strong", "eventual"]},
-        "ttlSec": {"type": "integer", "minimum": 1}
+        "agentId": {"type": "string"},
+        "role": {"type": "string"},
+        "shopId": {"type": "string"},
+        "phase": {"type": "string"},
+        "async": {"type": "boolean", "description": "Required true for memory.promote during an active run."},
+        "actor": {"type": "string"},
+        "boundaryContext": {"type": "object"},
+        "approvalContext": {"type": "object"},
+        "policyContext": {"type": "object"},
+        "delegatedByAgentId": {"type": "string"},
+        "subAgentId": {"type": "string"},
+        "allowCapabilityReroute": {"type": "boolean"},
+        "runtimeRequested": {"type": "string"}
       },
-      "additionalProperties": false
+      "additionalProperties": true
     }
   },
-  "additionalProperties": false
+  "additionalProperties": true
 }
