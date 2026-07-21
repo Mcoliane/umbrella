@@ -133,15 +133,15 @@ PY
 }
 
 build_manifest() {
-  python3 - "$MANIFEST" "$ROOT" "$LOG_DIR" "$TOKEN_PATH" "$POLICY_PORT" "$LIFECYCLE_PORT" "$ROUTER_PORT" "$SCHEDULER_PORT" "$MEMORY_CORE_PORT" "$EXECUTION_PORT" "$APPROVAL_PORT" "$ORCHESTRATOR_PORT" "$P1" "$P2" "$P3" "$P4" "$P5" "$P6" "$P7" "$P8" <<'PY'
+  python3 - "$MANIFEST" "$ROOT" "$LOG_DIR" "$TOKEN_PATH" "$POLICY_PORT" "$LIFECYCLE_PORT" "$ROUTER_PORT" "$SCHEDULER_PORT" "$MEMORY_CORE_PORT" "$MEMORY_PORT" "$EXECUTION_PORT" "$APPROVAL_PORT" "$ORCHESTRATOR_PORT" "$P1" "$P2" "$P3" "$P4" "$P5" "$P9" "$P6" "$P7" "$P8" <<'PY'
 import json, sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 (
   manifest, root, log_dir, token_path,
-  policy_port, lifecycle_port, router_port, scheduler_port, memory_core_port, execution_port, approval_port, orchestrator_port,
-  p1, p2, p3, p4, p5, p6, p7, p8
+  policy_port, lifecycle_port, router_port, scheduler_port, memory_core_port, memory_port, execution_port, approval_port, orchestrator_port,
+  p1, p2, p3, p4, p5, p9, p6, p7, p8
 ) = sys.argv[1:]
 
 now = datetime.now(timezone.utc).isoformat()
@@ -151,6 +151,7 @@ services = {
   'router': {'port': int(router_port), 'pid': int(p3), 'health': '/v1/router/health'},
   'scheduler': {'port': int(scheduler_port), 'pid': int(p4), 'health': '/v1/scheduler/health'},
   'memory-core': {'port': int(memory_core_port), 'pid': int(p5), 'health': '/v1/memory-core/health'},
+  'memory': {'port': int(memory_port), 'pid': int(p9), 'health': '/v1/memory/health'},
   'execution': {'port': int(execution_port), 'pid': int(p6), 'health': '/v1/execution/health'},
   'approval': {'port': int(approval_port), 'pid': int(p7), 'health': '/v1/approval/health'},
   'orchestrator': {'port': int(orchestrator_port), 'pid': int(p8), 'health': '/v1/orchestrator/health'},
@@ -276,6 +277,7 @@ PY
   ROUTER_PORT="${ROUTER_PORT:-$(free_port)}"
   SCHEDULER_PORT="${SCHEDULER_PORT:-$(free_port)}"
   MEMORY_CORE_PORT="${MEMORY_CORE_PORT:-$(free_port)}"
+  MEMORY_PORT="${MEMORY_PORT:-$(free_port)}"
   EXECUTION_PORT="${EXECUTION_PORT:-$(free_port)}"
   APPROVAL_PORT="${APPROVAL_PORT:-$(free_port)}"
   ORCHESTRATOR_PORT="${ORCHESTRATOR_PORT:-$(free_port)}"
@@ -285,6 +287,7 @@ PY
   ROUTER_URL="http://127.0.0.1:$ROUTER_PORT"
   SCHEDULER_URL="http://127.0.0.1:$SCHEDULER_PORT"
   MEMORY_CORE_URL="http://127.0.0.1:$MEMORY_CORE_PORT"
+  MEMORY_URL="http://127.0.0.1:$MEMORY_PORT"
   EXECUTION_URL="http://127.0.0.1:$EXECUTION_PORT"
   APPROVAL_URL="http://127.0.0.1:$APPROVAL_PORT"
 
@@ -300,7 +303,9 @@ PY
   BRINGUP_PIDS+=("$P4")
   python3 "$ROOT/services/memory-core/app.py" --host 127.0.0.1 --port "$MEMORY_CORE_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN" >"$LOG_DIR/memory-core.out" 2>"$LOG_DIR/memory-core.err" & P5=$!
   BRINGUP_PIDS+=("$P5")
-  python3 "$ROOT/services/execution/app.py" --host 127.0.0.1 --port "$EXECUTION_PORT" --umbrella-root "$ROOT" --memory-core-url "$MEMORY_CORE_URL" --policy-url "$POLICY_URL" --mesh-token "$MESH_TOKEN" --token "$MESH_TOKEN" >"$LOG_DIR/execution.out" 2>"$LOG_DIR/execution.err" & P6=$!
+  python3 "$ROOT/services/memory/app.py" --host 127.0.0.1 --port "$MEMORY_PORT" --umbrella-root "$ROOT" --db-path "$RUNTIME_ROOT/control-plane/observability/memory-service/memory.db" --boundary-root "$RUNTIME_ROOT/control-plane/observability/memory-boundary" --token "$MESH_TOKEN" >"$LOG_DIR/memory.out" 2>"$LOG_DIR/memory.err" & P9=$!
+  BRINGUP_PIDS+=("$P9")
+  python3 "$ROOT/services/execution/app.py" --host 127.0.0.1 --port "$EXECUTION_PORT" --umbrella-root "$ROOT" --memory-core-url "$MEMORY_CORE_URL" --memory-url "$MEMORY_URL" --policy-url "$POLICY_URL" --mesh-token "$MESH_TOKEN" --token "$MESH_TOKEN" >"$LOG_DIR/execution.out" 2>"$LOG_DIR/execution.err" & P6=$!
   BRINGUP_PIDS+=("$P6")
   python3 "$ROOT/services/approval/app.py" --host 127.0.0.1 --port "$APPROVAL_PORT" --umbrella-root "$ROOT" --token "$MESH_TOKEN" >"$LOG_DIR/approval.out" 2>"$LOG_DIR/approval.err" & P7=$!
   BRINGUP_PIDS+=("$P7")
@@ -314,6 +319,7 @@ PY
   wait_health "$ROUTER_URL/v1/router/health" "$MESH_TOKEN"
   wait_health "$SCHEDULER_URL/v1/scheduler/health" "$MESH_TOKEN"
   wait_health "$MEMORY_CORE_URL/v1/memory-core/health" "$MESH_TOKEN"
+  wait_health "$MEMORY_URL/v1/memory/health" "$MESH_TOKEN"
   wait_health "$EXECUTION_URL/v1/execution/health" "$MESH_TOKEN"
   wait_health "$APPROVAL_URL/v1/approval/health" "$MESH_TOKEN"
   wait_health "http://127.0.0.1:$ORCHESTRATOR_PORT/v1/orchestrator/health" "$MESH_TOKEN"

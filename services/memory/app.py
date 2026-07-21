@@ -139,7 +139,8 @@ def handler_factory(store: MemoryStore, token: str, root: Path):
                     return json_response(self, 200, out)
                 if path == '/v1/promotions/replay-dlq':
                     max_items = int(body.get('maxItems', 20))
-                    out = store.replay_promotion_dlq(actor=actor, request_id=req_id, max_items=max_items)
+                    max_attempts = int(body.get('maxAttempts', 5))
+                    out = store.replay_promotion_dlq(actor=actor, request_id=req_id, max_items=max_items, max_attempts=max_attempts)
                     return json_response(self, 200, out)
                 if path == '/v1/hydrations/payload':
                     out = store.hydration_payload_for_memory_core(body, actor=actor, request_id=req_id)
@@ -198,19 +199,28 @@ def main() -> int:
     ap.add_argument('--host', default='127.0.0.1')
     ap.add_argument('--port', type=int, default=8787)
     ap.add_argument('--db-path', default='')
+    ap.add_argument('--boundary-root', default='')
     ap.add_argument('--umbrella-root', default=str(Path(__file__).resolve().parents[2]))
+    ap.add_argument('--token', default='')
     args = ap.parse_args()
 
-    cfg = load_config(host=args.host, port=args.port, db_path=args.db_path)
+    cfg = load_config(
+        host=args.host,
+        port=args.port,
+        db_path=args.db_path,
+        umbrella_root=args.umbrella_root,
+        token=args.token,
+        boundary_root=args.boundary_root,
+    )
     root = Path(args.umbrella_root).resolve()
 
-    store = MemoryStore(cfg.db_path)
+    store = MemoryStore(cfg.db_path, boundary_root=cfg.boundary_root)
     migration = (root / 'services' / 'memory' / 'db' / 'migrations' / '001_init.sql').read_text(encoding='utf-8')
     store.init_db(migration)
 
     Handler = handler_factory(store=store, token=cfg.token, root=root)
     httpd = ThreadingHTTPServer((cfg.host, cfg.port), Handler)
-    print(json.dumps({'status': 'listening', 'host': cfg.host, 'port': cfg.port, 'dbPath': str(cfg.db_path)}, indent=2))
+    print(json.dumps({'status': 'listening', 'host': cfg.host, 'port': cfg.port, 'dbPath': str(cfg.db_path), 'boundaryRoot': str(cfg.boundary_root)}, indent=2))
     httpd.serve_forever()
 
 

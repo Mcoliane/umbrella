@@ -29,7 +29,7 @@ p=Path(sys.argv[1])
 obj=json.loads(p.read_text())
 assert obj.get('version') == 'umbrella.service-manifest.v1', obj
 services=obj.get('services') or {}
-expected={'policy','lifecycle','router','scheduler','memory-core','execution','approval','orchestrator'}
+expected={'policy','lifecycle','router','scheduler','memory-core','memory','execution','approval','orchestrator'}
 assert set(services.keys()) == expected, services.keys()
 for name,row in services.items():
     assert isinstance(row.get('pid'), int) and row['pid'] > 0, (name,row)
