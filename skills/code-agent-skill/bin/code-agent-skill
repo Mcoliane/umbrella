@@ -1,0 +1,339 @@
+#!/usr/bin/env python3
+"""Autonomous code agent skill for the Umbrella agent runtime.
+
+Turns the code shop from a snippet runner into a coding agent. Given a task and
+a working directory, it runs an agentic loop:
+
+  explore -> plan -> edit files -> run tests/linters -> observe -> fix -> repeat
+
+then does a self-review pass over the git diff and applies fixes. Changes are
+git-backed (every run is a diff you can review or revert). Reads the configured
+model connection from the platform's model-broker config and calls it directly,
+so the loop is a real tool-use agent rather than a single completion.
+
+stdlib only. Reads one invocation as JSON on stdin, emits one JSON object on
+stdout.
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+MAX_ITERATIONS_DEFAULT = 30
+CMD_TIMEOUT = 180          # per run() command
+MODEL_TIMEOUT = 120        # per model call
+OBS_CAP = 6000             # chars of a tool observation fed back to the model
+READ_CAP = 24000           # chars returned by read_file
+RUN_OUTPUT_CAP = 8000      # chars of command stdout/stderr kept
+
+
+# --------------------------------------------------------------------------- #
+# Model access — read the configured broker connection and call it directly.
+# --------------------------------------------------------------------------- #
+def load_model(root: Path) -> dict:
+    runtime = root / "control-plane" / "runtime"
+    cfg = _read_json(runtime / "model-broker.json")
+    secrets = _read_json(runtime / "model-broker.secrets.json")
+    routing = cfg.get("routing") if isinstance(cfg.get("routing"), dict) else {}
+    conns = cfg.get("connections") if isinstance(cfg.get("connections"), dict) else {}
+    # Prefer a dedicated 'code' connection if the operator configured one.
+    cid = "code" if "code" in conns else (str(routing.get("defaultConnectionId", "")).strip() or "default")
+    conn = conns.get(cid) if isinstance(conns.get(cid), dict) else {}
+    sconn = ((secrets.get("connections") or {}).get(cid) or {}) if isinstance(secrets, dict) else {}
+    return {
+        "baseUrl": str(conn.get("baseUrl", "")).strip(),
+        "model": str(conn.get("defaultModel", "")).strip(),
+        "apiKey": str(sconn.get("apiKey", "")).strip(),
+        "timeoutSec": int(conn.get("timeoutSec", 120) or 120),
+    }
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def chat(model_cfg: dict, messages: list, temperature: float = 0.1) -> str:
+    body = json.dumps({
+        "model": model_cfg["model"],
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": 4096,
+    }).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if model_cfg["apiKey"]:
+        headers["Authorization"] = f"Bearer {model_cfg['apiKey']}"
+    url = model_cfg["baseUrl"].rstrip("/") + "/chat/completions"
+    last = None
+    for attempt in range(4):
+        try:
+            req = urllib.request.Request(url, data=body, method="POST", headers=headers)
+            with urllib.request.urlopen(req, timeout=MODEL_TIMEOUT) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            return (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+        except urllib.error.HTTPError as ex:
+            last = ex
+            if ex.code not in (429, 500, 502, 503, 504) or attempt == 3:
+                raise
+        except urllib.error.URLError as ex:
+            last = ex
+            if attempt == 3:
+                raise
+        time.sleep(1.2 * (attempt + 1))
+    if last:
+        raise last
+    return ""
+
+
+# --------------------------------------------------------------------------- #
+# Tools — all confined to the working directory.
+# --------------------------------------------------------------------------- #
+class Workspace:
+    def __init__(self, root: Path):
+        self.root = root.resolve()
+
+    def _safe(self, rel: str) -> Path:
+        p = (self.root / str(rel or "").lstrip("/")).resolve()
+        if p != self.root and self.root not in p.parents:
+            raise ValueError(f"path escapes working directory: {rel}")
+        return p
+
+    def list_dir(self, rel: str = ".") -> str:
+        base = self._safe(rel or ".")
+        if not base.exists():
+            return f"(no such path: {rel})"
+        out = []
+        for p in sorted(base.rglob("*"))[:400]:
+            if any(part in {".git", "__pycache__", "node_modules", ".venv"} for part in p.parts):
+                continue
+            rp = p.relative_to(self.root)
+            out.append(f"{'d' if p.is_dir() else 'f'} {rp}")
+        return "\n".join(out) or "(empty)"
+
+    def read_file(self, rel: str) -> str:
+        p = self._safe(rel)
+        if not p.is_file():
+            return f"(no such file: {rel})"
+        text = p.read_text(encoding="utf-8", errors="replace")
+        return text[:READ_CAP] + ("\n...(truncated)" if len(text) > READ_CAP else "")
+
+    def write_file(self, rel: str, content: str) -> str:
+        p = self._safe(rel)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content if isinstance(content, str) else str(content), encoding="utf-8")
+        return f"wrote {rel} ({len(content or '')} chars)"
+
+    def edit_file(self, rel: str, old: str, new: str) -> str:
+        p = self._safe(rel)
+        if not p.is_file():
+            return f"(no such file: {rel})"
+        text = p.read_text(encoding="utf-8")
+        if old not in text:
+            return f"(edit failed: 'old' text not found in {rel})"
+        if text.count(old) > 1:
+            return f"(edit failed: 'old' text is not unique in {rel}; add more context)"
+        p.write_text(text.replace(old, new, 1), encoding="utf-8")
+        return f"edited {rel}"
+
+    def run(self, command: str) -> str:
+        try:
+            proc = subprocess.run(
+                ["bash", "-lc", command], cwd=str(self.root),
+                capture_output=True, text=True, timeout=CMD_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            return f"(command timed out after {CMD_TIMEOUT}s)"
+        out = (proc.stdout or "")[-RUN_OUTPUT_CAP:]
+        err = (proc.stderr or "")[-RUN_OUTPUT_CAP:]
+        return f"exit={proc.returncode}\n--stdout--\n{out}\n--stderr--\n{err}".strip()
+
+
+# --------------------------------------------------------------------------- #
+# Git — checkpoint before, diff after.
+# --------------------------------------------------------------------------- #
+def git(root: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=60)
+
+
+def ensure_repo(root: Path) -> None:
+    if not (root / ".git").exists():
+        git(root, "init")
+        git(root, "add", "-A")
+        git(root, "-c", "user.email=agent@umbrella", "-c", "user.name=umbrella-code-agent", "commit", "-m", "checkpoint: before code agent", "--allow-empty")
+    else:
+        git(root, "add", "-A")
+        git(root, "-c", "user.email=agent@umbrella", "-c", "user.name=umbrella-code-agent", "commit", "-m", "checkpoint: before code agent", "--allow-empty")
+
+
+def working_diff(root: Path) -> str:
+    git(root, "add", "-A")
+    d = git(root, "diff", "--cached", "--stat")
+    full = git(root, "diff", "--cached")
+    return (d.stdout or "") + "\n" + (full.stdout or "")[:20000]
+
+
+# --------------------------------------------------------------------------- #
+# Agent protocol.
+# --------------------------------------------------------------------------- #
+SYSTEM = """You are an elite software engineer operating as an autonomous coding agent inside a git-backed working directory. You write clean, correct, idiomatic, PROFESSIONAL code with sensible structure, error handling, docstrings/comments where they add value, and tests.
+
+You work strictly by TOOLS. On every turn you MUST reply with a SINGLE JSON object and NOTHING ELSE (no prose, no markdown fences). One of:
+  {"tool":"list_dir","path":"."}
+  {"tool":"read_file","path":"relative/path"}
+  {"tool":"write_file","path":"relative/path","content":"<full file content>"}
+  {"tool":"edit_file","path":"relative/path","old":"<exact unique snippet>","new":"<replacement>"}
+  {"tool":"run","command":"<shell command run in the working dir>"}
+  {"tool":"finish","summary":"<what you built and how it was verified>"}
+
+Method (follow it):
+1. Explore the working dir (list_dir, read_file) before changing anything.
+2. Plan briefly, then implement in small steps.
+3. VERIFY your work: write and RUN tests (pytest/unittest), and run linters/type-checkers/build commands via the run tool. Read the output. If anything fails, FIX it and re-run. Do not finish on unverified code.
+4. Prefer edit_file for small changes and write_file for new/rewritten files. Keep files complete and runnable.
+5. Only call finish when the task is complete AND your verification commands pass.
+
+Rules: emit exactly one JSON object per turn. Keep going until done; do not ask the user questions. Assume you may install nothing new unless the task says so — prefer the standard library."""
+
+
+def parse_action(text: str) -> dict:
+    s = text.strip()
+    if s.startswith("```"):
+        s = s.split("\n", 1)[-1]
+        if s.rstrip().endswith("```"):
+            s = s.rstrip()[:-3]
+    # Grab the outermost JSON object.
+    start, depth, in_str, esc = s.find("{"), 0, False, False
+    if start >= 0:
+        for i in range(start, len(s)):
+            c = s[i]
+            if in_str:
+                esc = (c == "\\" and not esc)
+                if c == '"' and not esc:
+                    in_str = False
+            else:
+                if c == '"':
+                    in_str = True
+                elif c == "{":
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+                    if depth == 0:
+                        s = s[start:i + 1]
+                        break
+    try:
+        obj = json.loads(s)
+        return obj if isinstance(obj, dict) else {"tool": "_error", "error": "not an object"}
+    except ValueError as ex:
+        return {"tool": "_error", "error": f"could not parse JSON action: {ex}"}
+
+
+def run_loop(model_cfg: dict, ws: Workspace, task: str, max_iters: int, extra_system: str = "") -> tuple[list, int, bool]:
+    messages = [{"role": "system", "content": SYSTEM + (("\n\n" + extra_system) if extra_system else "")},
+                {"role": "user", "content": f"TASK:\n{task}\n\nThe working directory currently contains:\n{ws.list_dir('.')}"}]
+    verified = False
+    iters = 0
+    for iters in range(1, max_iters + 1):
+        content = chat(model_cfg, messages)
+        messages.append({"role": "assistant", "content": content})
+        action = parse_action(content)
+        tool = str(action.get("tool", "")).strip()
+        try:
+            if tool == "finish":
+                verified = True
+                messages.append({"role": "user", "content": "acknowledged"})
+                break
+            elif tool == "list_dir":
+                obs = ws.list_dir(str(action.get("path", ".")))
+            elif tool == "read_file":
+                obs = ws.read_file(str(action.get("path", "")))
+            elif tool == "write_file":
+                obs = ws.write_file(str(action.get("path", "")), action.get("content", ""))
+            elif tool == "edit_file":
+                obs = ws.edit_file(str(action.get("path", "")), str(action.get("old", "")), str(action.get("new", "")))
+            elif tool == "run":
+                obs = ws.run(str(action.get("command", "")))
+            elif tool == "_error":
+                obs = f"Your last message was not a valid single JSON action: {action.get('error')}. Reply with exactly one JSON tool object."
+            else:
+                obs = f"Unknown tool {tool!r}. Use one of list_dir, read_file, write_file, edit_file, run, finish."
+        except Exception as ex:  # noqa: BLE001 — surface tool errors back to the agent
+            obs = f"(tool error: {type(ex).__name__}: {ex})"
+        messages.append({"role": "user", "content": str(obs)[:OBS_CAP]})
+    return messages, iters, verified
+
+
+def main() -> int:
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        print(json.dumps({"ok": False, "error": "invalid JSON on stdin"}))
+        return 1
+    invocation = payload.get("invocation") if isinstance(payload.get("invocation"), dict) else {}
+    inputs = invocation.get("inputs") if isinstance(invocation.get("inputs"), dict) else {}
+
+    task = str(inputs.get("task", "")).strip()
+    if not task:
+        print(json.dumps({"ok": False, "error": "'task' is required"}))
+        return 1
+
+    root = Path(os.environ.get("UMBRELLA_ROOT") or Path(__file__).resolve().parents[3])
+    model_cfg = load_model(root)
+    if not model_cfg["baseUrl"] or not model_cfg["model"]:
+        print(json.dumps({"ok": False, "error": "no model connection configured for the code agent (run umbrella-setup)"}))
+        return 1
+
+    working = str(inputs.get("workingDir", "")).strip() or os.path.expanduser("~/umbrella-code")
+    wd = Path(os.path.expanduser(working)).resolve()
+    wd.mkdir(parents=True, exist_ok=True)
+    ws = Workspace(wd)
+    max_iters = max(4, min(int(inputs.get("maxIterations", MAX_ITERATIONS_DEFAULT) or MAX_ITERATIONS_DEFAULT), 60))
+
+    try:
+        ensure_repo(wd)
+        _, iters, verified = run_loop(model_cfg, ws, task, max_iters)
+
+        review = inputs.get("review", True)
+        if review:
+            diff = working_diff(wd)
+            critique = chat(model_cfg, [
+                {"role": "system", "content": "You are a senior code reviewer. Review the diff for correctness, bugs, missing edge cases, and professionalism. Respond with 'APPROVE' on the first line if it is production quality, otherwise 'REVISE' followed by a numbered list of concrete required fixes."},
+                {"role": "user", "content": f"TASK:\n{task}\n\nDIFF:\n{diff[:18000]}"},
+            ], temperature=0.0)
+            if critique.strip().upper().startswith("REVISE"):
+                _, more, verified2 = run_loop(
+                    model_cfg, ws,
+                    f"Apply these review fixes to the current working directory, then re-run the tests to verify:\n{critique}",
+                    max_iters=max(6, max_iters // 2),
+                    extra_system="You are addressing review feedback on existing code. Make the requested fixes and re-verify.",
+                )
+                iters += more
+                verified = verified or verified2
+
+        do_commit = bool(inputs.get("commit", False))
+        diff = working_diff(wd)
+        if do_commit:
+            git(wd, "-c", "user.email=agent@umbrella", "-c", "user.name=umbrella-code-agent", "commit", "-m", f"code agent: {task[:60]}", "--allow-empty")
+
+        print(json.dumps({
+            "ok": True,
+            "summary": f"code agent completed {iters} step(s); verified={verified}",
+            "verified": verified,
+            "iterations": iters,
+            "workingDir": str(wd),
+            "diff": diff[:60000],
+        }))
+    except Exception as ex:  # noqa: BLE001
+        print(json.dumps({"ok": False, "error": f"{type(ex).__name__}: {ex}", "workingDir": str(wd)}))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
