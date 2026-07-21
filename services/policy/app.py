@@ -194,6 +194,7 @@ class PolicyEngine:
         self.agent_registry_path = (self.root / agent_registry_path).resolve()
         self.catalog_url = catalog_url.rstrip('/')
         self.mesh_token = mesh_token.strip()
+        self.autonomy_path = (self.root / 'control-plane' / 'runtime' / 'autonomy.json').resolve()
         self.drift_lint = self.root / 'scripts' / 'control-plane' / 'drift-lint'
         self.parity_gate = self.root / 'scripts' / 'control-plane' / 'capability-parity-gate'
         self.multi_agent_policy_path.parent.mkdir(parents=True, exist_ok=True)
@@ -298,6 +299,18 @@ class PolicyEngine:
         with self._registry_lock:
             update_json(self.agent_registry_path, mutate, default={'agents': {}})
         return {'ok': True, 'policyId': pol.get('id', 'umbrella.policy.multi-agent.v1'), 'agent': entry}
+
+    def get_autonomy_mode(self) -> str:
+        """Global approval toggle: 'ask' (default, enforce approvals) or 'auto'
+        (auto-approve actions that would otherwise require approval)."""
+        data = load_json(self.autonomy_path, {})
+        mode = str((data or {}).get('mode', 'ask')).strip().lower()
+        return 'auto' if mode == 'auto' else 'ask'
+
+    def set_autonomy_mode(self, mode: str) -> dict:
+        mode = 'auto' if str(mode or '').strip().lower() == 'auto' else 'ask'
+        atomic_write_json(self.autonomy_path, {'mode': mode, 'updatedAt': now_iso()})
+        return {'ok': True, 'mode': mode}
 
     def authorize_step(self, step_spec: dict) -> dict:
         pol = self.load_multi_agent_policy()
@@ -528,7 +541,11 @@ class PolicyEngine:
                 'agentId': agent_id,
                 'effectiveActionPolicy': effective_action_policy,
             }
-        if effective_action_policy['approvalMode'] == 'required' and not bool(approval_context.get('approved', False)):
+        if (
+            effective_action_policy['approvalMode'] == 'required'
+            and self.get_autonomy_mode() != 'auto'
+            and not bool(approval_context.get('approved', False))
+        ):
             return {
                 'ok': False,
                 'allowed': False,
@@ -652,6 +669,8 @@ def handler_factory(engine: PolicyEngine, token: str):
             path = urlparse(self.path).path
             if path == '/v1/policy/health':
                 return json_response(self, 200, {'status': 'ok', 'service': 'policy', 'checkedAt': now_iso()})
+            if path == '/v1/policy/autonomy':
+                return json_response(self, 200, {'ok': True, 'mode': engine.get_autonomy_mode()})
             return json_response(self, 404, err('NOT_FOUND', 'route not found', req_id))
 
         def do_POST(self):
@@ -662,6 +681,11 @@ def handler_factory(engine: PolicyEngine, token: str):
             body = parse_json(self)
 
             try:
+                if path == '/v1/policy/autonomy':
+                    mode = str(body.get('mode', '')).strip().lower()
+                    if mode not in ('auto', 'ask'):
+                        return json_response(self, 400, err('VALIDATION_ERROR', "mode must be 'auto' or 'ask'", req_id))
+                    return json_response(self, 200, engine.set_autonomy_mode(mode))
                 if path == '/v1/policy/preflight/drift-lint':
                     out = engine.preflight_drift(skip=bool(body.get('skipDriftLint', False)))
                     return json_response(self, 200, out)
