@@ -454,7 +454,7 @@ You work strictly by TOOLS. On every turn you MUST reply with a SINGLE JSON obje
 
 Method (follow it):
 1. You are given a Repository map of the codebase up front. Use `find` (text/regex), `definition`, `references`, and `outline` to locate the exact code relevant to the task — navigate like an engineer, do NOT read files at random on a large codebase.
-2. Read the specific code you'll change or depend on, then plan briefly and implement in small steps.
+2. Read the specific code you'll change or depend on, then plan briefly and implement in small steps. When the task does not specify a FORM, choose the one that fits the domain and state which you chose: a user-facing, interactive product (photo editor, game, dashboard) should be a real UI (web or desktop), NOT a command-line tool; batch/automation/data work should be a CLI or library; a backend should be a service/API.
 3. VERIFY your work with the installed test runner (e.g. pytest/node): write and RUN tests that exercise REAL BEHAVIOR and output — not merely that a pure helper returns a value, but that the actual feature does the right thing (e.g. the image is actually transformed, the endpoint returns the right response) — plus linters/type-checkers/build commands via the run tool. Read the output. If anything fails, FIX it and re-run. Do not finish on unverified code.
 4. Prefer edit_file for surgical changes to existing files and write_file for new/rewritten files. Keep files complete and runnable, and match the surrounding code's style and conventions.
 5. INTEGRATION IS PART OF THE JOB — the project must actually RUN AS A WHOLE from its real entry point, not merely pass unit tests. Before finishing, exercise the ACTUAL entry point (load the HTML page in a headless/DOM check, run the CLI, import the package/module) and confirm the pieces are wired together. A task is NOT done — even when unit tests pass — if any of these is true:
@@ -562,9 +562,10 @@ def plan_subtasks(model_cfg: dict, ws: Workspace, task: str) -> dict:
                 "and calls window.Engine.brightness; it also reads getImageData/putImageData on '#main-canvas'.\""},
             {"role": "user", "content":
                 f"TASK:\n{task}\n\n{_ENV_SURVEY}\n\n"
-                "Choose the professional stack for this task from the tools ALREADY INSTALLED above "
-                "(e.g. a real web framework, an image library, a proper test runner) rather than hand-rolling "
-                "from stdlib; do not require any download. Reflect that choice in the subtasks and the contract.\n\n"
+                "Choose the professional stack AND the appropriate FORM for this task from the tools ALREADY "
+                "INSTALLED above (a user-facing interactive product -> a real UI, not a CLI; automation/data -> a "
+                "CLI or library; a backend -> a service/API) rather than hand-rolling from stdlib; do not require "
+                "any download. Reflect the stack and form in the subtasks and the contract.\n\n"
                 f"Working dir currently:\n{ws.list_dir('.')}"},
         ], temperature=0.0)
         obj = parse_action(content)
