@@ -455,9 +455,13 @@ You work strictly by TOOLS. On every turn you MUST reply with a SINGLE JSON obje
 Method (follow it):
 1. You are given a Repository map of the codebase up front. Use `find` (text/regex), `definition`, `references`, and `outline` to locate the exact code relevant to the task — navigate like an engineer, do NOT read files at random on a large codebase.
 2. Read the specific code you'll change or depend on, then plan briefly and implement in small steps.
-3. VERIFY your work: write and RUN tests (pytest/unittest), and run linters/type-checkers/build commands via the run tool. Read the output. If anything fails, FIX it and re-run. Do not finish on unverified code.
+3. VERIFY your work: write and RUN tests (pytest/unittest/node), and run linters/type-checkers/build commands via the run tool. Read the output. If anything fails, FIX it and re-run. Do not finish on unverified code.
 4. Prefer edit_file for surgical changes to existing files and write_file for new/rewritten files. Keep files complete and runnable, and match the surrounding code's style and conventions.
-5. Only call finish when the task is complete AND your verification commands pass.
+5. INTEGRATION IS PART OF THE JOB — the project must actually RUN AS A WHOLE from its real entry point, not merely pass unit tests. Before finishing, exercise the ACTUAL entry point (load the HTML page in a headless/DOM check, run the CLI, import the package/module) and confirm the pieces are wired together. A task is NOT done — even when unit tests pass — if any of these is true:
+   - a source file you wrote is never loaded by a <script> tag or imported/required anywhere (dead/orphaned code);
+   - the code references DOM element ids, global names, module exports, or function APIs that no file actually defines (e.g. calling window.foo when the module exports window.Foo, or getElementById('x') when the HTML has no id="x");
+   - it works in unit tests but not when launched from its real entry point (the HTML page, the CLI, the server).
+6. Only call finish when the task is complete, wired together end to end, AND your verification commands pass.
 
 Rules: emit exactly one JSON object per turn. Keep going until done; do not ask the user questions. Assume you may install nothing new unless the task says so — prefer the standard library."""
 
@@ -531,24 +535,40 @@ def trim_messages(messages: list) -> list:
 
 def plan_subtasks(model_cfg: dict, ws: Workspace, task: str) -> dict:
     """Ask the model to decompose the task into independent, disjoint-file subtasks
-    that can be built in parallel. Returns {parallelizable, subtasks:[{title,detail,files}]}."""
+    that can be built in parallel, AND define the shared interface contract the
+    workers must build against. Parallel workers cannot see each other's code, so
+    without a contract they invent divergent names (canvas vs main-canvas,
+    window.Foo vs window.foo) and the parts never connect. Returns
+    {parallelizable, interfaceContract, subtasks:[{title,detail,files}]}."""
     try:
         content = chat(model_cfg, [
             {"role": "system", "content":
                 "You are a tech lead planning parallel work. Decompose the task into INDEPENDENT subtasks that "
                 "touch DISJOINT files so separate workers can build them at the same time without conflicting. "
+                "CRITICAL: the workers CANNOT see each other's code, so you MUST define the shared INTERFACE "
+                "CONTRACT they will all build against — the exact names that connect the files. Be concrete and "
+                "prescriptive: the entry-point file and what it loads; every file path; the exact DOM element ids "
+                "(for web UIs); the global/module names each file EXPORTS and each file CONSUMES; and the "
+                "signatures of any functions called across file boundaries. "
                 "Do NOT force it: if the task is small or inherently sequential, set parallelizable=false. "
                 "Reply with ONLY one JSON object: "
-                '{"parallelizable": true|false, "subtasks": [{"title": str, "detail": str, "files": [str]}]}. '
-                "Aim for 2-4 subtasks when parallelizable. Each subtask's files must not overlap another's."},
+                '{"parallelizable": true|false, "interfaceContract": str, '
+                '"subtasks": [{"title": str, "detail": str, "files": [str]}]}. '
+                "Aim for 2-4 subtasks when parallelizable. Each subtask's files must not overlap another's. "
+                "Example interfaceContract: \"Entry: index.html loads <script src='js/engine.js'> then "
+                "<script src='js/app.js'>. Canvas id='main-canvas'; sliders id='slider-brightness' etc. "
+                "js/engine.js exports window.Engine with brightness(imageData, amount)->ImageData, "
+                "grayscale(imageData)->ImageData. js/app.js reads document.getElementById('slider-brightness') "
+                "and calls window.Engine.brightness; it also reads getImageData/putImageData on '#main-canvas'.\""},
             {"role": "user", "content": f"TASK:\n{task}\n\nWorking dir currently:\n{ws.list_dir('.')}"},
         ], temperature=0.0)
         obj = parse_action(content)
         if isinstance(obj, dict) and isinstance(obj.get("subtasks"), list):
+            obj.setdefault("interfaceContract", "")
             return obj
     except Exception:  # noqa: BLE001 — planning is best-effort; fall back to a single loop
         pass
-    return {"parallelizable": False, "subtasks": []}
+    return {"parallelizable": False, "subtasks": [], "interfaceContract": ""}
 
 
 def run_loop(model_cfg: dict, ws: Workspace, task: str, max_iters: int, extra_system: str = "") -> tuple[list, int, bool]:
@@ -607,6 +627,111 @@ def run_loop(model_cfg: dict, ws: Workspace, task: str, max_iters: int, extra_sy
     return messages, iters, verified
 
 
+def _resolve_js_import(base: Path, spec: str) -> Path | None:
+    """Resolve a relative JS require()/import specifier to a real file, applying
+    Node-style resolution (bare path, .js/.mjs suffix, or a directory index)."""
+    cand = base / spec
+    for t in (cand, Path(str(cand) + ".js"), Path(str(cand) + ".mjs"), cand / "index.js"):
+        try:
+            if t.is_file():
+                return t.resolve()
+        except OSError:
+            continue
+    return None
+
+
+def integration_check(ws: Workspace) -> list[str]:
+    """Deterministic, stdlib-only wiring gate. Catches the cross-file integration
+    failures unit tests never exercise: <script>/import targets that don't exist,
+    DOM ids referenced in JS but absent from every HTML file, source files that
+    are never loaded or imported (orphaned/dead code), and window.* globals that
+    are consumed under a different name/case than they are defined. Returns a list
+    of concrete, human-readable problems (empty == structurally wired)."""
+    root = Path(ws.root)
+    skip = {".git", "node_modules", ".venv", "venv", "dist", "build", "__pycache__"}
+
+    def _iter(*exts):
+        for p in root.rglob("*"):
+            if p.suffix.lower() not in exts or not p.is_file():
+                continue
+            if any(part in skip for part in p.relative_to(root).parts):
+                continue
+            yield p
+
+    def _read(p: Path) -> str:
+        try:
+            return p.read_text(encoding="utf-8", errors="ignore")
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _rel(p: Path) -> str:
+        return str(p.relative_to(root))
+
+    problems: list[str] = []
+    html_files = list(_iter(".html", ".htm"))
+    js_files = [p for p in _iter(".js", ".mjs") if not p.name.endswith((".test.js", ".spec.js"))]
+
+    html_ids: set[str] = set()
+    script_srcs: set[str] = set()
+    for hp in html_files:
+        txt = _read(hp)
+        html_ids.update(re.findall(r'id\s*=\s*["\']([^"\']+)["\']', txt))
+        for src in re.findall(r'<script[^>]*\bsrc\s*=\s*["\']([^"\']+)["\']', txt, re.I):
+            if re.match(r'^(?:https?:)?//', src):  # external CDN — not our file
+                continue
+            target = (hp.parent / src)
+            if not target.is_file():
+                problems.append(f"{_rel(hp)} loads <script src=\"{src}\"> but that file does not exist")
+            else:
+                script_srcs.add(str(target.resolve()))
+
+    defined_globals: dict[str, str] = {}
+    consumed_globals: dict[str, str] = {}
+    imported_targets: set[str] = set()
+    for jp in js_files:
+        txt = _read(jp)
+        for name in re.findall(r'window\.([A-Za-z_$][\w$]*)\s*=', txt):
+            defined_globals.setdefault(name, _rel(jp))
+        for name in re.findall(r'window\.([A-Za-z_$][\w$]*)(?!\s*=)', txt):
+            consumed_globals.setdefault(name, _rel(jp))
+        specs = (re.findall(r'require\(\s*["\'](\.[^"\']+)["\']\s*\)', txt)
+                 + re.findall(r'from\s+["\'](\.[^"\']+)["\']', txt)
+                 + re.findall(r'import\s+["\'](\.[^"\']+)["\']', txt))
+        for spec in specs:
+            resolved = _resolve_js_import(jp.parent, spec)
+            if resolved is None:
+                problems.append(f"{_rel(jp)} imports \"{spec}\" but no such file exists")
+            else:
+                imported_targets.add(str(resolved))
+        if html_files:  # DOM ids only meaningful when there is a page to host them
+            refs = re.findall(r'getElementById\(\s*["\']([^"\']+)["\']\s*\)', txt)
+            refs += re.findall(r'querySelector(?:All)?\(\s*["\']#([\w-]+)["\']', txt)
+            for rid in refs:
+                if rid not in html_ids:
+                    problems.append(f"{_rel(jp)} references element id '#{rid}' that no HTML file defines")
+
+    # Orphaned source: a non-test JS file loaded by nothing (no <script>, no import).
+    for jp in js_files:
+        ap = str(jp.resolve())
+        if ap in script_srcs or ap in imported_targets:
+            continue
+        if not html_files and jp.name in {"index.js", "main.js", "server.js", "cli.js"}:
+            continue  # legitimate standalone Node entry point
+        problems.append(f"{_rel(jp)} is never loaded by a <script> tag or imported by another module (orphaned/dead code)")
+
+    # Global consumed under a different name/case than it is defined.
+    defined_lower = {d.lower(): d for d in defined_globals}
+    for name, where in consumed_globals.items():
+        if name in defined_globals:
+            continue
+        if name.lower() in defined_lower:
+            problems.append(
+                f"{where} uses window.{name} but it is defined as window.{defined_lower[name.lower()]} "
+                "(name/case mismatch — they will not connect)")
+    seen: set[str] = set()
+    return [p for p in problems if not (p in seen or seen.add(p))]
+
+
 def main() -> int:
     try:
         payload = json.loads(sys.stdin.read() or "{}")
@@ -639,6 +764,7 @@ def main() -> int:
         max_workers = max(1, min(int(inputs.get("maxWorkers", 4) or 4), 6))
         plan = plan_subtasks(model_cfg, ws, task) if want_parallel else {"parallelizable": False, "subtasks": []}
         subtasks = [s for s in (plan.get("subtasks") or []) if isinstance(s, dict) and s.get("files")][:8]
+        contract = str(plan.get("interfaceContract", "")).strip()
         iters = 0
         strategy = "single"
 
@@ -649,9 +775,13 @@ def main() -> int:
                 owned = [str(f) for f in (st.get("files") or [])]
                 extra = (
                     "You are ONE of several workers building a project IN PARALLEL. "
-                    f"Create/edit ONLY these files: {owned}. Do NOT touch any other file. "
-                    "Verify only your own files (e.g. python3 -m py_compile <file>, or import them); "
-                    "the integrator runs the full test suite afterwards. Call finish when your files are done."
+                    f"Create/edit ONLY these files: {owned}. Do NOT touch any other file.\n"
+                    + (f"\nSHARED INTERFACE CONTRACT — you CANNOT see the other workers' code, so you MUST match "
+                       f"these EXACT names/ids/signatures wherever your files connect to theirs:\n{contract}\n"
+                       if contract else "")
+                    + "\nVerify only your own files (e.g. python3 -m py_compile <file>, or import them); the "
+                    "integrator runs the full test suite AND an automated wiring check afterwards. Use the exact "
+                    "ids / global names / APIs from the contract so the parts connect. Call finish when your files are done."
                 )
                 _, it, _ = run_loop(
                     model_cfg, ws, f"{st.get('title', 'subtask')}: {st.get('detail', '')}",
@@ -666,23 +796,57 @@ def main() -> int:
             _, it, verified = run_loop(
                 model_cfg, ws,
                 "Parallel workers built these files: " + ", ".join(built) +
-                ".\nIntegrate them into a coherent, working project for the original task, fix any "
-                "integration issues, add any missing glue, and RUN THE FULL TEST SUITE until it passes.\n\n"
-                f"ORIGINAL TASK:\n{task}",
+                ".\nIntegrate them into a coherent, working project for the original task: make the entry point "
+                "load/import every part, make every cross-file id / global / API match, wire up or remove any "
+                "orphaned file, then RUN THE FULL TEST SUITE and exercise the REAL entry point until it works.\n"
+                + (f"\nSHARED INTERFACE CONTRACT the parts were built against:\n{contract}\n" if contract else "")
+                + f"\nORIGINAL TASK:\n{task}",
                 max_iters=max_iters,
-                extra_system="You are the integrator. Wire the parallel parts together and VERIFY the whole project with tests.",
+                extra_system="You are the integrator. Wire the parallel parts together so the project RUNS end to "
+                "end from its real entry point (not just unit tests), and verify it.",
             )
             iters += it
         else:
             _, it, verified = run_loop(model_cfg, ws, task, max_iters)
             iters += it
 
+        # Deterministic integration gate: catch cross-file wiring failures that
+        # unit tests never exercise, and force a fix loop until the parts connect.
+        wiring_problems: list[str] = []
+        for _ in range(2):
+            wiring_problems = integration_check(ws)
+            if not wiring_problems:
+                break
+            _, wfix, wverified = run_loop(
+                model_cfg, ws,
+                "The project has these INTEGRATION / WIRING defects — unit tests passing is NOT enough, it must "
+                "run end to end from its real entry point:\n- " + "\n- ".join(wiring_problems) +
+                "\n\nFix the wiring so every file is loaded/imported, every referenced id / module / global / API "
+                "exists and matches, and nothing is orphaned. Then re-verify by exercising the actual entry point.\n\n"
+                f"ORIGINAL TASK:\n{task}",
+                max_iters=max(6, max_iters // 2),
+                extra_system="You are fixing concrete cross-file integration defects so the parts actually connect.",
+            )
+            iters += wfix
+            verified = verified or wverified
+        wiring_problems = integration_check(ws)
+
         review = inputs.get("review", True)
         if review:
             diff = working_diff(wd)
+            inventory = ws.list_dir(".")
+            wiring_note = ("Automated wiring check: no structural problems found."
+                           if not wiring_problems
+                           else "Automated wiring check still flags:\n- " + "\n- ".join(wiring_problems))
             critique = chat(model_cfg, [
-                {"role": "system", "content": "You are a senior code reviewer. Review the diff for correctness, bugs, missing edge cases, and professionalism. Respond with 'APPROVE' on the first line if it is production quality, otherwise 'REVISE' followed by a numbered list of concrete required fixes."},
-                {"role": "user", "content": f"TASK:\n{task}\n\nDIFF:\n{diff[:18000]}"},
+                {"role": "system", "content": "You are a senior code reviewer doing an INTEGRATION-FIRST review. "
+                    "Beyond per-file correctness, bugs, edge cases, and professionalism, verify the project actually "
+                    "works AS A WHOLE from its real entry point: the entry point loads/imports every module it needs; "
+                    "there are no orphaned files (code never loaded or imported); every cross-file name matches (DOM "
+                    "ids, global/module names, function signatures, APIs); and it would RUN, not merely pass unit "
+                    "tests. Respond 'APPROVE' on the first line only if it is production quality AND runs end to end; "
+                    "otherwise 'REVISE' followed by a numbered list of concrete required fixes."},
+                {"role": "user", "content": f"TASK:\n{task}\n\nFILES:\n{inventory}\n\n{wiring_note}\n\nDIFF:\n{diff[:16000]}"},
             ], temperature=0.0)
             if critique.strip().upper().startswith("REVISE"):
                 _, more, verified2 = run_loop(
@@ -699,11 +863,15 @@ def main() -> int:
         if do_commit:
             git(wd, "-c", "user.email=agent@umbrella", "-c", "user.name=umbrella-code-agent", "commit", "-m", f"code agent: {task[:60]}", "--allow-empty")
 
+        final_wiring = integration_check(ws)
         print(json.dumps({
             "ok": True,
-            "summary": f"code agent completed {iters} step(s) via {strategy}; verified={verified}",
+            "summary": f"code agent completed {iters} step(s) via {strategy}; "
+                       f"verified={verified}; integrationClean={not final_wiring}",
             "strategy": strategy,
             "verified": verified,
+            "integrationClean": not final_wiring,
+            "wiringIssues": final_wiring,
             "iterations": iters,
             "workingDir": str(wd),
             "diff": diff[:60000],
