@@ -1209,6 +1209,7 @@ class SessionEngine:
             'fallbackUsed': bool(plugin_result.get('fallbackUsed', False)),
             'latencyMs': int(plugin_result.get('latencyMs', 0) or 0),
             'delegationPlan': plugin_result.get('delegationPlan') if isinstance(plugin_result.get('delegationPlan'), list) else [],
+            'questions': plugin_result.get('questions') if isinstance(plugin_result.get('questions'), list) else [],
             'invocation': invocation,
             'pluginResult': plugin_result,
         }
@@ -1631,6 +1632,7 @@ class SessionEngine:
                 'shopId': shop_id,
                 'modeResolved': 'direct',
                 'reply': reply,
+                'questions': direct.get('questions') if isinstance(direct.get('questions'), list) else [],
                 'invocation': direct.get('invocation'),
                 'message': message,
                 'runtimeResolved': 'umbrella-agent-runtime',

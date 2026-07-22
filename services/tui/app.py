@@ -31,6 +31,7 @@ class UmbrellaTui:
         self._pending_result: dict | None = None
         self.has_color = False
         self._inflight: dict[str, dict] = {}  # turnId -> {shop, target, started} for live activity
+        self._pending_questions: list = []  # structured clarify questions awaiting the picker
 
     def add_local_event(self, role: str, content: str):
         self.state.local_transcript.append({"role": role, "content": content})
@@ -133,6 +134,13 @@ class UmbrellaTui:
             tag = self._provenance_tag(out)
             suffix = f" {tag}" if tag else ""
             reply = str(out.get("reply", "")).strip()
+            questions = out.get("questions") if isinstance(out.get("questions"), list) else []
+            if questions:
+                # The mayor is scoping the task. The intro reply is already in the
+                # transcript (appended server-side); queue the picker for the loop.
+                self._pending_questions = questions
+                self.state.status = f"{self.state.active_target} needs a few answers — pick below"
+                return
             if str(out.get("delegationStatus", "")).strip() == "running":
                 shop = str(out.get("shopId", "a shop")).strip() or "a shop"
                 turn_id = str(out.get("turnId", "")).strip()
@@ -389,6 +397,97 @@ class UmbrellaTui:
                 except curses.error:
                     pass
             curses.noecho()
+
+    def run_question_flow(self, screen, questions: list) -> None:
+        """Claude-CLI-style clarify flow: present each structured question as a
+        selectable picker, collect the answers, and send them back to the mayor
+        as one concise message so it can delegate a concrete spec."""
+        answers: list[tuple[str, list]] = []
+        for idx, q in enumerate(questions, start=1):
+            if not isinstance(q, dict):
+                continue
+            qtext = str(q.get("question", "")).strip() or f"Question {idx}"
+            options = [str(o) for o in (q.get("options") or []) if str(o).strip()]
+            multi = bool(q.get("multiSelect"))
+            title = f"({idx}/{len(questions)})  {qtext}"
+            if options:
+                chosen = self._select(screen, title, options, multi=multi)
+            else:
+                typed = self.prompt(screen, qtext, default="")
+                chosen = [typed] if typed else []
+            if chosen is None:  # ESC anywhere cancels the whole flow
+                self.add_local_event("system", "Questions cancelled — you can answer in your own words instead.")
+                self.state.status = "Clarify cancelled"
+                return
+            answers.append((qtext, chosen))
+        lines = [f"{i}. {qtext}: {', '.join(ans) if ans else '(no preference)'}" for i, (qtext, ans) in enumerate(answers, start=1)]
+        assembled = "Here are my answers:\n" + "\n".join(lines)
+        self.talk(screen, content_override=assembled)
+
+    def _select(self, screen, title: str, options: list, *, multi: bool = False) -> list | None:
+        """Interactive single/multi-select picker. Returns the chosen answer
+        strings (free text resolved for the 'Other' entry), or None on ESC."""
+        display = list(options) + ["Other (type your own)"]
+        other_idx = len(display) - 1
+        selected: set[int] = set()
+        cursor = 0
+        try:
+            prev_cursor = curses.curs_set(0)
+        except curses.error:
+            prev_cursor = None
+        screen.timeout(-1)
+        try:
+            while True:
+                h, w = screen.getmaxyx()
+                screen.erase()
+                self._put(screen, 0, 1, _clip(title, w - 2), self._c(7, curses.A_BOLD))
+                hint = ("↑↓ move · SPACE toggle · ⏎ confirm · ESC cancel" if multi
+                        else "↑↓ move · number or ⏎ to pick · ESC cancel")
+                self._put(screen, 1, 1, _clip(hint, w - 2), self._c(3))
+                for i, label in enumerate(display):
+                    box = ("[x] " if i in selected else "[ ] ") if multi else ("(•) " if i == cursor else "( ) ")
+                    arrow = "› " if i == cursor else "  "
+                    num = f"{i + 1}. " if i < 9 else "   "
+                    attr = self._c(2, curses.A_BOLD) if i == cursor else self._c(0)
+                    self._put(screen, 3 + i, 2, _clip(arrow + box + num + label, w - 4), attr)
+                screen.refresh()
+                k = screen.getch()
+                if k == 27:  # ESC
+                    return None
+                if k in (curses.KEY_UP, ord("k")):
+                    cursor = (cursor - 1) % len(display)
+                elif k in (curses.KEY_DOWN, ord("j")):
+                    cursor = (cursor + 1) % len(display)
+                elif ord("1") <= k <= ord("9") and (k - ord("1")) < len(display):
+                    picked = k - ord("1")
+                    if multi:
+                        selected.symmetric_difference_update({picked})
+                        cursor = picked
+                    else:
+                        return self._resolve_select(screen, display, [picked], other_idx)
+                elif multi and k == ord(" "):
+                    selected.symmetric_difference_update({cursor})
+                elif k in (10, 13):
+                    idxs = sorted(selected) if (multi and selected) else [cursor]
+                    return self._resolve_select(screen, display, idxs, other_idx)
+        finally:
+            screen.timeout(100)
+            if prev_cursor is not None:
+                try:
+                    curses.curs_set(prev_cursor)
+                except curses.error:
+                    pass
+
+    def _resolve_select(self, screen, display: list, idxs: list, other_idx: int) -> list:
+        answers: list[str] = []
+        for i in idxs:
+            if i == other_idx:
+                typed = self.prompt(screen, "Type your answer", default="")
+                if typed:
+                    answers.append(typed)
+            elif 0 <= i < len(display):
+                answers.append(display[i])
+        return answers
 
     def choose_session(self, screen):
         sessions = self.state.home.get("sessions") or []
@@ -849,6 +948,11 @@ class UmbrellaTui:
         last_auto = time.time()
         while True:
             self._drain_pending_result()
+            if self._pending_questions and not self.state.pending_request:
+                questions = self._pending_questions
+                self._pending_questions = []
+                self.run_question_flow(screen, questions)
+                continue
             screen.erase()
             self.draw_town(screen)
             screen.refresh()
