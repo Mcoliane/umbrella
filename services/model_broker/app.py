@@ -515,6 +515,11 @@ class BrokerEngine:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        # Native structured output: ask the provider to GUARANTEE valid JSON. If an
+        # endpoint doesn't support response_format, the loop below strips it and
+        # retries (keeping provider-agnosticism); the parse/degrade logic remains a
+        # safety net for endpoints that accept it but ignore it.
+        provider_payload["response_format"] = {"type": "json_object"}
         started = time.time()
         base_url = str(connection.get("baseUrl", "")).strip()
         api_key = str(secret.get("apiKey", "")).strip()
@@ -535,7 +540,11 @@ class BrokerEngine:
                     timeout_sec=timeout,
                 )
             except urllib.error.HTTPError as exc:
-                # 4xx, or a 5xx the adapter already exhausted its retries on: terminal.
+                # If the endpoint rejects response_format (json mode unsupported),
+                # strip it and retry without it rather than failing the turn.
+                if exc.code in (400, 404, 422) and provider_payload.pop("response_format", None) is not None:
+                    continue
+                # Otherwise 4xx, or a 5xx the adapter already exhausted its retries on: terminal.
                 return {"ok": False, "error": {"message": http_error_detail(exc)}}
             except json.JSONDecodeError:
                 # A 200 whose body is not valid JSON (e.g. a proxy's HTML error
@@ -611,6 +620,9 @@ class BrokerEngine:
                 out["questions"] = clean_questions
                 return out
 
+            # If json mode may be starving the output (some models return empty
+            # content under response_format), drop it before the next attempt.
+            provider_payload.pop("response_format", None)
             last_error = "provider returned empty content" if not content else "provider returned no usable reply"
             if attempt < _COMPLETION_ATTEMPTS - 1:
                 time.sleep(_COMPLETION_BACKOFF_SEC * (attempt + 1) + random.uniform(0, 0.25))

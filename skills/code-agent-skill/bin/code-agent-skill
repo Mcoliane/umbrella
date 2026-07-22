@@ -120,13 +120,17 @@ def chat(model_cfg: dict, messages: list, temperature: float = 0.1) -> str:
     return ""
 
 
-def chat_raw(model_cfg: dict, messages: list, tools: list | None = None, temperature: float = 0.1) -> dict:
+def chat_raw(model_cfg: dict, messages: list, tools: list | None = None,
+             response_format: dict | None = None, temperature: float = 0.1) -> dict:
     """Like chat() but returns the whole assistant message dict (content +
-    tool_calls) and, when `tools` is given, requests native function-calling."""
+    tool_calls). With `tools` it requests native function-calling; with
+    `response_format` it requests native structured output (e.g. JSON mode)."""
     payload = {"model": model_cfg["model"], "messages": messages, "temperature": temperature, "max_tokens": 4096}
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
+    if response_format:
+        payload["response_format"] = response_format
     body = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if model_cfg["apiKey"]:
@@ -151,6 +155,18 @@ def chat_raw(model_cfg: dict, messages: list, tools: list | None = None, tempera
     if last:
         raise last
     return {}
+
+
+def chat_json(model_cfg: dict, messages: list, temperature: float = 0.0) -> str:
+    """Request native JSON-mode structured output; fall back to a plain completion
+    if the endpoint doesn't support response_format."""
+    try:
+        msg = chat_raw(model_cfg, messages, response_format={"type": "json_object"}, temperature=temperature)
+        return str(msg.get("content") or "")
+    except urllib.error.HTTPError as ex:
+        if ex.code in (400, 404, 422):
+            return chat(model_cfg, messages, temperature=temperature)
+        raise
 
 
 # --------------------------------------------------------------------------- #
@@ -789,7 +805,7 @@ def plan_subtasks(model_cfg: dict, ws: Workspace, task: str) -> dict:
     window.Foo vs window.foo) and the parts never connect. Returns
     {parallelizable, interfaceContract, subtasks:[{title,detail,files}]}."""
     try:
-        content = chat(model_cfg, [
+        content = chat_json(model_cfg, [
             {"role": "system", "content":
                 "You are a tech lead planning parallel work. Decompose the task into INDEPENDENT subtasks that "
                 "touch DISJOINT files so separate workers can build them at the same time without conflicting. "
