@@ -106,6 +106,7 @@ class TuiClient:
         payload: dict | None = None,
         headers: dict | None = None,
         timeout: float | None = None,
+        retry_refused: bool = False,
     ):
         request_headers = {"Content-Type": "application/json"}
         request_headers.update(self._auth_headers())
@@ -139,7 +140,10 @@ class TuiClient:
                 return {"ok": False, "status": exc.code, "json": parsed}
             except urllib.error.URLError as exc:
                 last_exc = exc
-                if _is_conn_refused(exc) and attempt < 3:
+                # Only ride out the startup window for calls that opt in (create_session).
+                # Every other call fails fast on refusal so the TUI stays responsive when
+                # the stack is deliberately DOWN (e.g. right after /stop) instead of hanging.
+                if retry_refused and _is_conn_refused(exc) and attempt < 3:
                     time.sleep(0.4 * (attempt + 1))
                     continue
                 return {"ok": False, "status": 0, "json": {"error": {"message": str(exc)}}}
@@ -188,6 +192,7 @@ class TuiClient:
             f"{base}/v1/sessions",
             body,
             timeout=20.0,
+            retry_refused=True,
         )["json"]
 
     def heartbeat_session(self, *, session_id: str, seen_by: str = "tui") -> dict:
