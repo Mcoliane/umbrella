@@ -9,6 +9,18 @@ import urllib.request
 from pathlib import Path
 
 
+def _is_conn_refused(exc: Exception) -> bool:
+    """True when a connection was REFUSED (nothing listening on the port) — the
+    request never reached the server, so a retry is safe and cannot duplicate work.
+    Deliberately excludes timeouts and resets, which may have partially arrived."""
+    reason = getattr(exc, "reason", exc)
+    if isinstance(reason, ConnectionRefusedError):
+        return True
+    if isinstance(reason, OSError) and getattr(reason, "errno", None) in (61, 111):  # ECONNREFUSED (macOS / Linux)
+        return True
+    return "refused" in str(reason).lower()
+
+
 class TuiClient:
     def __init__(self, *, root: Path, manifest_path: Path | None = None, timeout: float = 5.0):
         self.root = root
@@ -103,24 +115,37 @@ class TuiClient:
         if payload is not None:
             data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(url, method=method, headers=request_headers, data=data)
-        try:
-            with urllib.request.urlopen(req, timeout=(timeout if timeout is not None else self.timeout)) as resp:
-                body = resp.read().decode("utf-8")
-                return {"ok": True, "status": resp.status, "json": json.loads(body) if body else {}}
-        except urllib.error.HTTPError as exc:
-            body = ""
+        req_timeout = timeout if timeout is not None else self.timeout
+        last_exc: Exception | None = None
+        # Ride out the service-startup window (e.g. right after a restart): a REFUSED
+        # connection means nothing was listening yet, so the request never reached the
+        # server and retrying is safe. HTTP errors (server responded) and timeouts
+        # (may have arrived) are NOT retried.
+        for attempt in range(4):
             try:
-                body = exc.read().decode("utf-8")
-            except Exception:
+                with urllib.request.urlopen(req, timeout=req_timeout) as resp:
+                    body = resp.read().decode("utf-8")
+                    return {"ok": True, "status": resp.status, "json": json.loads(body) if body else {}}
+            except urllib.error.HTTPError as exc:
                 body = ""
-            parsed = {}
-            try:
-                parsed = json.loads(body) if body else {}
-            except Exception:
-                parsed = {"raw": body}
-            return {"ok": False, "status": exc.code, "json": parsed}
-        except Exception as exc:
-            return {"ok": False, "status": 0, "json": {"error": {"message": str(exc)}}}
+                try:
+                    body = exc.read().decode("utf-8")
+                except Exception:
+                    body = ""
+                try:
+                    parsed = json.loads(body) if body else {}
+                except Exception:
+                    parsed = {"raw": body}
+                return {"ok": False, "status": exc.code, "json": parsed}
+            except urllib.error.URLError as exc:
+                last_exc = exc
+                if _is_conn_refused(exc) and attempt < 3:
+                    time.sleep(0.4 * (attempt + 1))
+                    continue
+                return {"ok": False, "status": 0, "json": {"error": {"message": str(exc)}}}
+            except Exception as exc:
+                return {"ok": False, "status": 0, "json": {"error": {"message": str(exc)}}}
+        return {"ok": False, "status": 0, "json": {"error": {"message": str(last_exc) if last_exc else "connection failed"}}}
 
     def health(self, service: str, path: str) -> dict:
         base = self.service_url(service)
