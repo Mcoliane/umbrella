@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import re
 import sys
 import time
 import uuid
@@ -90,6 +91,20 @@ def parse_json_content_block(content: str) -> dict | None:
     return None
 
 
+def _salvage_control_reply(content: str) -> str | None:
+    """When a model emits a control object that fails to parse (almost always its
+    JSON was truncated mid-generation), pull out just the human-facing "reply"
+    string so the user sees clean text instead of raw JSON braces. Returns None if
+    no reply field is recoverable."""
+    m = re.search(r'"reply"\s*:\s*"((?:[^"\\]|\\.)*)"', str(content or ""))
+    if not m:
+        return None
+    try:
+        return json.loads('"' + m.group(1) + '"')  # unescape JSON string escapes
+    except Exception:
+        return m.group(1)
+
+
 def summarize_history(rows: list[dict], limit: int = 8) -> str:
     lines: list[str] = []
     for row in rows[-limit:]:
@@ -111,6 +126,7 @@ ACTION_GUIDE = {
     "skill.code.agent": "autonomously write/modify/verify code (plans, edits files, runs tests until they pass) — inputs: task (required: the full description of what to build), workingDir (optional: absolute path, e.g. ~/Desktop/my-app)",
     "skill.code.run": "run a single Python or Bash snippet and return its output — inputs: code (required), language ('python' or 'bash')",
     "skill.security.scan": "run an AUTHORIZED red-team / vulnerability scan of a target from the outside (recon, enumeration, auth/access-control/injection/SSRF/misconfig testing) and return a findings report — inputs: target (required: the URL/host to test), authorized (required: true, only if the operator owns or is contracted to test it), scope (optional: extra in-scope hosts), thoroughness (optional). Use this for security testing / pentest / 'find vulnerabilities' requests, NOT the code agent.",
+    "skill.files.query": "answer a question about the user's LOCAL files by finding, reading, and summarizing them (read-only, scoped to safe folders like Desktop/Documents/Downloads) — inputs: task (required: what to find/read/answer, e.g. 'find the gateway.gold analysis on my desktop and summarize how it went'), roots (optional: specific folder(s) to search). Use this for 'it's on my desktop', 'read/summarize this file', 'what's in this folder', NOT the code agent.",
     "skill.web.search": "search the web and return ranked results — inputs: query (required)",
     "skill.web.fetch": "fetch a URL and return its readable text — inputs: url (required)",
     "skill.memory.search": "search durable knowledge memory — inputs: query (required)",
@@ -568,8 +584,18 @@ class BrokerEngine:
 
             parsed = parse_json_content_block(content)
             if not isinstance(parsed, dict):
-                # Non-JSON (or no JSON object): treat the raw text as a direct answer.
-                parsed = {"reply": content, "mode": "direct"} if content else {}
+                looks_like_control = content.startswith("{") and ('"reply"' in content or '"mode"' in content)
+                if looks_like_control and attempt < _COMPLETION_ATTEMPTS - 1:
+                    # A control object that didn't parse — almost always the model's
+                    # JSON was truncated mid-generation. Re-ask to recover the full
+                    # {mode, reply, delegationPlan} rather than dumping raw braces at
+                    # the user or silently dropping the delegation.
+                    last_error = "model returned a truncated/invalid control object"
+                    continue
+                # Out of retries (or it was plain prose): salvage just the human reply
+                # so the user never sees raw JSON braces, then answer directly.
+                salvaged = _salvage_control_reply(content) if looks_like_control else None
+                parsed = {"reply": salvaged if salvaged is not None else content, "mode": "direct"} if content else {}
             reply = str(parsed.get("reply", "")).strip()
             mode = str(parsed.get("mode", "direct")).strip().lower() or "direct"
             if mode not in {"direct", "delegate"}:
