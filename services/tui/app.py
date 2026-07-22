@@ -39,6 +39,7 @@ class UmbrellaTui:
         self._palette_cursor = 0
         self._history: list[str] = []
         self._history_idx = 0
+        self._transcript_scroll = 0  # lines scrolled up from the live bottom (0 = following live)
         self._should_quit = False
         self._cursor_xy: tuple[int, int] | None = None
         self._commands = [
@@ -981,11 +982,19 @@ class UmbrellaTui:
     def draw_transcript(self, screen):
         h, w = screen.getmaxyx()
         tw = max(24, w - self._sidebar_w(w) - 4)
-        self._put(screen, 1, 1, "TRANSCRIPT", self._c(7, curses.A_BOLD))
         lines = self._conversation_lines(tw)
         top, bottom = 2, h - 2
         avail = max(1, bottom - top)
-        visible = lines[-avail:]
+        # Scroll offset: number of lines scrolled up from the live bottom. Clamp
+        # here since the window/line-count can change between keypresses.
+        max_scroll = max(0, len(lines) - avail)
+        self._transcript_scroll = max(0, min(self._transcript_scroll, max_scroll))
+        header = "TRANSCRIPT"
+        if self._transcript_scroll > 0:
+            header += f"  ▲{self._transcript_scroll} scrolled — Shift+↓/PgDn for live"
+        self._put(screen, 1, 1, header, self._c(7, curses.A_BOLD))
+        end = len(lines) - self._transcript_scroll
+        visible = lines[max(0, end - avail):end]
         y = top
         for attr, text in visible:
             self._put(screen, y, 1, text, attr)
@@ -1112,6 +1121,7 @@ class UmbrellaTui:
         self._input = ""
         self._input_cursor = 0
         self._palette_cursor = 0
+        self._transcript_scroll = 0  # sending jumps the transcript back to live
         if not buf:
             return
         self._history.append(buf)
@@ -1159,6 +1169,10 @@ class UmbrellaTui:
                 self._palette_cursor = min(max(0, len(self._matching_commands()) - 1), self._palette_cursor + 1)
             else:
                 self._history_next()
+        elif key in (curses.KEY_SR, curses.KEY_PPAGE):  # Shift+Up / PageUp: scroll transcript back into history
+            self._transcript_scroll += 3 if key == curses.KEY_SR else 12
+        elif key in (curses.KEY_SF, curses.KEY_NPAGE):  # Shift+Down / PageDown: scroll transcript toward live
+            self._transcript_scroll = max(0, self._transcript_scroll - (3 if key == curses.KEY_SF else 12))
         elif key == 9:  # Tab: autocomplete a command, else cycle the target
             if palette:
                 matches = self._matching_commands()
