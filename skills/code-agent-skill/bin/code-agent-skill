@@ -831,7 +831,13 @@ def main() -> int:
     try:
         ensure_repo(wd)
         global _ENV_SURVEY
-        _ENV_SURVEY = survey_environment()
+        try:
+            if str(root) not in sys.path:
+                sys.path.insert(0, str(root))
+            from services.environment import survey_environment as _shared_survey
+            _ENV_SURVEY = str(_shared_survey().get("summary", "")).strip() or survey_environment()
+        except Exception:  # noqa: BLE001 — fall back to the inline (non-coherence) survey
+            _ENV_SURVEY = survey_environment()
         want_parallel = bool(inputs.get("parallel", True))
         max_workers = max(1, min(int(inputs.get("maxWorkers", 4) or 4), 6))
         plan = plan_subtasks(model_cfg, ws, task) if want_parallel else {"parallelizable": False, "subtasks": []}

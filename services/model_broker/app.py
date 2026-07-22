@@ -425,6 +425,7 @@ class BrokerEngine:
         system_prompt = str(request.get("systemPrompt", "")).strip() or "You are a town agent inside Umbrella. Reply in JSON with keys reply and mode."
         instructions = str(request.get("instructions", "")).strip() or "Mode must be direct or delegate."
         message = str(request.get("message", "")).strip()
+        environment_summary = str(request.get("environmentSummary", "")).strip()
         town_context = request.get("townContext") if isinstance(request.get("townContext"), dict) else {}
         available_shops = request.get("availableShops") if isinstance(request.get("availableShops"), list) else []
         conversation_history = request.get("conversationHistory") if isinstance(request.get("conversationHistory"), list) else []
@@ -463,6 +464,7 @@ class BrokerEngine:
                         "\n".join(context_lines)
                         + "\nAlways respond with JSON containing reply and mode."
                         + "\nDo not answer with generic filler if the user asked a concrete question."
+                        + (("\n\n" + environment_summary) if environment_summary else "")
                     ),
                 },
                 {
@@ -496,6 +498,11 @@ class BrokerEngine:
                         "(e.g. a folder 'prism-code' on the desktop -> \"~/Desktop/prism-code\").\n"
                         "4. Only use shopIds and actionIds that appear above. If no shop fits, answer directly and say what worker would be needed.\n"
                         "5. Answer directly (mode:direct) for questions, chat, explanations, status, and for asking clarifying questions before a big build.\n"
+                        "6. TOOL COHERENCE: when the machine toolchain is provided, pick the runtime that has ALL the pieces the "
+                        "architecture needs together, and put that choice IN inputs.task. If a required dependency is missing from "
+                        "that runtime, include the exact install command in inputs.task (e.g. \"use /opt/homebrew/bin/python3.14 and "
+                        "run `/opt/homebrew/bin/python3.14 -m pip install pillow` first\"); the dev shop is allowed to install what the "
+                        "task specifies. Follow COHERENCE notes literally; prefer already-installed tools and only add what is required.\n"
                         "Return ONLY the JSON object, no prose outside it."
                     ),
                 },

@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
+from services.environment import survey_environment
 from services.id_utils import validate_identifier
 from services.memory.auth import check_auth
 from services.persistence import atomic_write_json, file_lock, update_json
@@ -1139,6 +1140,17 @@ class SessionEngine:
             return 'skill.memory.summarize'
         raise ValueError('no conversational action is enabled in target shop')
 
+    def _environment_summary(self) -> str:
+        """Machine toolchain + coherence survey, computed once per process."""
+        cached = getattr(self, '_env_summary_cache', None)
+        if cached is None:
+            try:
+                cached = str(survey_environment().get('summary', '')).strip()
+            except Exception:  # noqa: BLE001 — survey is best-effort
+                cached = ''
+            self._env_summary_cache = cached
+        return cached
+
     def _converse_direct(
         self,
         session_id: str,
@@ -1160,6 +1172,11 @@ class SessionEngine:
         agent_package_id = str((shop.get('agentPackageId', '') or ((agent_row or {}).get('agentPackageId', '')))).strip()
         agent_package = self.get_agent_package(agent_package_id) if agent_package_id else None
         package_metadata = agent_package.get('metadata') if isinstance((agent_package or {}).get('metadata'), dict) else {}
+        # Coordinators (mayor/originator) get the machine's coherence-aware toolchain
+        # survey so they can suggest a coherent runtime and delegate any needed
+        # install. Worker agents don't need it (the code agent surveys on its own).
+        agent_role = str((agent_row or {}).get('role', '')).strip()
+        environment_summary = self._environment_summary() if agent_role in {'mayor', 'originator'} else ''
         inputs = {
             'sessionId': session_id,
             'agentId': agent_id,
@@ -1179,6 +1196,7 @@ class SessionEngine:
             'runtimeMode': runtime_mode,
             'systemPrompt': system_prompt,
             'instructions': instructions,
+            'environmentSummary': environment_summary,
         }
         if isinstance(extra_inputs, dict):
             inputs.update(extra_inputs)

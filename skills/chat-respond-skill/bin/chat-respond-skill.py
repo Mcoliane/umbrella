@@ -160,6 +160,7 @@ def _provider_response(inputs: dict) -> dict | None:
         "runtimeMode": str(inputs.get("runtimeMode", "")).strip(),
         "systemPrompt": str(inputs.get("systemPrompt", "")).strip(),
         "instructions": str(inputs.get("instructions", "")).strip(),
+        "environmentSummary": str(inputs.get("environmentSummary", "")).strip(),
         "model": str(override.get("model") or inputs.get("model", "")).strip(),
         "temperature": inputs.get("temperature"),
         "maxTokens": inputs.get("maxTokens"),
