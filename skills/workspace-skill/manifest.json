@@ -1,0 +1,67 @@
+{
+  "id": "workspace.files.skill",
+  "name": "Workspace Files Skill",
+  "version": "0.1.0",
+  "apiVersion": "umbrella.catalog.manifest.v1",
+  "kind": "skill",
+  "runtime": "python",
+  "entrypoint": "bin/workspace-skill",
+  "defaultEnabled": true,
+  "isolationMode": "process",
+  "compatibility": {
+    "umbrella": { "minVersion": "0.4.0" },
+    "pluginHostRuntimes": ["python"],
+    "apiVersions": ["umbrella.catalog.manifest.v1"],
+    "actionSchemaVersions": ["umbrella.catalog.action.v1"],
+    "requiresFeatures": []
+  },
+  "executionPolicy": {
+    "envAllowlist": ["HOME", "USER", "PATH", "TMPDIR", "LANG", "SHELL"],
+    "network": "http-outbound",
+    "fs": "read",
+    "maxRuntimeSec": 600,
+    "maxOutputBytes": 262144,
+    "maxInputBytes": 262144,
+    "isolationProfile": "http-outbound"
+  },
+  "sessionHooks": {
+    "suggestedContexts": ["files", "workspace"]
+  },
+  "actions": [
+    {
+      "id": "skill.files.query",
+      "title": "Query Local Files (read-only)",
+      "description": "Answer a question about the user's local files by finding, listing, reading, and summarizing them (READ-ONLY, scope-enforced to safe roots like Desktop/Documents/Downloads). Use this for 'find the file on my desktop', 'what's in this folder', 'read/summarize this document', 'how did the analysis on my desktop go'.",
+      "requiredCapabilities": [],
+      "policyHints": {
+        "riskClass": "medium",
+        "approvalMode": "auto",
+        "memoryAccess": "none",
+        "fsAccess": "read",
+        "networkAccess": "http-outbound",
+        "processAccess": "none",
+        "delegationAllowed": true,
+        "subAgentAllowed": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task": { "type": "string" },
+          "roots": { "type": "string" },
+          "maxIterations": { "type": "integer" }
+        },
+        "required": ["task"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "summary": { "type": "string" },
+          "answer": { "type": "string" },
+          "filesRead": { "type": "array" },
+          "iterations": { "type": "integer" },
+          "verified": { "type": "boolean" }
+        }
+      }
+    }
+  ]
+}
