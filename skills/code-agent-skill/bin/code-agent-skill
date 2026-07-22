@@ -20,11 +20,14 @@ stdout.
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
+import posixpath
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -40,8 +43,9 @@ MODEL_TIMEOUT = 120        # per model call
 OBS_CAP = 6000             # chars of a tool observation fed back to the model
 READ_CAP = 24000           # chars returned by read_file
 RUN_OUTPUT_CAP = 8000      # chars of command stdout/stderr kept
-REPO_MAP_BUDGET = 6000     # chars of the repository map injected at loop start
+REPO_MAP_BUDGET = 9000     # chars of the repository map injected at loop start
 SEARCH_MAX_RESULTS = 30    # ranked matches returned by the search tool
+MAX_INDEX_FILES = 20000    # hard cap on files the index will parse (runaway guard)
 
 # Source files the repo map and search scan; everything else is skipped.
 SOURCE_EXTS = {
@@ -122,7 +126,7 @@ def chat(model_cfg: dict, messages: list, temperature: float = 0.1) -> str:
 class Workspace:
     def __init__(self, root: Path):
         self.root = root.resolve()
-        self._symbol_index: dict | None = None  # {name: [(rel, line, kind, sig)]}, cached
+        self._index_cache: dict | None = None  # symbol + import-graph index, cached per run
 
     def _safe(self, rel: str) -> Path:
         p = (self.root / str(rel or "").lstrip("/")).resolve()
@@ -158,7 +162,7 @@ class Workspace:
         p = self._safe(rel)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content if isinstance(content, str) else str(content), encoding="utf-8")
-        self._symbol_index = None  # code changed; rebuild navigation index on next use
+        self._index_cache = None  # code changed; index rebuilds incrementally on next use
         return f"wrote {rel} ({len(content or '')} chars)"
 
     def edit_file(self, rel: str, old: str, new: str) -> str:
@@ -171,7 +175,7 @@ class Workspace:
         if text.count(old) > 1:
             return f"(edit failed: 'old' text is not unique in {rel}; add more context)"
         p.write_text(text.replace(old, new, 1), encoding="utf-8")
-        self._symbol_index = None
+        self._index_cache = None  # code changed; index rebuilds incrementally on next use
         return f"edited {rel}"
 
     def run(self, command: str) -> str:
@@ -244,19 +248,31 @@ class Workspace:
     def search(self, query: str, max_results: int = SEARCH_MAX_RESULTS) -> str:
         return self.find(query, max_results=max_results)
 
+    def _index(self) -> dict:
+        if self._index_cache is None:
+            self._index_cache = build_index(self.root)
+        return self._index_cache
+
     def _sym_index(self) -> dict:
-        if self._symbol_index is None:
-            index: dict[str, list] = {}
-            for p in self._source_files():
-                try:
-                    text = p.read_text(encoding="utf-8", errors="replace")
-                except OSError:
-                    continue
-                rel = str(p.relative_to(self.root))
-                for d in _definitions(p, text):
-                    index.setdefault(d["name"], []).append((rel, d["line"], d["kind"], d["sig"]))
-            self._symbol_index = index
-        return self._symbol_index
+        return self._index()["symbols"]
+
+    def dependencies(self, rel: str) -> str:
+        """Go to Dependencies: which repo files this file imports."""
+        rel = str(rel or "").strip().lstrip("/")
+        idx = self._index()
+        if rel not in idx["by_file"]:
+            return f"(not an indexed source file: {rel!r}; use list_dir to find the right path)"
+        deps = sorted(idx["imports"].get(rel, set()))
+        return "\n".join(deps) if deps else "(no internal dependencies)"
+
+    def dependents(self, rel: str) -> str:
+        """Find Dependents: which repo files import this one (blast radius of a change)."""
+        rel = str(rel or "").strip().lstrip("/")
+        idx = self._index()
+        if rel not in idx["by_file"]:
+            return f"(not an indexed source file: {rel!r}; use list_dir to find the right path)"
+        deps = sorted(idx["dependents"].get(rel, set()))
+        return "\n".join(deps) if deps else "(no files import this)"
 
     def definition(self, symbol: str) -> str:
         """Go to Definition: where a function/class/method/symbol is DEFINED."""
@@ -379,31 +395,192 @@ def _definitions(path: Path, text: str) -> list[dict]:
     return defs
 
 
-def build_repo_map(root: Path, task: str, budget: int = REPO_MAP_BUDGET) -> str:
-    files = [p for p in root.rglob("*")
-             if p.is_file() and p.suffix.lower() in SOURCE_EXTS and not _skip_path(p)]
-    if not files:
-        return ""
-    keywords = {w for w in re.findall(r"\w+", task.lower()) if len(w) > 2}
-    entries: list[tuple[float, str]] = []
-    for p in files[:600]:
+def _index_cache_path(root: Path) -> Path:
+    digest = hashlib.sha1(str(root).encode("utf-8")).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / "umbrella-code-index" / f"{digest}.json"
+
+
+def _file_imports(path: Path, text: str) -> list[str]:
+    """Import specifiers a file declares, as resolvable strings (for the dep graph)."""
+    suf = path.suffix.lower()
+    out: list[str] = []
+    if suf in {".py", ".pyi"}:
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError):
+            return out
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                out.extend(a.name for a in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                prefix = "." * (node.level or 0)
+                if node.module:
+                    base = prefix + node.module
+                    out.append(base)
+                    out.extend(f"{base}.{a.name}" for a in node.names)
+                else:
+                    out.extend(f"{prefix}{a.name}" for a in node.names)
+        return out
+    if suf in {".js", ".jsx", ".ts", ".tsx", ".mjs"}:
+        out += re.findall(r"""require\(\s*['"]([^'"]+)['"]\s*\)""", text)
+        out += re.findall(r"""\bfrom\s+['"]([^'"]+)['"]""", text)
+        out += re.findall(r"""\bimport\s+['"]([^'"]+)['"]""", text)
+    return out
+
+
+def _resolve_import(spec: str, from_rel: str, all_rels: set) -> str | None:
+    """Best-effort resolution of an import specifier to a repo-relative file."""
+    spec = str(spec or "").strip()
+    if not spec:
+        return None
+    from_dir = posixpath.dirname(from_rel)
+    if spec.startswith("."):
+        if spec[:2] in ("./", "..") or "/" in spec:  # JS-style relative path
+            target = posixpath.normpath(posixpath.join(from_dir, spec))
+            for cand in (target, target + ".js", target + ".ts", target + ".jsx",
+                         target + ".tsx", target + ".mjs", target + "/index.js", target + "/index.ts"):
+                if cand in all_rels:
+                    return cand
+            return None
+        level = len(spec) - len(spec.lstrip("."))  # Python relative import
+        mod = spec[level:]
+        base = from_dir
+        for _ in range(level - 1):
+            base = posixpath.dirname(base)
+        path = posixpath.join(base, mod.replace(".", "/")) if mod else base
+        for cand in (path + ".py", path + "/__init__.py", path + ".pyi"):
+            cand = cand.lstrip("/")
+            if cand in all_rels:
+                return cand
+        return None
+    path = spec.replace(".", "/")  # absolute dotted (Python package)
+    for prefix in ("", "src/", "lib/"):
+        for cand in (f"{prefix}{path}.py", f"{prefix}{path}/__init__.py", f"{prefix}{path}.pyi"):
+            if cand in all_rels:
+                return cand
+    return None  # external package / bare JS module
+
+
+def build_index(root: Path) -> dict:
+    """Symbol + import-graph index over the repo, cached to disk (outside the repo)
+    and refreshed incrementally by file mtime so it stays fast on large repos.
+    Returns {by_file, symbols, imports, dependents, fileCount}."""
+    files = []
+    for p in root.rglob("*"):
+        if p.is_file() and p.suffix.lower() in SOURCE_EXTS and not _skip_path(p):
+            files.append(p)
+            if len(files) >= MAX_INDEX_FILES:
+                break
+
+    cache_path = _index_cache_path(root)
+    try:
+        cache = json.loads(cache_path.read_text(encoding="utf-8")) if cache_path.exists() else {}
+    except Exception:  # noqa: BLE001
+        cache = {}
+    if not isinstance(cache, dict):
+        cache = {}
+
+    by_file: dict[str, dict] = {}
+    for p in files:
+        rel = str(p.relative_to(root))
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            continue
+        cached = cache.get(rel)
+        if isinstance(cached, dict) and abs(float(cached.get("mtime", -1)) - mtime) < 1e-6:
+            by_file[rel] = cached  # unchanged since last run — reuse parsed data
+            continue
         try:
             text = p.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        symbols = _extract_symbols(p, text)
-        rel = str(p.relative_to(root))
-        score = sum(3 for k in keywords if k in rel.lower())
-        for s in symbols:
-            name = re.split(r"[ ({]", s, 1)[0].lower()
-            if name in keywords:
-                score += 5
-        score += min(len(symbols), 12) * 0.2  # bigger/central files rank a bit higher
-        block = rel + ":" + ("".join(f"\n    {s}" for s in symbols[:14]) if symbols else " (no top-level symbols)")
-        entries.append((score, block))
-    entries.sort(key=lambda e: e[0], reverse=True)
-    lines, used = ["Repository map (most task-relevant files first; use `search` to find more):"], 0
-    for _, block in entries:
+        by_file[rel] = {
+            "mtime": mtime,
+            "defs": _definitions(p, text),
+            "symbols": _extract_symbols(p, text),
+            "imports": _file_imports(p, text),
+        }
+
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(by_file), encoding="utf-8")
+    except OSError:
+        pass
+
+    symbols: dict[str, list] = {}
+    for rel, info in by_file.items():
+        for d in info.get("defs", []):
+            symbols.setdefault(d["name"], []).append((rel, d["line"], d["kind"], d["sig"]))
+
+    all_rels = set(by_file)
+    imports: dict[str, set] = {}
+    dependents: dict[str, set] = {rel: set() for rel in by_file}
+    for rel, info in by_file.items():
+        targets = set()
+        for spec in info.get("imports", []):
+            t = _resolve_import(spec, rel, all_rels)
+            if t and t != rel:
+                targets.add(t)
+                dependents.setdefault(t, set()).add(rel)
+        imports[rel] = targets
+    return {"by_file": by_file, "symbols": symbols, "imports": imports,
+            "dependents": dependents, "fileCount": len(by_file)}
+
+
+def _dir_overview(by_file: dict, dependents: dict, limit: int = 12) -> str:
+    """Top-level package/dir structure with file counts — orientation for sprawl."""
+    counts: dict[str, int] = {}
+    for rel in by_file:
+        top = rel.split("/", 1)[0] if "/" in rel else "(root)"
+        counts[top] = counts.get(top, 0) + 1
+    lines = []
+    for top, n in sorted(counts.items(), key=lambda e: -e[1])[:limit]:
+        central = sorted(
+            (r for r in by_file if (r.split("/", 1)[0] if "/" in r else "(root)") == top),
+            key=lambda r: -len(dependents.get(r, ())),
+        )[:2]
+        hint = (" — " + ", ".join(central)) if central else ""
+        lines.append(f"  {top}/ ({n} files){hint}")
+    return "\n".join(lines)
+
+
+def build_repo_map(root: Path, task: str, budget: int = REPO_MAP_BUDGET) -> str:
+    idx = build_index(root)
+    by_file = idx["by_file"]
+    if not by_file:
+        return ""
+    dependents, imports = idx["dependents"], idx["imports"]
+    keywords = {w for w in re.findall(r"\w+", task.lower()) if len(w) > 2}
+
+    # Score EVERY file (not an arbitrary first-N slice).
+    score: dict[str, float] = {}
+    for rel, info in by_file.items():
+        s = 3.0 * sum(1 for k in keywords if k in rel.lower())
+        for sym in info.get("symbols", []):
+            if re.split(r"[ ({]", sym, 1)[0].lower() in keywords:
+                s += 5
+        s += min(len(info.get("symbols", [])), 12) * 0.2
+        s += 0.4 * len(dependents.get(rel, ()))  # centrality: heavily-imported files matter
+        score[rel] = s
+    # Import-proximity boost: files wired to the top matches get a bump so the map
+    # surfaces a connected neighborhood, not scattered keyword hits.
+    focal = {rel for rel, sc in sorted(score.items(), key=lambda e: -e[1])[:15] if sc > 0}
+    for rel in list(score):
+        if focal & (imports.get(rel, set()) | dependents.get(rel, set())):
+            score[rel] += 2
+
+    ranked = sorted(by_file.items(), key=lambda e: -score.get(e[0], 0))
+    lines = [
+        f"Repository map — {idx['fileCount']} source files. Structure:",
+        _dir_overview(by_file, dependents),
+        "",
+        "Most task-relevant files (use find / definition / references / dependencies / dependents to go deeper):",
+    ]
+    used = 0
+    for rel, info in ranked:
+        syms = info.get("symbols", [])
+        block = rel + ":" + ("".join(f"\n    {s}" for s in syms[:12]) if syms else " (no top-level symbols)")
         if used + len(block) > budget:
             break
         lines.append(block)
@@ -445,6 +622,8 @@ You work strictly by TOOLS. On every turn you MUST reply with a SINGLE JSON obje
   {"tool":"definition","symbol":"<name>"}            # Go to Definition: where a function/class/method is defined
   {"tool":"references","symbol":"<name>"}            # Find All References: everywhere a symbol is used
   {"tool":"outline","path":"relative/path"}          # Go to Symbol: list the definitions in one file
+  {"tool":"dependencies","path":"relative/path"}     # which repo files this file imports
+  {"tool":"dependents","path":"relative/path"}       # which repo files import this one (blast radius of a change)
   {"tool":"list_dir","path":"."}
   {"tool":"read_file","path":"relative/path"}
   {"tool":"write_file","path":"relative/path","content":"<full file content>"}
@@ -453,7 +632,7 @@ You work strictly by TOOLS. On every turn you MUST reply with a SINGLE JSON obje
   {"tool":"finish","summary":"<what you built and how it was verified>"}
 
 Method (follow it):
-1. You are given a Repository map of the codebase up front. Use `find` (text/regex), `definition`, `references`, and `outline` to locate the exact code relevant to the task — navigate like an engineer, do NOT read files at random on a large codebase.
+1. You are given a Repository map (a directory overview plus the most task-relevant files, backed by a symbol + import-graph index that scales to large repos). Navigate like an engineer, NOT by reading files at random: use `find` (text/regex), `definition` (where a symbol is defined), `references` (where it is used), `outline` (a file's symbols), and — to understand how the code connects — `dependencies` (what a file imports) and `dependents` (what imports it, i.e. the blast radius of a change).
 2. Read the specific code you'll change or depend on, then plan briefly and implement in small steps. When the task does not specify a FORM, choose the one that fits the domain and state which you chose: a user-facing, interactive product (photo editor, game, dashboard) should be a real UI (web or desktop), NOT a command-line tool; batch/automation/data work should be a CLI or library; a backend should be a service/API.
 3. VERIFY your work with the installed test runner (e.g. pytest/node): write and RUN tests that exercise REAL BEHAVIOR and output — not merely that a pure helper returns a value, but that the actual feature does the right thing (e.g. the image is actually transformed, the endpoint returns the right response) — plus linters/type-checkers/build commands via the run tool. Read the output. If anything fails, FIX it and re-run. Do not finish on unverified code.
 4. Prefer edit_file for surgical changes to existing files and write_file for new/rewritten files. Keep files complete and runnable, and match the surrounding code's style and conventions.
@@ -677,6 +856,10 @@ def run_loop(model_cfg: dict, ws: Workspace, task: str, max_iters: int, extra_sy
                 obs = ws.references(str(action.get("symbol", "")))
             elif tool == "outline":
                 obs = ws.outline(str(action.get("path", "")))
+            elif tool == "dependencies":
+                obs = ws.dependencies(str(action.get("path", "")))
+            elif tool == "dependents":
+                obs = ws.dependents(str(action.get("path", "")))
             elif tool == "list_dir":
                 obs = ws.list_dir(str(action.get("path", ".")))
             elif tool == "read_file":
@@ -690,7 +873,7 @@ def run_loop(model_cfg: dict, ws: Workspace, task: str, max_iters: int, extra_sy
             elif tool == "_error":
                 obs = f"Your last message was not a valid single JSON action: {action.get('error')}. Reply with exactly one JSON tool object."
             else:
-                obs = f"Unknown tool {tool!r}. Use one of find, definition, references, outline, list_dir, read_file, write_file, edit_file, run, finish."
+                obs = f"Unknown tool {tool!r}. Use one of find, definition, references, outline, dependencies, dependents, list_dir, read_file, write_file, edit_file, run, finish."
         except Exception as ex:  # noqa: BLE001 — surface tool errors back to the agent
             obs = f"(tool error: {type(ex).__name__}: {ex})"
         messages.append({"role": "user", "content": str(obs)[:OBS_CAP]})
