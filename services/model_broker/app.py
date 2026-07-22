@@ -479,12 +479,16 @@ class BrokerEngine:
                         "Rules:\n"
                         "1. CLARIFY BEFORE BUILDING. For a substantial or open-ended build — an app, tool, service, or multi-file "
                         "project — whose key decisions are unspecified (the FORM: web app / desktop GUI / command-line / API; the "
-                        "must-have FEATURES; the target platform; important constraints), do NOT delegate yet. Reply mode:direct with a "
-                        "SHORT, focused set of clarifying questions (2-4 highest-signal ones), the way a careful engineer scopes a large "
-                        "task before starting, then wait for the answer. Delegate only once the request is concrete. Do NOT interrogate "
-                        "for small, clear, or already-specified tasks — build those right away. "
-                        "Example: {\"mode\":\"direct\",\"reply\":\"Happy to build that — a few quick things so I build the right thing:\\n"
-                        "1) Web app, desktop GUI, or command-line? 2) Which adjustments matter most? 3) Where should it save, and what format?\"}\n"
+                        "must-have FEATURES; the target platform; important constraints), do NOT delegate yet. Reply mode:clarify with a "
+                        "one-line intro and a STRUCTURED question list the interface renders as SELECTABLE OPTIONS: "
+                        "{\"mode\":\"clarify\",\"reply\":\"<one-line intro>\",\"questions\":[{\"question\":\"<q>\",\"options\":[\"opt1\",\"opt2\",\"opt3\"],\"multiSelect\":false}]}. "
+                        "Give 2-4 questions, each with 2-5 concrete selectable options; set multiSelect:true for 'pick any that apply' "
+                        "questions like feature lists. Delegate only once they are answered. Do NOT interrogate for small, clear, or "
+                        "already-specified tasks — build those right away. "
+                        "Example: {\"mode\":\"clarify\",\"reply\":\"Happy to build that — a few quick things:\",\"questions\":["
+                        "{\"question\":\"What form should it take?\",\"options\":[\"Web app\",\"Desktop app\",\"Command-line\"],\"multiSelect\":false},"
+                        "{\"question\":\"Which features matter most?\",\"options\":[\"Crop\",\"Filters\",\"Layers\",\"Text overlay\",\"Adjustments\"],\"multiSelect\":true},"
+                        "{\"question\":\"Where should output go?\",\"options\":[\"Local files\",\"Web-hosted\"],\"multiSelect\":false}]}\n"
                         "2. Once the request is concrete enough, DELEGATE real work a shop can do — writing or running code, building a "
                         "well-specified app, searching or scraping the web, or looking things up in memory. Do NOT try to do these yourself in prose.\n"
                         "3. Pick the shopId and actionId from the list above, and fill inputs exactly as that action describes. "
@@ -583,6 +587,21 @@ class BrokerEngine:
                 out["modelUsed"] = model
                 out["latencyMs"] = int((time.time() - started) * 1000)
                 out["attempts"] = attempt + 1
+                # Structured clarifying questions (mode "clarify" was normalized to
+                # "direct" above): sanitize into {question, options, multiSelect} so
+                # the client can render them as a selectable picker.
+                clean_questions = []
+                raw_questions = parsed.get("questions")
+                if isinstance(raw_questions, list):
+                    for q in raw_questions[:5]:
+                        if not isinstance(q, dict):
+                            continue
+                        qtext = str(q.get("question", "")).strip()
+                        if not qtext:
+                            continue
+                        options = [str(o).strip() for o in (q.get("options") or []) if str(o).strip()][:6]
+                        clean_questions.append({"question": qtext, "options": options, "multiSelect": bool(q.get("multiSelect"))})
+                out["questions"] = clean_questions
                 return out
 
             last_error = "provider returned empty content" if not content else "provider returned no usable reply"
