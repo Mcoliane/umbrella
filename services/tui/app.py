@@ -21,11 +21,12 @@ def _clip(value: str, width: int) -> str:
 
 
 class UmbrellaTui:
-    def __init__(self, *, root: Path, manifest: Path | None = None, session_id: str = ""):
+    def __init__(self, *, root: Path, manifest: Path | None = None, session_id: str = "", auto_resume: bool = True):
         self.root = root
         self.client = TuiClient(root=root, manifest_path=manifest)
         self.state = PlatformState(selected_session_id=session_id)
         self.initial_session_id = session_id.strip()
+        self.auto_resume = bool(auto_resume)
         self.session_cursor = 0
         self._pending_lock = threading.Lock()
         self._pending_result: dict | None = None
@@ -489,39 +490,123 @@ class UmbrellaTui:
                 answers.append(display[i])
         return answers
 
-    def choose_session(self, screen):
-        sessions = self.state.home.get("sessions") or []
-        if not sessions:
-            self.state.status = "No town sessions yet"
-            self.add_local_event("system", "No town sessions available. Use /new or n to create one.")
-            return
-        choices = []
-        for idx, row in enumerate(sessions, start=1):
+    def _relative_ago(self, ts: str) -> str:
+        secs = self._seconds_ago(ts)
+        if secs <= 0:
+            return "now"
+        if secs < 60:
+            return f"{secs}s ago"
+        if secs < 3600:
+            return f"{secs // 60}m ago"
+        if secs < 86400:
+            return f"{secs // 3600}h ago"
+        return f"{secs // 86400}d ago"
+
+    def _pick_from_list(self, screen, title: str, rows: list, *, empty_msg: str = "Nothing to choose.") -> object | None:
+        """Scrollable, arrow/number-navigable picker. rows = [{'label','value'}].
+        Returns the chosen value, or None on ESC / empty."""
+        if not rows:
+            self.state.status = empty_msg
+            self.add_local_event("system", empty_msg)
+            return None
+        cursor, top = 0, 0
+        try:
+            prev = curses.curs_set(0)
+        except curses.error:
+            prev = None
+        screen.timeout(-1)
+        try:
+            while True:
+                h, w = screen.getmaxyx()
+                screen.erase()
+                self._put(screen, 0, 1, _clip(title, w - 2), self._c(7, curses.A_BOLD))
+                self._put(screen, 1, 1, _clip("↑↓ move · number jump · ⏎ open · ESC cancel", w - 2), self._c(3))
+                view_h = max(1, h - 5)
+                if cursor < top:
+                    top = cursor
+                elif cursor >= top + view_h:
+                    top = cursor - view_h + 1
+                for i in range(top, min(len(rows), top + view_h)):
+                    sel = i == cursor
+                    arrow = "› " if sel else "  "
+                    num = f"{i + 1}. " if i < 9 else "   "
+                    attr = self._c(2, curses.A_BOLD) if sel else self._c(0)
+                    self._put(screen, 3 + (i - top), 2, _clip(arrow + num + str(rows[i].get("label", "")), w - 4), attr)
+                if len(rows) > view_h:
+                    self._put(screen, h - 1, 1, _clip(f"{cursor + 1}/{len(rows)}", w - 2), self._c(3))
+                screen.refresh()
+                k = screen.getch()
+                if k == 27:
+                    return None
+                if k in (curses.KEY_UP, ord("k")):
+                    cursor = (cursor - 1) % len(rows)
+                elif k in (curses.KEY_DOWN, ord("j")):
+                    cursor = (cursor + 1) % len(rows)
+                elif k == curses.KEY_NPAGE:
+                    cursor = min(len(rows) - 1, cursor + view_h)
+                elif k == curses.KEY_PPAGE:
+                    cursor = max(0, cursor - view_h)
+                elif ord("1") <= k <= ord("9") and (k - ord("1")) < len(rows):
+                    return rows[k - ord("1")].get("value")
+                elif k in (10, 13):
+                    return rows[cursor].get("value")
+        finally:
+            screen.timeout(100)
+            if prev is not None:
+                try:
+                    curses.curs_set(prev)
+                except curses.error:
+                    pass
+
+    def _session_rows(self) -> list:
+        rows = []
+        for row in (self.state.home.get("sessions") or []):
             sid = str(row.get("sessionId", "")).strip()
-            title = str(row.get("title", "")).strip()
-            choices.append(f"{idx}:{sid} {title}".strip())
-        self.add_local_event("system", "Sessions: " + " | ".join(choices[:6]))
-        choice = self.prompt(screen, "Session number or id", default=str(self.session_cursor + 1))
-        if choice is None:
+            if not sid:
+                continue
+            title = (str(row.get("title", "")).strip() or "(untitled)")[:26]
+            short = sid.replace("session-", "")[:10]
+            ago = self._relative_ago(str(row.get("lastHeartbeatAt", "") or row.get("updatedAt", "")))
+            msgs = int(row.get("messageCount", 0) or 0)
+            state = str(row.get("state", "")).strip().lower()
+            label = f"{title:<26}  {short}  {ago:>7}  {msgs:>3} msg  {state}"
+            rows.append({"label": label, "value": sid, "title": title})
+        return rows
+
+    def open_session_picker(self, screen):
+        self.refresh_home()
+        rows = self._session_rows()
+        chosen = self._pick_from_list(
+            screen, "Resume a town — most recent first", rows,
+            empty_msg="No towns yet — press n or use /new to create one.",
+        )
+        if not chosen:
             return
-        selected = None
-        if choice.isdigit():
-            index = int(choice) - 1
-            if 0 <= index < len(sessions):
-                selected = sessions[index]
-                self.session_cursor = index
-        else:
-            for idx, row in enumerate(sessions):
-                if str(row.get("sessionId", "")).strip() == choice.strip():
-                    selected = row
-                    self.session_cursor = idx
-                    break
-        if not selected:
-            self.state.status = "Unknown session"
-            return
-        self.state.selected_session_id = str(selected.get("sessionId", "")).strip()
+        self.state.selected_session_id = str(chosen).strip()
+        for idx, r in enumerate(rows):
+            if r["value"] == chosen:
+                self.session_cursor = idx
+                break
         self.refresh_session()
-        self.add_local_event("system", f"Opened town {self.state.selected_session_id}.")
+        title = next((r["title"] for r in rows if r["value"] == chosen), chosen)
+        self.add_local_event("system", f"Opened town {title}.")
+        self.state.status = f"Opened {title}"
+
+    def resume_latest(self) -> bool:
+        """Open the most recently active town. Returns False if there are none."""
+        sessions = self.state.home.get("sessions") or []
+        for row in sessions:  # home lists newest-first
+            sid = str(row.get("sessionId", "")).strip()
+            if not sid:
+                continue
+            self.state.selected_session_id = sid
+            self.session_cursor = 0
+            self.refresh_session()
+            title = str(row.get("title", "")).strip() or sid
+            self.add_local_event("system", f"Resumed {title} (most recent). Press s to switch towns.")
+            self.state.status = f"Resumed {title}"
+            return True
+        return False
 
     def cycle_target(self):
         session = self.session_payload
@@ -570,7 +655,7 @@ class UmbrellaTui:
         if name in {"help", "h", "?"}:
             self.add_local_event(
                 "system",
-                "Commands: /help /status /autonomy [auto|ask] /new [title] /sessions /session <id|n> /agent <id> /shops /workers /model /model setup /model test /model use <model> /model disable /refresh /start [full|core] /stop /quit",
+                "Commands: /help /status /autonomy [auto|ask] /new [title] /open /resume /sessions /session <id> /agent <id> /shops /workers /model /model setup /model test /model use <model> /model disable /refresh /start [full|core] /stop /quit",
             )
             self.state.status = "Help"
             return
@@ -607,12 +692,16 @@ class UmbrellaTui:
         if name == "new":
             self.create_session(screen, title_override=" ".join(args).strip())
             return
-        if name == "sessions":
-            self.choose_session(screen)
+        if name in {"sessions", "open"}:
+            self.open_session_picker(screen)
+            return
+        if name == "resume":
+            if not self.resume_latest():
+                self.add_local_event("system", "No towns to resume — press n or use /new.")
             return
         if name == "session":
             if not args:
-                self.choose_session(screen)
+                self.open_session_picker(screen)
                 return
             self.state.selected_session_id = args[0].strip()
             self.refresh_session()
@@ -943,8 +1032,10 @@ class UmbrellaTui:
         self.refresh_home()
         if self.state.selected_session_id:
             self.refresh_session()
+        elif self.auto_resume and self.resume_latest():
+            pass
         else:
-            self.add_local_event("system", "No town selected. Press n to create a town or s to open one.")
+            self.add_local_event("system", "No town selected. Press s to open a town or n to create one.")
         last_auto = time.time()
         while True:
             self._drain_pending_result()
@@ -990,7 +1081,7 @@ class UmbrellaTui:
                 self.refresh_session()
                 continue
             if key in (ord("s"),):
-                self.choose_session(screen)
+                self.open_session_picker(screen)
                 continue
             if key == 9:
                 self.cycle_target()
@@ -1014,6 +1105,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--umbrella-root", default=str(Path(__file__).resolve().parents[2]))
     ap.add_argument("--manifest", default="")
     ap.add_argument("--session-id", default="")
+    ap.add_argument("-c", "--resume", "--continue", dest="resume", action="store_true",
+                    help="Resume the most recent town on launch (this is the default)")
+    ap.add_argument("--new", action="store_true",
+                    help="Start fresh without auto-resuming a town")
     ap.add_argument("--dump-home", action="store_true", help="Print the home snapshot as JSON and exit")
     return ap
 
@@ -1027,7 +1122,10 @@ def main() -> int:
         platform_manifest = root / "control-plane" / "runtime" / "platform-manifest.json"
         service_manifest = root / "control-plane" / "runtime" / "service-manifest.json"
         manifest = platform_manifest if platform_manifest.exists() else service_manifest
-    app = UmbrellaTui(root=root, manifest=manifest, session_id=args.session_id.strip())
+    # Auto-resume the most recent town by default; --new starts fresh, and an
+    # explicit --session-id opens that specific town.
+    auto_resume = (not getattr(args, "new", False)) and not str(args.session_id).strip()
+    app = UmbrellaTui(root=root, manifest=manifest, session_id=args.session_id.strip(), auto_resume=auto_resume)
     if args.dump_home:
         print(json.dumps(app.client.home_snapshot(), indent=2))
         return 0
