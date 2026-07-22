@@ -686,7 +686,7 @@ _PROTOCOL_NATIVE = """You work strictly by the provided TOOLS via native functio
 _METHOD = """Method (follow it):
 1. You are given a Repository map (a directory overview plus the most task-relevant files, backed by a symbol + import-graph index that scales to large repos). Navigate like an engineer, NOT by reading files at random: use `find` (text/regex), `definition` (where a symbol is defined), `references` (where it is used), `outline` (a file's symbols), and — to understand how the code connects — `dependencies` (what a file imports) and `dependents` (what imports it, i.e. the blast radius of a change).
 2. Read the specific code you'll change or depend on, then plan briefly and implement in small steps. When the task does not specify a FORM, choose the one that fits the domain and state which you chose: a user-facing, interactive product (photo editor, game, dashboard) should be a real UI (web or desktop), NOT a command-line tool; batch/automation/data work should be a CLI or library; a backend should be a service/API.
-3. VERIFY your work with the installed test runner (e.g. pytest/node): write and RUN tests that exercise REAL BEHAVIOR and output — not merely that a pure helper returns a value, but that the actual feature does the right thing (e.g. the image is actually transformed, the endpoint returns the right response) — plus linters/type-checkers/build commands via the run tool. Read the output. If anything fails, FIX it and re-run. Do not finish on unverified code.
+3. VERIFY your work with the installed test runner (e.g. pytest/node): write and RUN tests that exercise REAL BEHAVIOR and output — not merely that a pure helper returns a value, but that the actual feature does the right thing (e.g. the image is actually transformed, the endpoint returns the right response) — plus linters/type-checkers/build commands via the run tool. When working in an EXISTING project, run the FULL existing test suite (not just your new tests) and make sure it ALL passes — you have NOT verified anything if any test is red. Read the output. If anything fails, FIX it and re-run. Do not finish on unverified code.
 4. Prefer edit_file for surgical changes to existing files and write_file for new/rewritten files. Keep files complete and runnable, and match the surrounding code's style and conventions.
 5. INTEGRATION IS PART OF THE JOB — the project must actually RUN AS A WHOLE from its real entry point, not merely pass unit tests. Before finishing, exercise the ACTUAL entry point (load the HTML page in a headless/DOM check, run the CLI, import the package/module) and confirm the pieces are wired together. A task is NOT done — even when unit tests pass — if any of these is true:
    - a source file you wrote is never loaded by a <script> tag or imported/required anywhere (dead/orphaned code);
@@ -946,6 +946,19 @@ def execute_tool(ws: Workspace, name: str, args: dict) -> str:
         return f"(tool error: {type(ex).__name__}: {ex})"
 
 
+# Commands that count as VERIFICATION — if one of these fails, the agent must not
+# be allowed to `finish` as verified.
+_VERIFY_CMD_RE = re.compile(
+    r"\b(pytest|unittest|tsc|mypy|ruff|flake8|eslint|jest|vitest|"
+    r"go\s+(test|vet|build)|cargo\s+(test|check|build|clippy)|npm\s+(test|run)|make(\s|$))",
+    re.IGNORECASE,
+)
+
+
+def _is_verify_cmd(command: str) -> bool:
+    return bool(_VERIFY_CMD_RE.search(command or ""))
+
+
 class _ToolsUnsupported(Exception):
     """The endpoint rejected a native tools payload — trigger the text-JSON
     fallback so provider-agnosticism is preserved."""
@@ -993,6 +1006,7 @@ def _run_native(model_cfg: dict, ws: Workspace, system: str, context: str, max_i
     verified = False
     iters = 0
     no_tool = 0
+    last_verify_ok: bool | None = None  # None = no verify command run yet
     while iters < max_iters:
         iters += 1
         try:
@@ -1022,9 +1036,18 @@ def _run_native(model_cfg: dict, ws: Workspace, system: str, context: str, max_i
             except (ValueError, TypeError):
                 args = {}
             if name == "finish":
-                verified, finished, result = True, True, "acknowledged"
+                if last_verify_ok is False:
+                    # Gate: a verification command failed and wasn't made green — do
+                    # not let the agent declare success on a red test.
+                    result = ("You called finish, but your most recent test/verification command FAILED. "
+                              "Do NOT finish yet — fix the failures and re-run the FULL test suite until it "
+                              "passes, then finish.")
+                else:
+                    verified, finished, result = True, True, "acknowledged"
             else:
                 result = execute_tool(ws, name, args if isinstance(args, dict) else {})
+                if name == "run" and _is_verify_cmd(str((args or {}).get("command", ""))):
+                    last_verify_ok = str(result).startswith("exit=0")
             messages.append({"role": "tool", "tool_call_id": str(tc.get("id") or ""), "content": str(result)[:OBS_CAP]})
         if finished:
             break
@@ -1035,12 +1058,18 @@ def _run_text(model_cfg: dict, ws: Workspace, system: str, context: str, max_ite
     messages = [{"role": "system", "content": system}, {"role": "user", "content": context}]
     verified = False
     iters = 0
+    last_verify_ok: bool | None = None
     for iters in range(1, max_iters + 1):
         content = chat(model_cfg, trim_messages(messages))
         messages.append({"role": "assistant", "content": content})
         action = parse_action(content)
         tool = str(action.get("tool", "")).strip()
         if tool == "finish":
+            if last_verify_ok is False:
+                messages.append({"role": "user", "content": (
+                    "You called finish, but your most recent test/verification command FAILED. Do NOT finish "
+                    "— fix the failures and re-run the tests until they pass, then finish.")})
+                continue
             verified = True
             messages.append({"role": "user", "content": "acknowledged"})
             break
@@ -1048,6 +1077,8 @@ def _run_text(model_cfg: dict, ws: Workspace, system: str, context: str, max_ite
             obs = f"Your last message was not a valid single JSON action: {action.get('error')}. Reply with exactly one JSON tool object."
         else:
             obs = execute_tool(ws, tool, {k: v for k, v in action.items() if k != "tool"})
+            if tool == "run" and _is_verify_cmd(str(action.get("command", ""))):
+                last_verify_ok = str(obs).startswith("exit=0")
         messages.append({"role": "user", "content": str(obs)[:OBS_CAP]})
     return messages, iters, verified
 
