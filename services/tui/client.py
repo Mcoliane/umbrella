@@ -153,12 +153,15 @@ class TuiClient:
         out = self._request("GET", f"{base}/v1/sessions/{urllib.parse.quote(session_id)}", timeout=15.0)
         return out["json"]
 
-    def create_session(self, *, agent_id: str, title: str) -> dict:
+    def create_session(self, *, agent_id: str, title: str, metadata: dict | None = None) -> dict:
         base = self.service_url("session")
+        body = {"agentId": agent_id, "title": title}
+        if metadata is not None:
+            body["metadata"] = metadata
         return self._request(
             "POST",
             f"{base}/v1/sessions",
-            {"agentId": agent_id, "title": title},
+            body,
             timeout=20.0,
         )["json"]
 

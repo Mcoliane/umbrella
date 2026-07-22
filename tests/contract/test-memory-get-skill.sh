@@ -127,7 +127,7 @@ profile = post(session_url + '/v1/shop-profiles', {
 })
 assert profile.get('profile', {}).get('profileId') == 'memory-get-development-profile', profile
 
-session_create = post(session_url + '/v1/sessions', {'agentId': agent_id, 'title': 'Memory Get Session'})
+session_create = post(session_url + '/v1/sessions', {'agentId': agent_id, 'title': 'Memory Get Session', 'metadata': {'workerAgentPackageIds': []}})
 session = session_create.get('session') or {}
 session_id = session.get('sessionId')
 assert session_id, session_create

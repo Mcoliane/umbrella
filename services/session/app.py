@@ -544,6 +544,63 @@ class SessionEngine:
             'metadata': metadata,
         }
 
+    def _stamp_worker_shop(self, session: dict, shops: dict, *, package_id: str, created_at: str) -> None:
+        """Stamp a worker agent + shop into a fresh town from its agent package,
+        so a new town comes up with usable workers instead of only the two civic
+        shops. Missing packages and id collisions are skipped, never fatal."""
+        package_id = str(package_id or '').strip()
+        if not package_id:
+            return
+        package = self.get_agent_package(package_id)
+        if not package:
+            return
+        defaults = self._agent_package_defaults(
+            package,
+            fallback_role='worker',
+            fallback_title='Worker',
+            fallback_shop_name='Worker Shop',
+            fallback_shop_type='worker-shop',
+        )
+        role = defaults['role'] or 'worker'
+        try:
+            agent_id = validate_identifier(role, 'agentId')
+            shop_id = validate_identifier(defaults['shopType'] or f'{role}-shop', 'shopId')
+        except Exception:
+            return
+        existing_agent_ids = {str(a.get('agentId', '')).strip() for a in session.get('agents', []) if isinstance(a, dict)}
+        if agent_id in existing_agent_ids or shop_id in shops:
+            return
+        enabled = defaults['enabledActionIds']
+        session['agents'].append(
+            {
+                'agentId': agent_id,
+                'role': role,
+                'title': defaults['title'],
+                'shopId': shop_id,
+                'agentPackageId': defaults['packageId'],
+                'createdAt': created_at,
+                'lastHeartbeatAt': created_at,
+                'lastSeenBy': 'system',
+            }
+        )
+        shops[shop_id] = {
+            'shopId': shop_id,
+            'name': defaults['shopName'],
+            'ownerAgentId': agent_id,
+            'shopType': defaults['shopType'],
+            'agentPackageId': defaults['packageId'],
+            'enabledActionIds': enabled,
+            'actionGovernance': self._build_action_governance(enabled, agent_id, source='worker-bootstrap'),
+            'metadata': {
+                **defaults['metadata'],
+                'runtimeId': defaults['runtimeId'],
+                'capabilityFamilies': defaults['capabilityFamilies'],
+            },
+            'createdAt': created_at,
+            'lastHeartbeatAt': created_at,
+            'lastSeenBy': 'system',
+        }
+
     def list_shop_profiles(self) -> dict:
         payload = self.profile_store.load()
         profiles = payload.get('profiles') if isinstance(payload.get('profiles'), dict) else {}
@@ -1299,6 +1356,18 @@ class SessionEngine:
             'lastHeartbeatAt': created_at,
             'lastSeenBy': 'system',
         }
+        # Bootstrap the default worker shops so a new town can actually build,
+        # search, and research without hand-wiring shops every time. Overridable
+        # per town via metadata.workerAgentPackageIds (pass [] for a bare town).
+        worker_package_ids = metadata.get('workerAgentPackageIds')
+        if not isinstance(worker_package_ids, list):
+            worker_package_ids = [
+                'umbrella.programming-agent.v1',
+                'umbrella.web-agent.v1',
+                'umbrella.research-agent.v1',
+            ]
+        for worker_package_id in worker_package_ids:
+            self._stamp_worker_shop(session, shops, package_id=str(worker_package_id).strip(), created_at=created_at)
         session['shops'] = shops
         self.store.save(session)
         return self._session_payload(session)

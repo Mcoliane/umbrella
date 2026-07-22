@@ -132,7 +132,7 @@ with urllib.request.urlopen(list_profiles_req, timeout=20) as resp:
     listed_profiles = json.loads(resp.read().decode('utf-8'))
 assert len(listed_profiles.get('profiles', [])) >= 2, listed_profiles
 
-create_req = urllib.request.Request(session_url + '/v1/sessions', method='POST', data=json.dumps({'agentId': agent_id, 'title': 'Town runtime test', 'metadata': {'townHallName': 'Town Hall', 'heartbeatTtlSec': 300}}).encode('utf-8'), headers={'Content-Type':'application/json'})
+create_req = urllib.request.Request(session_url + '/v1/sessions', method='POST', data=json.dumps({'agentId': agent_id, 'title': 'Town runtime test', 'metadata': {'townHallName': 'Town Hall', 'heartbeatTtlSec': 300, 'workerAgentPackageIds': []}}).encode('utf-8'), headers={'Content-Type':'application/json'})
 with urllib.request.urlopen(create_req, timeout=20) as resp:
     created = json.loads(resp.read().decode('utf-8'))
 session = created.get('session') or {}
