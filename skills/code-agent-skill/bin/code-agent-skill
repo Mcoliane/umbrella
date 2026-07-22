@@ -37,7 +37,8 @@ from pathlib import Path
 CONTEXT_BUDGET = 48000     # chars of message history before compaction kicks in
 KEEP_RECENT = 8            # most-recent turns always kept verbatim
 
-MAX_ITERATIONS_DEFAULT = 30
+MAX_ITERATIONS_DEFAULT = 60
+STUCK_VERIFY_LIMIT = 5  # stop a run when the SAME failing verification repeats this many times (thrash guard)
 CMD_TIMEOUT = 180          # per run() command
 MODEL_TIMEOUT = 120        # per model call
 OBS_CAP = 6000             # chars of a tool observation fed back to the model
@@ -1001,12 +1002,27 @@ def run_loop(model_cfg: dict, ws: Workspace, task: str, max_iters: int, extra_sy
         return _run_text(model_cfg, ws, SYSTEM + extra, context, max_iters)
 
 
+_VERIFY_TIMING_RE = re.compile(r"\d+\.\d+\s*(?:ms|secs?|seconds?|s)\b", re.IGNORECASE)
+
+
+def _verify_sig(output: str) -> str:
+    """Fingerprint a verification command's output for the thrash guard, with
+    run-to-run timing stripped (pytest '... in 0.05s', go '0.012s', jest 'Time: 1.2 s')
+    so a genuinely-unchanged failing run hashes identically across repeats. Without
+    this, the jittering timing footer makes every run hash differently and the guard
+    never fires for the test runners it targets."""
+    norm = _VERIFY_TIMING_RE.sub("<t>", str(output))
+    return hashlib.sha1(norm.encode()).hexdigest()
+
+
 def _run_native(model_cfg: dict, ws: Workspace, system: str, context: str, max_iters: int) -> tuple[list, int, bool]:
     messages = [{"role": "system", "content": system}, {"role": "user", "content": context}]
     verified = False
     iters = 0
     no_tool = 0
     last_verify_ok: bool | None = None  # None = no verify command run yet
+    verify_stuck = 0
+    last_verify_sig: str | None = None
     while iters < max_iters:
         iters += 1
         try:
@@ -1028,6 +1044,7 @@ def _run_native(model_cfg: dict, ws: Workspace, system: str, context: str, max_i
             continue
         no_tool = 0
         finished = False
+        pending_verify: tuple[bool, str] | None = None  # last verify this turn (update the counter once per turn, like _run_text)
         for tc in tool_calls:
             fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
             name = str(fn.get("name", "")).strip()
@@ -1048,9 +1065,16 @@ def _run_native(model_cfg: dict, ws: Workspace, system: str, context: str, max_i
                 result = execute_tool(ws, name, args if isinstance(args, dict) else {})
                 if name == "run" and _is_verify_cmd(str((args or {}).get("command", ""))):
                     last_verify_ok = str(result).startswith("exit=0")
+                    pending_verify = (last_verify_ok, _verify_sig(result))
             messages.append({"role": "tool", "tool_call_id": str(tc.get("id") or ""), "content": str(result)[:OBS_CAP]})
+        if pending_verify is not None:  # update the thrash counter at most once per turn
+            ok, sig = pending_verify
+            verify_stuck = verify_stuck + 1 if (not ok and sig == last_verify_sig) else 0
+            last_verify_sig = sig
         if finished:
             break
+        if verify_stuck >= STUCK_VERIFY_LIMIT:
+            break  # thrash guard: the same failing verification kept repeating with no change in outcome
     return messages, iters, verified
 
 
@@ -1059,6 +1083,8 @@ def _run_text(model_cfg: dict, ws: Workspace, system: str, context: str, max_ite
     verified = False
     iters = 0
     last_verify_ok: bool | None = None
+    verify_stuck = 0
+    last_verify_sig: str | None = None
     for iters in range(1, max_iters + 1):
         content = chat(model_cfg, trim_messages(messages))
         messages.append({"role": "assistant", "content": content})
@@ -1079,7 +1105,12 @@ def _run_text(model_cfg: dict, ws: Workspace, system: str, context: str, max_ite
             obs = execute_tool(ws, tool, {k: v for k, v in action.items() if k != "tool"})
             if tool == "run" and _is_verify_cmd(str(action.get("command", ""))):
                 last_verify_ok = str(obs).startswith("exit=0")
+                sig = _verify_sig(obs)
+                verify_stuck = verify_stuck + 1 if (not last_verify_ok and sig == last_verify_sig) else 0
+                last_verify_sig = sig
         messages.append({"role": "user", "content": str(obs)[:OBS_CAP]})
+        if verify_stuck >= STUCK_VERIFY_LIMIT:
+            break  # thrash guard: the same failing verification kept repeating with no change in outcome
     return messages, iters, verified
 
 
@@ -1212,7 +1243,7 @@ def main() -> int:
     wd = Path(os.path.expanduser(working)).resolve()
     wd.mkdir(parents=True, exist_ok=True)
     ws = Workspace(wd)
-    max_iters = max(4, min(int(inputs.get("maxIterations", MAX_ITERATIONS_DEFAULT) or MAX_ITERATIONS_DEFAULT), 60))
+    max_iters = max(4, min(int(inputs.get("maxIterations", MAX_ITERATIONS_DEFAULT) or MAX_ITERATIONS_DEFAULT), 100))
 
     try:
         ensure_repo(wd)
