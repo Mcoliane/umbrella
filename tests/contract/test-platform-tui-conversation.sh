@@ -93,7 +93,7 @@ client.set_service_url('plugin-host', plugin_host_url)
 client.set_service_url('execution', exec_url)
 client.set_service_url('session', session_url)
 
-created = client.create_session(agent_id='mayor', title='TUI Conversation')
+created = client.create_session(agent_id='mayor', title='TUI Conversation', metadata={'workerAgentPackageIds': []})
 session = created.get('session') or {}
 session_id = session.get('sessionId')
 assert session_id, created

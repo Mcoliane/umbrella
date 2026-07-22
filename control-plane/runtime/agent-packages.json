@@ -47,7 +47,8 @@
         "skill.chat.respond",
         "skill.memory.summarize",
         "skill.memory.get",
-        "skill.memory.search"
+        "skill.memory.search",
+        "skill.shop.originate"
       ],
       "capabilityFamilies": [
         "catalog.skill.invoke",
@@ -78,7 +79,9 @@
         "skill.chat.respond",
         "skill.memory.summarize",
         "skill.memory.get",
-        "skill.memory.search"
+        "skill.memory.search",
+        "skill.code.agent",
+        "skill.code.run"
       ],
       "capabilityFamilies": [
         "catalog.skill.invoke",
@@ -93,6 +96,66 @@
         "modelPreference": "gpt-4.1",
         "temperatureDefault": 0.2,
         "maxTokensDefault": 400
+      }
+    },
+    "umbrella.web-agent.v1": {
+      "packageId": "umbrella.web-agent.v1",
+      "name": "Web Agent",
+      "runtimeId": "umbrella-agent-runtime",
+      "role": "web",
+      "defaultTitle": "Web Agent",
+      "defaultShopName": "Web Shop",
+      "shopType": "web-shop",
+      "shopProfileId": "",
+      "enabledActionIds": [
+        "skill.chat.respond",
+        "skill.web.search",
+        "skill.web.fetch",
+        "skill.memory.search"
+      ],
+      "capabilityFamilies": [
+        "catalog.skill.invoke",
+        "shop.action.invoke",
+        "delegation.invoke"
+      ],
+      "metadata": {
+        "runtimePreferred": "umbrella-agent-runtime",
+        "business": "web-shop",
+        "promptTemplate": "control-plane/runtime/prompts/web-agent.txt",
+        "conversationStyle": "concise-operational",
+        "temperatureDefault": 0.2,
+        "maxTokensDefault": 1200
+      }
+    },
+    "umbrella.research-agent.v1": {
+      "packageId": "umbrella.research-agent.v1",
+      "name": "Research Agent",
+      "runtimeId": "umbrella-agent-runtime",
+      "role": "researcher",
+      "defaultTitle": "Research Agent",
+      "defaultShopName": "Research Shop",
+      "shopType": "research-shop",
+      "shopProfileId": "",
+      "enabledActionIds": [
+        "skill.chat.respond",
+        "skill.web.search",
+        "skill.web.fetch",
+        "skill.memory.search",
+        "skill.memory.get",
+        "skill.memory.summarize"
+      ],
+      "capabilityFamilies": [
+        "catalog.skill.invoke",
+        "shop.action.invoke",
+        "delegation.invoke"
+      ],
+      "metadata": {
+        "runtimePreferred": "umbrella-agent-runtime",
+        "business": "research-shop",
+        "promptTemplate": "control-plane/runtime/prompts/research-agent.txt",
+        "conversationStyle": "analytical",
+        "temperatureDefault": 0.3,
+        "maxTokensDefault": 1200
       }
     }
   }

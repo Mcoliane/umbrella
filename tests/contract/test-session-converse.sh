@@ -161,7 +161,7 @@ def post(url, payload):
     with urllib.request.urlopen(req, timeout=20) as resp:
         return json.loads(resp.read().decode('utf-8'))
 
-created = post(session_url + '/v1/sessions', {'agentId': 'mayor', 'title': 'Town Hall'})
+created = post(session_url + '/v1/sessions', {'agentId': 'mayor', 'title': 'Town Hall', 'metadata': {'workerAgentPackageIds': []}})
 session = created.get('session') or {}
 session_id = session.get('sessionId')
 assert session_id, created

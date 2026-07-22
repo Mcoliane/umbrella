@@ -106,7 +106,16 @@ registered = post(policy_url + '/v1/policy/agents/register', {
 })
 assert registered.get('ok') is True, registered
 
-created = post(session_url + '/v1/sessions', {'agentId': 'mayor', 'title': 'Mayor'})
+# A default town ships with the worker shops (code/web/research) so a fresh town
+# can build/search/research without hand-wiring shops.
+default_town = post(session_url + '/v1/sessions', {'agentId': 'mayor', 'title': 'Default Town'})
+default_shops = (default_town.get('session') or {}).get('shops', {})
+for wshop in ('development-shop', 'web-shop', 'research-shop'):
+    assert wshop in default_shops, default_town
+
+# The origination test below builds its own development-shop, so it uses a bare
+# town (workerAgentPackageIds: []) to avoid colliding with the auto-provisioned one.
+created = post(session_url + '/v1/sessions', {'agentId': 'mayor', 'title': 'Mayor', 'metadata': {'workerAgentPackageIds': []}})
 session = created.get('session') or {}
 session_id = session.get('sessionId')
 assert session_id, created
