@@ -455,7 +455,7 @@ You work strictly by TOOLS. On every turn you MUST reply with a SINGLE JSON obje
 Method (follow it):
 1. You are given a Repository map of the codebase up front. Use `find` (text/regex), `definition`, `references`, and `outline` to locate the exact code relevant to the task — navigate like an engineer, do NOT read files at random on a large codebase.
 2. Read the specific code you'll change or depend on, then plan briefly and implement in small steps.
-3. VERIFY your work: write and RUN tests (pytest/unittest/node), and run linters/type-checkers/build commands via the run tool. Read the output. If anything fails, FIX it and re-run. Do not finish on unverified code.
+3. VERIFY your work with the installed test runner (e.g. pytest/node): write and RUN tests that exercise REAL BEHAVIOR and output — not merely that a pure helper returns a value, but that the actual feature does the right thing (e.g. the image is actually transformed, the endpoint returns the right response) — plus linters/type-checkers/build commands via the run tool. Read the output. If anything fails, FIX it and re-run. Do not finish on unverified code.
 4. Prefer edit_file for surgical changes to existing files and write_file for new/rewritten files. Keep files complete and runnable, and match the surrounding code's style and conventions.
 5. INTEGRATION IS PART OF THE JOB — the project must actually RUN AS A WHOLE from its real entry point, not merely pass unit tests. Before finishing, exercise the ACTUAL entry point (load the HTML page in a headless/DOM check, run the CLI, import the package/module) and confirm the pieces are wired together. A task is NOT done — even when unit tests pass — if any of these is true:
    - a source file you wrote is never loaded by a <script> tag or imported/required anywhere (dead/orphaned code);
@@ -463,7 +463,7 @@ Method (follow it):
    - it works in unit tests but not when launched from its real entry point (the HTML page, the CLI, the server).
 6. Only call finish when the task is complete, wired together end to end, AND your verification commands pass.
 
-Rules: emit exactly one JSON object per turn. Keep going until done; do not ask the user questions. Assume you may install nothing new unless the task says so — prefer the standard library."""
+Rules: emit exactly one JSON object per turn. Keep going until done; do not ask the user questions. Use the tools and libraries ALREADY INSTALLED on this machine (an inventory is provided in your context) — reach for the professional library/framework/runtime that fits the job (a real web framework, an image library like Pillow, a proper test runner) instead of hand-rolling everything from stdlib. Do NOT download or install new dependencies (no pip/npm/cargo install, etc.) unless the task explicitly says so; if the ideal tool is not installed, use the best one that IS."""
 
 
 def parse_action(text: str) -> dict:
@@ -560,7 +560,12 @@ def plan_subtasks(model_cfg: dict, ws: Workspace, task: str) -> dict:
                 "js/engine.js exports window.Engine with brightness(imageData, amount)->ImageData, "
                 "grayscale(imageData)->ImageData. js/app.js reads document.getElementById('slider-brightness') "
                 "and calls window.Engine.brightness; it also reads getImageData/putImageData on '#main-canvas'.\""},
-            {"role": "user", "content": f"TASK:\n{task}\n\nWorking dir currently:\n{ws.list_dir('.')}"},
+            {"role": "user", "content":
+                f"TASK:\n{task}\n\n{_ENV_SURVEY}\n\n"
+                "Choose the professional stack for this task from the tools ALREADY INSTALLED above "
+                "(e.g. a real web framework, an image library, a proper test runner) rather than hand-rolling "
+                "from stdlib; do not require any download. Reflect that choice in the subtasks and the contract.\n\n"
+                f"Working dir currently:\n{ws.list_dir('.')}"},
         ], temperature=0.0)
         obj = parse_action(content)
         if isinstance(obj, dict) and isinstance(obj.get("subtasks"), list):
@@ -571,9 +576,73 @@ def plan_subtasks(model_cfg: dict, ws: Workspace, task: str) -> dict:
     return {"parallelizable": False, "subtasks": [], "interfaceContract": ""}
 
 
+# Filled once at startup by survey_environment(); injected into every planner and
+# worker so the agent builds with the professional tools ALREADY on this machine
+# instead of assuming bare stdlib. Empty string => survey unavailable (graceful).
+_ENV_SURVEY = ""
+
+# Probes run through the SAME login shell the build uses (bash -lc), so anything
+# the survey reports is genuinely runnable by the agent. No network, no installs.
+_SURVEY_SCRIPT = r'''
+ver(){ case "$1" in go) go version 2>&1;; *) "$1" --version 2>&1 || "$1" -version 2>&1;; esac | head -1; }
+for t in python3 node deno bun ruby php go rustc java gcc clang swift perl Rscript; do
+  command -v "$t" >/dev/null 2>&1 && echo "RT|$t|$(ver "$t")"
+done
+for t in git make cmake docker podman sqlite3 ffmpeg magick convert jq pandoc dot curl wget pytest npm cargo pip3; do
+  command -v "$t" >/dev/null 2>&1 && echo "TOOL|$t"
+done
+command -v python3 >/dev/null 2>&1 && python3 - <<'PYEOF' 2>/dev/null
+for name, imp in [("fastapi","fastapi"),("flask","flask"),("django","django"),("uvicorn","uvicorn"),
+    ("sqlalchemy","sqlalchemy"),("pydantic","pydantic"),("numpy","numpy"),("pandas","pandas"),
+    ("pillow","PIL"),("requests","requests"),("aiohttp","aiohttp"),("httpx","httpx"),("jinja2","jinja2"),
+    ("click","click"),("rich","rich"),("matplotlib","matplotlib"),("scipy","scipy"),("pytest","pytest"),
+    ("beautifulsoup4","bs4"),("lxml","lxml"),("openpyxl","openpyxl")]:
+    try:
+        m = __import__(imp); print("PY|%s|%s" % (name, getattr(m, "__version__", "?")))
+    except Exception:
+        pass
+PYEOF
+'''
+
+
+def survey_environment() -> str:
+    """Detect the toolchain ALREADY INSTALLED on this machine (runtimes, CLIs, and
+    importable Python libraries) so the agent reaches for the professional tool
+    that's present instead of hand-rolling from stdlib. Runs once; only version
+    probes — no network, no installs."""
+    try:
+        proc = subprocess.run(["bash", "-lc", _SURVEY_SCRIPT], capture_output=True, text=True, timeout=30)
+        out = proc.stdout or ""
+    except Exception:  # noqa: BLE001 — best-effort; empty survey just restores old behavior
+        return ""
+    runtimes, tools, pylibs = [], [], []
+    for line in out.splitlines():
+        parts = line.split("|")
+        if parts[0] == "RT" and len(parts) >= 3:
+            runtimes.append(f"{parts[1]} ({parts[2].strip()})")
+        elif parts[0] == "TOOL" and len(parts) >= 2:
+            tools.append(parts[1])
+        elif parts[0] == "PY" and len(parts) >= 3:
+            pylibs.append(f"{parts[1]} {parts[2].strip()}")
+    if not (runtimes or tools or pylibs):
+        return ""
+    lines = ["AVAILABLE TOOLCHAIN ON THIS MACHINE — these are ALREADY INSTALLED; reach for the professional "
+             "library/framework/runtime from this list for the job. Do NOT download or install new dependencies "
+             "(no pip/npm/cargo install) unless the task explicitly says so."]
+    if runtimes:
+        lines.append("  Runtimes/compilers: " + ", ".join(runtimes))
+    if tools:
+        lines.append("  CLIs/build tools: " + ", ".join(sorted(tools)))
+    if pylibs:
+        lines.append("  Python libraries importable now (no install needed): " + ", ".join(sorted(pylibs)))
+    return "\n".join(lines)
+
+
 def run_loop(model_cfg: dict, ws: Workspace, task: str, max_iters: int, extra_system: str = "") -> tuple[list, int, bool]:
     repo_map = build_repo_map(ws.root, task)
     context = f"TASK:\n{task}\n\nThe working directory currently contains:\n{ws.list_dir('.')}"
+    if _ENV_SURVEY:
+        context += f"\n\n{_ENV_SURVEY}"
     if repo_map:
         context += f"\n\n{repo_map}"
     messages = [{"role": "system", "content": SYSTEM + (("\n\n" + extra_system) if extra_system else "")},
@@ -760,6 +829,8 @@ def main() -> int:
 
     try:
         ensure_repo(wd)
+        global _ENV_SURVEY
+        _ENV_SURVEY = survey_environment()
         want_parallel = bool(inputs.get("parallel", True))
         max_workers = max(1, min(int(inputs.get("maxWorkers", 4) or 4), 6))
         plan = plan_subtasks(model_cfg, ws, task) if want_parallel else {"parallelizable": False, "subtasks": []}
@@ -844,8 +915,10 @@ def main() -> int:
                     "works AS A WHOLE from its real entry point: the entry point loads/imports every module it needs; "
                     "there are no orphaned files (code never loaded or imported); every cross-file name matches (DOM "
                     "ids, global/module names, function signatures, APIs); and it would RUN, not merely pass unit "
-                    "tests. Respond 'APPROVE' on the first line only if it is production quality AND runs end to end; "
-                    "otherwise 'REVISE' followed by a numbered list of concrete required fixes."},
+                    "tests. Also flag it if the code needlessly reinvents what an installed professional library "
+                    "already does, or if it lacks behavioral tests that prove the feature actually works (not just "
+                    "that pure functions return values). Respond 'APPROVE' on the first line only if it is production "
+                    "quality AND runs end to end; otherwise 'REVISE' followed by a numbered list of concrete fixes."},
                 {"role": "user", "content": f"TASK:\n{task}\n\nFILES:\n{inventory}\n\n{wiring_note}\n\nDIFF:\n{diff[:16000]}"},
             ], temperature=0.0)
             if critique.strip().upper().startswith("REVISE"):
