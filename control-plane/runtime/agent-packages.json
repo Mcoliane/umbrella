@@ -157,6 +157,37 @@
         "temperatureDefault": 0.3,
         "maxTokensDefault": 1200
       }
+    },
+    "umbrella.security-agent.v1": {
+      "packageId": "umbrella.security-agent.v1",
+      "name": "Security Agent",
+      "runtimeId": "umbrella-agent-runtime",
+      "role": "redteam",
+      "defaultTitle": "Security Agent",
+      "defaultShopName": "Security Shop",
+      "shopType": "security-shop",
+      "shopProfileId": "",
+      "enabledActionIds": [
+        "skill.chat.respond",
+        "skill.memory.search",
+        "skill.memory.get",
+        "skill.memory.summarize",
+        "skill.security.scan",
+        "skill.code.run"
+      ],
+      "capabilityFamilies": [
+        "catalog.skill.invoke",
+        "shop.action.invoke",
+        "delegation.invoke"
+      ],
+      "metadata": {
+        "runtimePreferred": "umbrella-agent-runtime",
+        "business": "security-shop",
+        "promptTemplate": "control-plane/runtime/prompts/security-agent.txt",
+        "conversationStyle": "technical",
+        "temperatureDefault": 0.2,
+        "maxTokensDefault": 1200
+      }
     }
   }
 }

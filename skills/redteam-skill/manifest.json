@@ -1,0 +1,71 @@
+{
+  "id": "redteam.agent.skill",
+  "name": "Red-Team Security Skill",
+  "version": "0.1.0",
+  "apiVersion": "umbrella.catalog.manifest.v1",
+  "kind": "skill",
+  "runtime": "python",
+  "entrypoint": "bin/redteam-skill",
+  "defaultEnabled": true,
+  "isolationMode": "process",
+  "compatibility": {
+    "umbrella": { "minVersion": "0.4.0" },
+    "pluginHostRuntimes": ["python"],
+    "apiVersions": ["umbrella.catalog.manifest.v1"],
+    "actionSchemaVersions": ["umbrella.catalog.action.v1"],
+    "requiresFeatures": []
+  },
+  "executionPolicy": {
+    "envAllowlist": ["HOME", "USER", "PATH", "TMPDIR", "LANG", "SHELL"],
+    "network": "http-outbound",
+    "fs": "scratch-only",
+    "maxRuntimeSec": 1800,
+    "maxOutputBytes": 524288,
+    "maxInputBytes": 262144,
+    "isolationProfile": "http-outbound"
+  },
+  "sessionHooks": {
+    "suggestedContexts": ["security", "redteam"]
+  },
+  "actions": [
+    {
+      "id": "skill.security.scan",
+      "title": "Authorized Red-Team Scan",
+      "description": "Probe an AUTHORIZED target for security vulnerabilities from the outside using a red-team methodology (recon, enumeration, broken-auth/access-control/injection/SSRF/misconfig testing), orchestrating installed scanners and precise HTTP probes, and produce a findings report where every high/critical finding is backed by a concrete reproduction. Requires explicit authorization and stays within a declared scope.",
+      "requiredCapabilities": [],
+      "policyHints": {
+        "riskClass": "high",
+        "approvalMode": "required",
+        "memoryAccess": "none",
+        "fsAccess": "scratch-only",
+        "networkAccess": "http-outbound",
+        "processAccess": "unrestricted-subprocess",
+        "delegationAllowed": true,
+        "subAgentAllowed": false
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "target": { "type": "string" },
+          "scope": { "type": "string" },
+          "authorized": { "type": "boolean" },
+          "thoroughness": { "type": "string" },
+          "toolchain": { "type": "string" },
+          "maxIterations": { "type": "integer" }
+        },
+        "required": ["target", "authorized"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "summary": { "type": "string" },
+          "report": { "type": "string" },
+          "findings": { "type": "array" },
+          "target": { "type": "string" },
+          "iterations": { "type": "integer" },
+          "verified": { "type": "boolean" }
+        }
+      }
+    }
+  ]
+}

@@ -110,6 +110,7 @@ def summarize_history(rows: list[dict], limit: int = 8) -> str:
 ACTION_GUIDE = {
     "skill.code.agent": "autonomously write/modify/verify code (plans, edits files, runs tests until they pass) — inputs: task (required: the full description of what to build), workingDir (optional: absolute path, e.g. ~/Desktop/my-app)",
     "skill.code.run": "run a single Python or Bash snippet and return its output — inputs: code (required), language ('python' or 'bash')",
+    "skill.security.scan": "run an AUTHORIZED red-team / vulnerability scan of a target from the outside (recon, enumeration, auth/access-control/injection/SSRF/misconfig testing) and return a findings report — inputs: target (required: the URL/host to test), authorized (required: true, only if the operator owns or is contracted to test it), scope (optional: extra in-scope hosts), thoroughness (optional). Use this for security testing / pentest / 'find vulnerabilities' requests, NOT the code agent.",
     "skill.web.search": "search the web and return ranked results — inputs: query (required)",
     "skill.web.fetch": "fetch a URL and return its readable text — inputs: url (required)",
     "skill.memory.search": "search durable knowledge memory — inputs: query (required)",
