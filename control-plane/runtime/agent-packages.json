@@ -188,6 +188,36 @@
         "temperatureDefault": 0.2,
         "maxTokensDefault": 1200
       }
+    },
+    "umbrella.workspace-agent.v1": {
+      "packageId": "umbrella.workspace-agent.v1",
+      "name": "Workspace Agent",
+      "runtimeId": "umbrella-agent-runtime",
+      "role": "workspace",
+      "defaultTitle": "Workspace Agent",
+      "defaultShopName": "Workspace Shop",
+      "shopType": "workspace-shop",
+      "shopProfileId": "",
+      "enabledActionIds": [
+        "skill.chat.respond",
+        "skill.memory.search",
+        "skill.memory.get",
+        "skill.memory.summarize",
+        "skill.files.query"
+      ],
+      "capabilityFamilies": [
+        "catalog.skill.invoke",
+        "shop.action.invoke",
+        "delegation.invoke"
+      ],
+      "metadata": {
+        "runtimePreferred": "umbrella-agent-runtime",
+        "business": "workspace-shop",
+        "promptTemplate": "control-plane/runtime/prompts/workspace-agent.txt",
+        "conversationStyle": "concise-operational",
+        "temperatureDefault": 0.2,
+        "maxTokensDefault": 1200
+      }
     }
   }
 }

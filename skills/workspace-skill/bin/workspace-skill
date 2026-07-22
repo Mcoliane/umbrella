@@ -1,0 +1,301 @@
+#!/usr/bin/env python3
+"""Umbrella workspace / files skill.
+
+A READ-ONLY, scope-enforced agent for answering questions about the user's local
+files: find files by name/content, read them, and summarize. The model is the
+reasoning glue over real file tools, NOT raw filesystem access. Guardrails:
+
+  * SCOPE — every path is checked against an allow-list of roots (by default the
+    user's Desktop/Documents/Downloads and the working dir); anything outside is
+    refused, so the agent can't wander into dotfiles/secrets or the wider system.
+  * READ-ONLY — it lists, searches, and reads; it never writes, moves, or deletes.
+  * LIMITS — reads and result sets are truncated so a huge tree/file can't blow up.
+
+Reads a job JSON on stdin ({"invocation":{"inputs":{...}}}); emits a JSON answer.
+"""
+from __future__ import annotations
+
+import fnmatch
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+MODEL_TIMEOUT = 120
+OBS_CAP = 12000
+READ_CAP = 20000
+MAX_HITS = 60
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def load_model(root: Path) -> dict:
+    runtime = root / "control-plane" / "runtime"
+    cfg = _read_json(runtime / "model-broker.json")
+    secrets = _read_json(runtime / "model-broker.secrets.json")
+    routing = cfg.get("routing") if isinstance(cfg.get("routing"), dict) else {}
+    conns = cfg.get("connections") if isinstance(cfg.get("connections"), dict) else {}
+    cid = "code" if "code" in conns else (str(routing.get("defaultConnectionId", "")).strip() or "default")
+    conn = conns.get(cid) if isinstance(conns.get(cid), dict) else {}
+    sconn = ((secrets.get("connections") or {}).get(cid) or {}) if isinstance(secrets, dict) else {}
+    return {
+        "baseUrl": str(conn.get("baseUrl", "")).strip(),
+        "model": str(conn.get("defaultModel", "")).strip(),
+        "apiKey": str(sconn.get("apiKey", "")).strip(),
+    }
+
+
+def chat_raw(model_cfg: dict, messages: list, tools: list | None = None, temperature: float = 0.1) -> dict:
+    payload = {"model": model_cfg["model"], "messages": messages, "temperature": temperature, "max_tokens": 4096}
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+    body = json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if model_cfg["apiKey"]:
+        headers["Authorization"] = f"Bearer {model_cfg['apiKey']}"
+    url = model_cfg["baseUrl"].rstrip("/") + "/chat/completions"
+    for attempt in range(4):
+        try:
+            req = urllib.request.Request(url, data=body, method="POST", headers=headers)
+            with urllib.request.urlopen(req, timeout=MODEL_TIMEOUT) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            return ((data.get("choices") or [{}])[0].get("message")) or {}
+        except urllib.error.HTTPError as ex:
+            if ex.code not in (429, 500, 502, 503, 504) or attempt == 3:
+                raise
+        except urllib.error.URLError:
+            if attempt == 3:
+                raise
+    return {}
+
+
+def _fn(name, desc, props, required):
+    return {"type": "function", "function": {"name": name, "description": desc,
+            "parameters": {"type": "object", "properties": props, "required": required}}}
+
+
+TOOLS = [
+    _fn("list_dir", "List the entries (files and folders, with sizes) in a directory. Refused for paths outside the "
+        "allowed roots.", {"path": {"type": "string"}}, ["path"]),
+    _fn("find", "Search for files under a directory, by filename glob (`name`, e.g. '*gateway*') and/or by text "
+        "`contains`. Read-only, scoped, and capped. Returns matching paths (with a snippet for content matches).",
+        {"path": {"type": "string"}, "name": {"type": "string"}, "contains": {"type": "string"}}, ["path"]),
+    _fn("read_file", "Read a text file's content (truncated). Refused for paths outside the allowed roots.",
+        {"path": {"type": "string"}}, ["path"]),
+    _fn("finish", "Finish with a clear answer to the user's question about their files.",
+        {"answer": {"type": "string"}}, ["answer"]),
+]
+
+SYSTEM = """You are a READ-ONLY workspace/files agent inside Umbrella. You answer questions about the user's local
+files by finding, listing, reading, and summarizing them. Work like a careful assistant:
+1. Use `find` to locate the relevant file(s) by name and/or content under the allowed roots.
+2. Use `list_dir` to orient yourself in a folder when you're unsure.
+3. Use `read_file` to read what you found, then answer the actual question the user asked (e.g. summarize how an
+   analysis went, extract the relevant details, tell them what a file contains).
+4. Call `finish` with a clear, direct answer grounded in what you actually read — cite the file path(s) you used.
+
+Hard rules:
+- You are READ-ONLY. You never create, modify, move, or delete anything. There are no tools to do so.
+- You stay within the allowed roots. If a path is refused as out of scope, do not try to work around it — say so.
+- Do not read or surface obvious secrets (private keys, credentials, .env values) even if you stumble on them;
+  note that they exist and move on.
+- Ground your answer in the file contents you read; do not invent what a file says."""
+
+
+def _safe_roots(roots_input: str) -> list[Path]:
+    home = Path.home()
+    explicit = []
+    for tok in str(roots_input or "").replace(",", " ").split():
+        p = Path(os.path.expanduser(tok))
+        try:
+            p = p.resolve()
+        except Exception:
+            continue
+        if p.exists():
+            explicit.append(p)
+    if explicit:
+        return explicit
+    return [p for p in (home / "Desktop", home / "Documents", home / "Downloads", Path.cwd()) if p.exists()]
+
+
+def _resolve_in_scope(path: str, roots: list[Path]) -> Path | None:
+    try:
+        p = Path(os.path.expanduser(str(path))).resolve()
+    except Exception:
+        return None
+    for r in roots:
+        try:
+            p.relative_to(r)
+            return p
+        except ValueError:
+            continue
+    return p if p in roots else None
+
+
+_SECRETISH = ("id_rsa", "id_ed25519", ".pem", ".key", "credentials", ".env", ".secret", "id_dsa")
+
+
+class Engine:
+    def __init__(self, roots: list[Path]):
+        self.roots = roots
+        self.files_read: list[str] = []
+
+    def _scope(self, path: str):
+        p = _resolve_in_scope(path, self.roots)
+        if p is None:
+            return None, f"REFUSED: {path} is OUTSIDE the allowed roots {[str(r) for r in self.roots]}. Stay in scope."
+        return p, ""
+
+    def list_dir(self, args):
+        p, err = self._scope(str(args.get("path", "")))
+        if err:
+            return err
+        if not p.is_dir():
+            return f"not a directory: {p}"
+        rows = []
+        for entry in sorted(p.iterdir())[:200]:
+            try:
+                kind = "d" if entry.is_dir() else "f"
+                size = entry.stat().st_size if entry.is_file() else ""
+                rows.append(f"  {kind} {entry.name} {size}")
+            except OSError:
+                continue
+        return f"{p}:\n" + "\n".join(rows) if rows else f"{p}: (empty)"
+
+    def find(self, args):
+        base, err = self._scope(str(args.get("path", "")))
+        if err:
+            return err
+        name = str(args.get("name", "")).strip()
+        contains = str(args.get("contains", "")).strip()
+        hits = []
+        for dirpath, dirnames, filenames in os.walk(base):
+            dirnames[:] = [d for d in dirnames if not d.startswith(".")]  # skip dotdirs
+            for fn in filenames:
+                if fn.startswith("."):
+                    continue
+                if name and not fnmatch.fnmatch(fn.lower(), name.lower()):
+                    continue
+                fp = Path(dirpath) / fn
+                if contains:
+                    try:
+                        text = fp.read_text(encoding="utf-8", errors="ignore")
+                    except Exception:
+                        continue
+                    idx = text.lower().find(contains.lower())
+                    if idx < 0:
+                        continue
+                    snippet = text[max(0, idx - 40):idx + 80].replace("\n", " ")
+                    hits.append(f"  {fp}  …{snippet}…")
+                else:
+                    hits.append(f"  {fp}")
+                if len(hits) >= MAX_HITS:
+                    return f"matches (capped at {MAX_HITS}):\n" + "\n".join(hits)
+        return ("matches:\n" + "\n".join(hits)) if hits else "no matches"
+
+    def read_file(self, args):
+        p, err = self._scope(str(args.get("path", "")))
+        if err:
+            return err
+        if any(s in p.name.lower() for s in _SECRETISH):
+            return f"REFUSED to read {p.name}: looks like a secret/credential file."
+        if not p.is_file():
+            return f"not a file: {p}"
+        try:
+            data = p.read_text(encoding="utf-8", errors="replace")
+        except Exception as ex:  # noqa: BLE001
+            return f"read error: {type(ex).__name__}: {ex}"
+        self.files_read.append(str(p))
+        trailer = "" if len(data) <= READ_CAP else f"\n…(truncated, {len(data)} bytes total)"
+        return f"{p}:\n{data[:READ_CAP]}{trailer}"
+
+
+def main() -> int:
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        print(json.dumps({"ok": False, "error": "invalid JSON on stdin"}))
+        return 1
+    inputs = (((payload.get("invocation") or {}).get("inputs")) or {}) if isinstance(payload, dict) else {}
+    task = str(inputs.get("task", "")).strip()
+    if not task:
+        print(json.dumps({"ok": False, "error": "'task' is required"}))
+        return 1
+    roots = _safe_roots(str(inputs.get("roots", "")))
+    max_iters = max(4, min(int(inputs.get("maxIterations", 24) or 24), 60))
+
+    root = Path(os.environ.get("UMBRELLA_ROOT") or Path(__file__).resolve().parents[3])
+    model_cfg = load_model(root)
+    if not model_cfg["baseUrl"] or not model_cfg["model"]:
+        print(json.dumps({"ok": False, "error": "no model connection configured for the workspace skill"}))
+        return 1
+
+    eng = Engine(roots)
+    context = (f"QUESTION / TASK: {task}\nALLOWED ROOTS: {[str(r) for r in roots]}\n"
+               "Locate and read the relevant file(s), then answer.")
+    messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": context}]
+    iters, finished, answer, no_tool = 0, False, "", 0
+
+    while iters < max_iters and not finished:
+        iters += 1
+        try:
+            msg = chat_raw(model_cfg, messages, tools=TOOLS)
+        except Exception as ex:  # noqa: BLE001
+            answer = f"model error after {iters} step(s): {type(ex).__name__}: {ex}"
+            break
+        tool_calls = msg.get("tool_calls") or []
+        assistant = {"role": "assistant", "content": msg.get("content")}
+        if tool_calls:
+            assistant["tool_calls"] = tool_calls
+        messages.append(assistant)
+        if not tool_calls:
+            no_tool += 1
+            if no_tool >= 2:
+                answer = str(msg.get("content") or "").strip() or "stopped without an answer"
+                break
+            messages.append({"role": "user", "content": "Use a tool to find/read the file, or call finish."})
+            continue
+        no_tool = 0
+        for tc in tool_calls:
+            fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+            name = str(fn.get("name", "")).strip()
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except (ValueError, TypeError):
+                args = {}
+            if name == "finish":
+                answer, finished = str(args.get("answer", "")).strip(), True
+                result = "acknowledged"
+            elif name == "list_dir":
+                result = eng.list_dir(args if isinstance(args, dict) else {})
+            elif name == "find":
+                result = eng.find(args if isinstance(args, dict) else {})
+            elif name == "read_file":
+                result = eng.read_file(args if isinstance(args, dict) else {})
+            else:
+                result = f"unknown tool: {name}"
+            messages.append({"role": "tool", "tool_call_id": str(tc.get("id") or ""), "content": str(result)[:OBS_CAP]})
+        if finished:
+            break
+
+    print(json.dumps({
+        "ok": True,
+        "summary": (answer or "no answer")[:400],
+        "answer": answer or "I couldn't find an answer in the allowed file locations.",
+        "filesRead": eng.files_read,
+        "iterations": iters,
+        "verified": finished,
+    }))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
