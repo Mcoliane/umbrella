@@ -1398,6 +1398,7 @@ class SessionEngine:
                 'umbrella.web-agent.v1',
                 'umbrella.research-agent.v1',
                 'umbrella.security-agent.v1',
+                'umbrella.workspace-agent.v1',
             ]
         for worker_package_id in worker_package_ids:
             self._stamp_worker_shop(session, shops, package_id=str(worker_package_id).strip(), created_at=created_at)
@@ -1549,7 +1550,7 @@ class SessionEngine:
 
                 if wait_for_result:
                     # Synchronous path: block until the delegated work completes.
-                    orchestrated = self.orchestrate_turn(session_id=session_id, turn_id=turn_id, plan=plan, metadata={'source': 'session-converse', 'allowDelegation': True})
+                    orchestrated = self.orchestrate_turn(session_id=session_id, turn_id=turn_id, plan=plan, metadata={'source': 'session-converse', 'allowDelegation': True, 'suppressSummaryMessage': True})
                     reconciliation = orchestrated.get('reconciliation') if isinstance(orchestrated.get('reconciliation'), dict) else {}
                     reply = str(reconciliation.get('summary', '')).strip() or compact_text(str(direct.get('reply', '')).strip() or 'The delegated work is complete.')
                     appended: dict = {}
@@ -1580,7 +1581,7 @@ class SessionEngine:
 
                 def _run_delegation() -> None:
                     try:
-                        orchestrated = self.orchestrate_turn(session_id=session_id, turn_id=turn_id, plan=plan, metadata={'source': 'session-converse', 'allowDelegation': True})
+                        orchestrated = self.orchestrate_turn(session_id=session_id, turn_id=turn_id, plan=plan, metadata={'source': 'session-converse', 'allowDelegation': True, 'suppressSummaryMessage': True})
                         reconciliation = orchestrated.get('reconciliation') if isinstance(orchestrated.get('reconciliation'), dict) else {}
                         summary = str(reconciliation.get('summary', '')).strip() or 'The delegated work is complete.'
                         delegation_ids = [str(r.get('delegationId', '')).strip() for r in (orchestrated.get('delegations') or []) if isinstance(r, dict)]
@@ -2526,17 +2527,21 @@ class SessionEngine:
             turn['state'] = 'COMPLETED' if not failed and not skipped else ('PARTIAL' if completed else 'FAILED')
             turn['reconciliation'] = reconciliation
             fresh['turns'] = turns
-            messages = fresh.get('messages') if isinstance(fresh.get('messages'), list) else []
-            messages.append(
-                {
-                    'messageId': f'msg-{uuid.uuid4().hex[:12]}',
-                    'role': 'assistant',
-                    'content': mayor_summary,
-                    'metadata': {'turnId': turn_id, 'orchestrationId': orchestration_id, 'kind': 'mayor-summary'},
-                    'createdAt': now_iso(),
-                }
-            )
-            fresh['messages'] = messages
+            # The converse flow appends its own (richer) reply message built from
+            # this same summary; suppress the internal one there to avoid a duplicate.
+            # The direct /orchestrate-turn route has no other appender, so it keeps it.
+            if not (metadata or {}).get('suppressSummaryMessage'):
+                messages = fresh.get('messages') if isinstance(fresh.get('messages'), list) else []
+                messages.append(
+                    {
+                        'messageId': f'msg-{uuid.uuid4().hex[:12]}',
+                        'role': 'assistant',
+                        'content': mayor_summary,
+                        'metadata': {'turnId': turn_id, 'orchestrationId': orchestration_id, 'kind': 'mayor-summary'},
+                        'createdAt': now_iso(),
+                    }
+                )
+                fresh['messages'] = messages
             finished['turn'] = turn
             finished['reconciliation'] = reconciliation
             return fresh
