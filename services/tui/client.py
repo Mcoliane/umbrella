@@ -291,7 +291,13 @@ class TuiClient:
                     "title": row.get("title", ""),
                     "mayorAgentId": row.get("mayorAgentId", ""),
                     "heartbeatStatus": row.get("heartbeatStatus", ""),
+                    "state": row.get("state", ""),
+                    "createdAt": row.get("createdAt", ""),
                     "updatedAt": row.get("updatedAt", ""),
+                    "lastHeartbeatAt": row.get("lastHeartbeatAt", ""),
+                    "messageCount": len(row.get("messages") or []) if isinstance(row.get("messages"), list) else 0,
+                    "agentCount": len(row.get("agents") or []) if isinstance(row.get("agents"), list) else 0,
+                    "shopCount": len(row.get("shops") or {}) if isinstance(row.get("shops"), dict) else 0,
                 }
                 for row in sessions
             ],
