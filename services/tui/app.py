@@ -33,6 +33,31 @@ class UmbrellaTui:
         self.has_color = False
         self._inflight: dict[str, dict] = {}  # turnId -> {shop, target, started} for live activity
         self._pending_questions: list = []  # structured clarify questions awaiting the picker
+        # Chat-first input model: a persistent input line you type into directly.
+        self._input = ""
+        self._input_cursor = 0
+        self._palette_cursor = 0
+        self._history: list[str] = []
+        self._history_idx = 0
+        self._should_quit = False
+        self._cursor_xy: tuple[int, int] | None = None
+        self._commands = [
+            {"name": "help", "args": "", "desc": "List all commands"},
+            {"name": "new", "args": "[title]", "desc": "Create a new town"},
+            {"name": "open", "args": "", "desc": "Pick a town to resume"},
+            {"name": "resume", "args": "", "desc": "Resume the most recent town"},
+            {"name": "session", "args": "<id>", "desc": "Open a town by id"},
+            {"name": "agent", "args": "<id>", "desc": "Switch who you're talking to"},
+            {"name": "shops", "args": "", "desc": "List worker shops"},
+            {"name": "workers", "args": "", "desc": "List workers"},
+            {"name": "model", "args": "[setup|test|use|disable]", "desc": "Configure the model connection"},
+            {"name": "autonomy", "args": "[auto|ask]", "desc": "Approval gating (auto = no prompts)"},
+            {"name": "status", "args": "", "desc": "Platform + town status"},
+            {"name": "refresh", "args": "", "desc": "Refresh home + town"},
+            {"name": "start", "args": "[full|core]", "desc": "Start the service stack"},
+            {"name": "stop", "args": "", "desc": "Stop the service stack"},
+            {"name": "quit", "args": "", "desc": "Exit the TUI"},
+        ]
 
     def add_local_event(self, role: str, content: str):
         self.state.local_transcript.append({"role": role, "content": content})
@@ -578,7 +603,7 @@ class UmbrellaTui:
         rows = self._session_rows()
         chosen = self._pick_from_list(
             screen, "Resume a town — most recent first", rows,
-            empty_msg="No towns yet — press n or use /new to create one.",
+            empty_msg="No towns yet — type /new to create one.",
         )
         if not chosen:
             return
@@ -603,7 +628,7 @@ class UmbrellaTui:
             self.session_cursor = 0
             self.refresh_session()
             title = str(row.get("title", "")).strip() or sid
-            self.add_local_event("system", f"Resumed {title} (most recent). Press s to switch towns.")
+            self.add_local_event("system", f"Resumed {title} (most recent). Type /open to switch towns.")
             self.state.status = f"Resumed {title}"
             return True
         return False
@@ -854,19 +879,53 @@ class UmbrellaTui:
 
     def draw_footer(self, screen):
         h, w = screen.getmaxyx()
-        warning = self._model_warning()
-        keys = "type + ⏎ send · / cmd · ⇥ target · n new · s open · S full · x stop · q quit"
-        status = self.state.status
-        if self.state.pending_request:
-            status = f'{self._pending_spinner()} {self.state.pending_target or "agent"} thinking {self._pending_elapsed_sec()}s'
-        # A model-off warning row sits just above the key row, in red.
-        if warning:
-            self._put(screen, h - 2, 0, " " * (w - 1), self._c(4, curses.A_REVERSE))
-            self._put(screen, h - 2, 1, "⚠ " + warning, self._c(4, curses.A_REVERSE | curses.A_BOLD))
-        bar = self._c(6) if self.has_color else curses.A_REVERSE
-        self._put(screen, h - 1, 0, " " * (w - 1), bar)
-        self._put(screen, h - 1, 1, _clip(status, max(10, w // 2)), bar | curses.A_BOLD)
-        self._put(screen, h - 1, max(1, w - 1 - len(keys)), keys, bar)
+        target = self.state.active_target or "mayor"
+        self._cursor_xy = None
+
+        if self._palette_active():
+            # Discoverable command palette above the input line.
+            matches = self._matching_commands()
+            n = min(len(matches), max(1, h - 4))
+            if matches:
+                self._palette_cursor = min(self._palette_cursor, len(matches) - 1)
+            start = 0
+            if self._palette_cursor >= n:
+                start = min(self._palette_cursor - n + 1, max(0, len(matches) - n))
+            base_top = h - 1 - n
+            for i in range(n):
+                row = matches[start + i] if (start + i) < len(matches) else None
+                if row is None:
+                    continue
+                sel = (start + i) == self._palette_cursor
+                y = base_top + i
+                self._put(screen, y, 0, " " * (w - 1), self._c(7) if sel else 0)
+                label = f"  /{row['name']} {row['args']}".rstrip()
+                self._put(screen, y, 1, _clip(label, 26), self._c(2, curses.A_BOLD) if sel else self._c(2))
+                self._put(screen, y, 28, _clip(row["desc"], max(4, w - 30)), self._c(0) if sel else self._c(3))
+        else:
+            # Status / model-off warning on the line above the input.
+            warning = self._model_warning()
+            if warning:
+                self._put(screen, h - 2, 0, " " * (w - 1), self._c(4, curses.A_REVERSE))
+                self._put(screen, h - 2, 1, "⚠ " + warning, self._c(4, curses.A_REVERSE | curses.A_BOLD))
+            else:
+                status = self.state.status
+                if self.state.pending_request:
+                    status = f'{self._pending_spinner()} {self.state.pending_target or "agent"} thinking {self._pending_elapsed_sec()}s'
+                hint = "⏎ send · / commands · ⇥ target · ↑↓ history"
+                bar = self._c(6) if self.has_color else curses.A_REVERSE
+                self._put(screen, h - 2, 0, " " * (w - 1), bar)
+                self._put(screen, h - 2, 1, _clip(status, max(10, w // 2)), bar | curses.A_BOLD)
+                self._put(screen, h - 2, max(1, w - 1 - len(hint)), hint, bar)
+
+        # Persistent input line at the bottom — type directly into it.
+        prompt = f"@{target} › "
+        avail = max(4, w - len(prompt) - 1)
+        off = self._input_cursor - (avail - 1) if self._input_cursor > avail - 1 else 0
+        self._put(screen, h - 1, 0, " " * (w - 1), 0)
+        self._put(screen, h - 1, 0, prompt, self._c(1, curses.A_BOLD))
+        self._put(screen, h - 1, len(prompt), _clip(self._input[off:], avail), 0)
+        self._cursor_xy = (h - 1, len(prompt) + (self._input_cursor - off))
 
     def _conversation_lines(self, width: int) -> list[tuple[int, str]]:
         """A single ordered, spaced, color-differentiated stream:
@@ -933,7 +992,7 @@ class UmbrellaTui:
             y += 1
         if not visible:
             self._put(screen, 3, 2, "No conversation yet.", self._c(3, curses.A_BOLD))
-            self._put(screen, 4, 2, "Press n to create a town, then just type and hit enter.", self._c(3))
+            self._put(screen, 4, 2, "Type /new to create a town, then just chat.", self._c(3))
 
     def _activity_lines(self) -> list[tuple[int, str]]:
         """What the agents are doing: live in-flight delegations + recent ones."""
@@ -1024,8 +1083,112 @@ class UmbrellaTui:
         self.draw_sidebar(screen)
         self.draw_footer(screen)
 
+    def _palette_active(self) -> bool:
+        s = self._input
+        return s.startswith("/") and " " not in s.strip()
+
+    def _matching_commands(self) -> list:
+        token = self._input[1:].split(" ", 1)[0].lower()
+        if not token:
+            return list(self._commands)
+        return [c for c in self._commands if c["name"].startswith(token)]
+
+    def _history_prev(self) -> None:
+        if not self._history:
+            return
+        self._history_idx = max(0, self._history_idx - 1)
+        self._input = self._history[self._history_idx]
+        self._input_cursor = len(self._input)
+
+    def _history_next(self) -> None:
+        if not self._history:
+            return
+        self._history_idx = min(len(self._history), self._history_idx + 1)
+        self._input = self._history[self._history_idx] if self._history_idx < len(self._history) else ""
+        self._input_cursor = len(self._input)
+
+    def _submit_input(self, screen) -> None:
+        buf = self._input.strip()
+        self._input = ""
+        self._input_cursor = 0
+        self._palette_cursor = 0
+        if not buf:
+            return
+        self._history.append(buf)
+        self._history_idx = len(self._history)
+        if buf.startswith("/"):
+            try:
+                self.handle_command(screen, buf)
+            except SystemExit:
+                self._should_quit = True
+        else:
+            self.talk(screen, content_override=buf)
+
+    def _handle_input_key(self, key: int, screen) -> None:
+        palette = self._palette_active()
+        if key in (10, 13):
+            self._submit_input(screen)
+        elif key in (curses.KEY_BACKSPACE, 127, 8):
+            if self._input_cursor > 0:
+                self._input = self._input[: self._input_cursor - 1] + self._input[self._input_cursor:]
+                self._input_cursor -= 1
+        elif key == curses.KEY_DC:
+            if self._input_cursor < len(self._input):
+                self._input = self._input[: self._input_cursor] + self._input[self._input_cursor + 1:]
+        elif key in (27, 21):  # ESC or Ctrl-U: clear the line
+            self._input = ""
+            self._input_cursor = 0
+            self._palette_cursor = 0
+        elif key == 3:  # Ctrl-C: quit
+            self._should_quit = True
+        elif key == curses.KEY_LEFT:
+            self._input_cursor = max(0, self._input_cursor - 1)
+        elif key == curses.KEY_RIGHT:
+            self._input_cursor = min(len(self._input), self._input_cursor + 1)
+        elif key == curses.KEY_HOME:
+            self._input_cursor = 0
+        elif key == curses.KEY_END:
+            self._input_cursor = len(self._input)
+        elif key == curses.KEY_UP:
+            if palette:
+                self._palette_cursor = max(0, self._palette_cursor - 1)
+            else:
+                self._history_prev()
+        elif key == curses.KEY_DOWN:
+            if palette:
+                self._palette_cursor = min(max(0, len(self._matching_commands()) - 1), self._palette_cursor + 1)
+            else:
+                self._history_next()
+        elif key == 9:  # Tab: autocomplete a command, else cycle the target
+            if palette:
+                matches = self._matching_commands()
+                if matches:
+                    name = matches[min(self._palette_cursor, len(matches) - 1)]["name"]
+                    self._input = "/" + name + " "
+                    self._input_cursor = len(self._input)
+                    self._palette_cursor = 0
+            else:
+                self.cycle_target()
+        elif 32 <= key <= 126:
+            self._input = self._input[: self._input_cursor] + chr(key) + self._input[self._input_cursor:]
+            self._input_cursor += 1
+            self._palette_cursor = 0
+
+    def _place_input_cursor(self, screen) -> None:
+        if not self._cursor_xy:
+            return
+        h, w = screen.getmaxyx()
+        y, x = self._cursor_xy
+        try:
+            screen.move(min(y, h - 1), min(x, w - 1))
+        except curses.error:
+            pass
+
     def run(self, screen):
-        curses.curs_set(0)
+        try:
+            curses.curs_set(1)
+        except curses.error:
+            pass
         self._init_colors()
         screen.keypad(True)
         screen.timeout(100)
@@ -1035,69 +1198,40 @@ class UmbrellaTui:
         elif self.auto_resume and self.resume_latest():
             pass
         else:
-            self.add_local_event("system", "No town selected. Press s to open a town or n to create one.")
+            self.add_local_event("system", "No town selected. Type /open to resume a town or /new to create one.")
         last_auto = time.time()
         while True:
-            self._drain_pending_result()
-            if self._pending_questions and not self.state.pending_request:
-                questions = self._pending_questions
-                self._pending_questions = []
-                self.run_question_flow(screen, questions)
-                continue
-            screen.erase()
-            self.draw_town(screen)
-            screen.refresh()
-            key = screen.getch()
-            if key == -1:
-                # Idle tick: poll the session so background (async) delegation
-                # results appear on their own without a manual refresh.
-                now = time.time()
-                if self.state.selected_session_id and not self.state.pending_request and (now - last_auto) > 4.0:
-                    last_auto = now
-                    try:
-                        self.refresh_session()
-                    except Exception:
-                        pass
-                continue
-            if key in (ord("q"), ord("Q")):
-                break
-            if self.state.pending_request:
-                self.state.status = f'{self.state.pending_target or "agent"} is still working...'
-                continue
-            if key in (ord("S"), curses.KEY_F5):
-                self.start_platform("full")
-                continue
-            if key in (ord("C"), ord("c"), curses.KEY_F6):
-                self.start_platform("core")
-                continue
-            if key in (ord("X"), ord("x"), curses.KEY_F7):
-                self.stop_platform()
-                continue
-            if key in (ord("n"), ord("N")):
-                self.create_session(screen)
-                continue
-            if key in (ord("r"), ord("R")):
-                self.refresh_home()
-                self.refresh_session()
-                continue
-            if key in (ord("s"),):
-                self.open_session_picker(screen)
-                continue
-            if key == 9:
-                self.cycle_target()
-                continue
-            if key in (10, 13):
-                self.talk(screen)
-                continue
-            if key == ord("/"):
-                raw = self.prompt(screen, "Command", default="")
-                if raw is None:
+            try:
+                self._drain_pending_result()
+                if self._pending_questions and not self.state.pending_request:
+                    questions = self._pending_questions
+                    self._pending_questions = []
+                    self.run_question_flow(screen, questions)
                     continue
-                try:
-                    self.handle_command(screen, raw if raw.startswith("/") else f"/{raw}")
-                except SystemExit:
+                screen.erase()
+                self.draw_town(screen)
+                self._place_input_cursor(screen)
+                screen.refresh()
+                key = screen.getch()
+                if key == -1:
+                    # Idle tick: poll the session so background (async) delegation
+                    # results appear on their own without a manual refresh.
+                    now = time.time()
+                    if self.state.selected_session_id and not self.state.pending_request and (now - last_auto) > 4.0:
+                        last_auto = now
+                        try:
+                            self.refresh_session()
+                        except Exception:
+                            pass
+                    continue
+                # Chat-first: every key feeds the persistent input line. Actions
+                # are slash commands (type /, Tab to autocomplete); Ctrl-C or
+                # /quit exits; Tab cycles the target when not typing a command.
+                self._handle_input_key(key, screen)
+                if self._should_quit:
                     break
-                continue
+            except KeyboardInterrupt:
+                break
 
 
 def build_parser() -> argparse.ArgumentParser:
