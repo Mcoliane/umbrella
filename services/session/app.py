@@ -796,6 +796,19 @@ class SessionEngine:
             summary = str(plugin_result.get('summary', '')).strip() or str(plugin_result.get('reply', '')).strip()
             if summary:
                 snippets.append(f'{shop_id}: {summary}')
+        # Surface the ACTUAL failure reason for each failed delegation so the mayor
+        # reports what really happened (e.g. a 900s timeout) instead of confabulating.
+        for delegation in failed:
+            delegation_id = str(delegation.get('delegationId', '')).strip()
+            shop_id = str(delegation.get('shopId', '')).strip() or 'shop'
+            inv_result = (invocation_by_id.get(delegation_id, {}) or {}).get('result') or {}
+            inner = inv_result.get('result') if isinstance(inv_result.get('result'), dict) else {}
+            reason = str(inv_result.get('failureReason', '')).strip()
+            detail = (str(inner.get('error', '')).strip()
+                      or str(inv_result.get('failureMessage', '')).strip()
+                      or str(inner.get('summary', '')).strip())
+            note = ' — '.join(p for p in (reason, detail) if p) or 'no failure detail recorded'
+            snippets.append(f'{shop_id} FAILED: {note[:300]}')
         status = f'{len(completed)} completed'
         if failed:
             status += f', {len(failed)} failed'
@@ -1384,6 +1397,7 @@ class SessionEngine:
                 'umbrella.programming-agent.v1',
                 'umbrella.web-agent.v1',
                 'umbrella.research-agent.v1',
+                'umbrella.security-agent.v1',
             ]
         for worker_package_id in worker_package_ids:
             self._stamp_worker_shop(session, shops, package_id=str(worker_package_id).strip(), created_at=created_at)
