@@ -28,8 +28,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 _UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0 Safari/537.36"}
 _SCRIPT_STYLE = re.compile(r"(?is)<(script|style|noscript|template)\b.*?</\1>")
@@ -42,6 +44,70 @@ _BROWSER_CANDIDATES = [
     "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
 ]
+
+
+def _load_model() -> dict:
+    root = Path(os.environ.get("UMBRELLA_ROOT") or Path(__file__).resolve().parents[3])
+    runtime = root / "control-plane" / "runtime"
+    def rj(p):
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    cfg, secrets = rj(runtime / "model-broker.json"), rj(runtime / "model-broker.secrets.json")
+    conns = cfg.get("connections") if isinstance(cfg.get("connections"), dict) else {}
+    routing = cfg.get("routing") if isinstance(cfg.get("routing"), dict) else {}
+    cid = "code" if "code" in conns else (str(routing.get("defaultConnectionId", "")).strip() or "default")
+    conn = conns.get(cid) if isinstance(conns.get(cid), dict) else {}
+    sconn = ((secrets.get("connections") or {}).get(cid) or {}) if isinstance(secrets, dict) else {}
+    # Synthesis is an auxiliary (mechanical summarization) task, so prefer the lighter
+    # auxModel when configured — measured equal-or-better quality at ~half the tokens.
+    model = str(conn.get("auxModel") or conn.get("defaultModel", "")).strip()
+    return {"baseUrl": str(conn.get("baseUrl", "")).strip(), "model": model,
+            "apiKey": str(sconn.get("apiKey", "")).strip()}
+
+
+def _chat(prompt: str) -> str:
+    """Best-effort single-shot model call for synthesis; returns '' on any failure."""
+    mc = _load_model()
+    if not mc["baseUrl"] or not mc["model"]:
+        return ""
+    body = json.dumps({"model": mc["model"], "messages": [{"role": "user", "content": prompt}],
+                       "temperature": 0.2, "max_tokens": 700}).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if mc["apiKey"]:
+        headers["Authorization"] = f"Bearer {mc['apiKey']}"
+    url = mc["baseUrl"].rstrip("/") + "/chat/completions"
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(url, data=body, method="POST", headers=headers)
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            return str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+        except urllib.error.HTTPError as ex:
+            if ex.code not in (429, 500, 502, 503, 504) or attempt == 2:
+                return ""
+        except Exception:  # noqa: BLE001
+            if attempt == 2:
+                return ""
+    return ""
+
+
+def _synthesize_search(query: str, results: list[dict]) -> str:
+    if not results:
+        return ""
+    lines = "\n".join(f"{i+1}. {r.get('title','')} — {r.get('snippet','')} ({r.get('url','')})"
+                      for i, r in enumerate(results[:8]))
+    return _chat(f"A colleague searched the web for: {query!r}\n\nTop results:\n{lines}\n\nSynthesize these into a "
+                 "concise, factual answer to the query (2-4 sentences) for the colleague, citing the most relevant "
+                 "source(s) by name or URL. If the results don't actually answer it, say so plainly.")
+
+
+def _synthesize_page(url: str, title: str, text: str) -> str:
+    if not text.strip():
+        return ""
+    return _chat(f"Summarize this web page for a colleague in 2-4 sentences (key facts, then the takeaway).\n"
+                 f"URL: {url}\nTitle: {title}\n\n{text[:6000]}")
 
 
 def _clean(fragment: str) -> str:
@@ -134,8 +200,18 @@ def web_search(query: str, max_results: int, key: str, browser: str) -> dict:
         results = _parse_ddg_html(body, max_results)
         backend = backend or ("duckduckgo-browser" if browser else "duckduckgo-http")
     note = "" if results else " (no results — the search source may be rate-limiting this IP; set UMBRELLA_SEARCH_API_KEY for a reliable backend)"
-    return {"ok": True, "query": query, "backend": backend, "results": results,
-            "summary": f"web.search: {len(results)} result(s) for {query!r} via {backend}{note}"}
+    # Synthesize the results into a conversation-ready answer for the mayor. If the
+    # model is unavailable, fall back to a formatted top-results list (still real
+    # content, never just a count).
+    synthesis = _synthesize_search(query, results)
+    if synthesis:
+        summary = synthesis
+    elif results:
+        summary = (f"Found {len(results)} results for {query!r}:\n" +
+                   "\n".join(f"- {r.get('title','')}: {r.get('snippet','')} ({r.get('url','')})" for r in results[:5]))
+    else:
+        summary = f"No results for {query!r}{note}"
+    return {"ok": True, "query": query, "backend": backend, "results": results, "summary": summary}
 
 
 def web_fetch(url: str, max_chars: int, browser: str) -> dict:
@@ -151,8 +227,8 @@ def web_fetch(url: str, max_chars: int, browser: str) -> dict:
     text = _WS.sub(" ", _clean(_SCRIPT_STYLE.sub(" ", body))).strip()
     if max_chars > 0:
         text = text[:max_chars]
-    return {"ok": True, "url": url, "title": title, "text": text, "source": source,
-            "summary": f"web.fetch: {len(text)} chars from {url} via {source}"}
+    summary = _synthesize_page(url, title, text) or f"Fetched {url} ({title or 'no title'}) — {len(text)} chars: {text[:400]}"
+    return {"ok": True, "url": url, "title": title, "text": text, "source": source, "summary": summary}
 
 
 def main() -> int:

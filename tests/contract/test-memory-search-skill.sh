@@ -164,7 +164,11 @@ plugin_result = ((((invoked.get('invocation') or {}).get('result') or {}).get('r
 results = plugin_result.get('results') if isinstance(plugin_result.get('results'), list) else []
 assert len(results) >= 2, invoked
 assert plugin_result.get('namespace') == 'research', invoked
-assert plugin_result.get('summary') == 'memory.search returned 2 result(s) from research', invoked
+# The skill synthesizes the retrieved nodes into a recap (or, if the model is
+# unavailable, falls back to a formatted list). Assert the contract that holds
+# either way: a non-empty summary string carrying real content, not a fixed line.
+summary = plugin_result.get('summary')
+assert isinstance(summary, str) and len(summary.strip()) >= 10, invoked
 
 print('memory search skill PASS')
 PY

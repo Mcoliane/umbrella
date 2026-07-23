@@ -204,6 +204,41 @@ class PolicyEngine:
             atomic_write_json(self.multi_agent_policy_path, DEFAULT_MULTI_AGENT_POLICY)
         if not self.agent_registry_path.exists():
             update_json(self.agent_registry_path, lambda cur: cur if isinstance(cur, dict) else {'agents': {}}, default={'agents': {}})
+        self._seed_town_agents()
+
+    # Standard town agents. Worker ids are their stable roles; the mayor is included
+    # for default-named towns (a randomly-named mayor delegates memory to these).
+    # Seeded with memory capabilities so their shops can actually read/write the
+    # knowledge + operational memory planes instead of being denied registration.
+    _TOWN_AGENT_ROLES = ('mayor', 'originator', 'programmer', 'web', 'researcher', 'redteam', 'workspace')
+    _MEMORY_CAPABILITIES = (
+        'knowledge.read', 'knowledge.write', 'knowledge.promote', 'knowledge.backfill',
+        'memorycore.read', 'memorycore.write', 'memorycore.delete',
+        'memory.read', 'memory.write',
+    )
+
+    def _seed_town_agents(self) -> None:
+        """Register the standard town agents with memory capabilities (idempotent).
+        Runs on startup so existing installs pick it up on restart; register_agent
+        can still add or extend others afterward."""
+        caps = set(self._MEMORY_CAPABILITIES)
+
+        def mutate(reg):
+            if not isinstance(reg, dict):
+                reg = {'agents': {}}
+            agents = reg.get('agents') if isinstance(reg.get('agents'), dict) else {}
+            for role in self._TOWN_AGENT_ROLES:
+                existing = agents.get(role) if isinstance(agents.get(role), dict) else {}
+                merged = sorted(set(existing.get('capabilities') or []) | caps)
+                agents[role] = {
+                    'agentId': role, 'registered': True, 'source': 'town-seed',
+                    'capabilities': merged, 'updatedAt': now_iso(),
+                }
+            reg['agents'] = agents
+            return reg
+
+        with self._registry_lock:
+            update_json(self.agent_registry_path, mutate, default={'agents': {}})
 
     def _catalog_headers(self) -> dict:
         if self.mesh_token:

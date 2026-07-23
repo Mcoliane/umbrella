@@ -35,11 +35,12 @@ Owns:
 - versioned (`etag`) conflict-aware updates
 - audit/history-grade records
 
-Honesty note on search: the shipped `POST /v1/nodes/search` is a
-case-insensitive **substring scan** over node title and content text
-(`services/memory/search.py`). There is no semantic search, no full-text
-index, no ranking, and no pagination today. Ranked SQLite FTS5 search is
-roadmap work — see `docs/COMPLETION_PLAN.md` (WS10).
+Honesty note on search: the shipped `POST /v1/nodes/search` is **token-level
+BM25 ranking** over node title and content text (`services/memory/search.py`),
+scored in-process over the candidate set (no external index). It can search
+several namespaces at once (`namespaces: [...]`) and ranks by term relevance.
+There is still no embedding/semantic search and no pagination today; embeddings
+are roadmap work — see `docs/COMPLETION_PLAN.md` (WS10).
 
 Must not own:
 
@@ -82,7 +83,7 @@ Promote from `memory-core` into `services/memory` when any condition is true:
 - data is needed beyond the current run/session
 - data is required for audit/explanation
 - data represents stable fact/policy/relationship/decision
-- data is needed for future discovery through node search (today a substring scan; see Layer B note above)
+- data is needed for future discovery through node search (BM25-ranked; see Layer B note above)
 
 Otherwise keep it in `memory-core`.
 

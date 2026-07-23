@@ -54,4 +54,4 @@ umbrella-manage shutdown
 
 `umbrella-manage bringup` starts both memory layers: `memory-core` and the durable node-memory service (`services/memory`). The durable service is mesh-token-authenticated like the rest of the mesh, and its state lives under `control-plane/observability/` (SQLite database plus boundary journals). No separate startup step is needed for the long-term knowledge plane.
 
-One honesty note: durable node search (`memory.search` / `POST /v1/nodes/search`) is currently a case-insensitive substring scan over node title and content — not semantic or ranked search. See [memory-boundary-contract.md](memory-boundary-contract.md) and `docs/COMPLETION_PLAN.md` (WS10).
+One honesty note: durable node search (`memory.search` / `POST /v1/nodes/search`) is token-level BM25 ranking over node title and content (it can span several namespaces and ranks by relevance), but not yet embedding/semantic search. See [memory-boundary-contract.md](memory-boundary-contract.md) and `docs/COMPLETION_PLAN.md` (WS10).
