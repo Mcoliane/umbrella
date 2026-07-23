@@ -377,8 +377,8 @@ The honest current edges (see also [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITA
 
 - Sandboxing is host-dependent (honor-system for shell/python runtimes).
 - Interrupted async delegations do not self-reconcile yet.
-- Durable-memory search is substring, not semantic (an FTS/embeddings upgrade is
-  roadmap).
+- Durable-memory search is token-level BM25 ranking (multi-namespace), not
+  embedding/semantic (an embeddings upgrade is roadmap).
 - Service supervision is script-managed, not OS-native.
 - Single-host; no distributed execution.
 

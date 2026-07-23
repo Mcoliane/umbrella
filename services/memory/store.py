@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .events import event_payload
-from .search import contains_query
+from .search import rank_bm25
 
 
 def now_iso() -> str:
@@ -246,22 +246,34 @@ class MemoryStore:
 
     def search_nodes(self, req: dict) -> dict:
         with self._lock:
-            namespace = str(req.get('namespace', '')).strip()
+            # Accept either a single `namespace` or a `namespaces` list so a
+            # caller can search a session's own memory and the shared long-term
+            # store together, ranked in one corpus.
+            ns_list: list[str] = []
+            raw = req.get('namespaces')
+            if isinstance(raw, (list, tuple)):
+                ns_list = [str(n).strip() for n in raw if str(n).strip()]
+            single = str(req.get('namespace', '')).strip()
+            if single and single not in ns_list:
+                ns_list.append(single)
             query = str(req.get('query', ''))
             k = int(req.get('k', 20))
+            if k <= 0:  # a non-positive k must mean "no results", not a negative slice
+                return {'results': [], 'next_cursor': None}
             kind_filter = set(req.get('kind_filter') or [])
             tag_filter = set(req.get('tag_filter') or [])
             include_deleted = bool(req.get('include_deleted', False))
 
-            if not namespace:
+            if not ns_list:
                 raise ValueError('namespace is required')
 
-            if include_deleted:
-                cur = self.conn.execute('SELECT * FROM nodes WHERE namespace=? ORDER BY updated_at DESC', (namespace,))
-            else:
-                cur = self.conn.execute('SELECT * FROM nodes WHERE namespace=? AND deleted_at IS NULL ORDER BY updated_at DESC', (namespace,))
+            placeholders = ','.join('?' for _ in ns_list)
+            base = f'SELECT * FROM nodes WHERE namespace IN ({placeholders})'
+            if not include_deleted:
+                base += ' AND deleted_at IS NULL'
+            cur = self.conn.execute(base + ' ORDER BY updated_at DESC', tuple(ns_list))
 
-            rows = []
+            candidates = []  # (obj, content_text), already in updated_at DESC order
             for row in cur.fetchall():
                 obj = dict(row)
                 obj['content'] = json.loads(obj['content'])
@@ -271,17 +283,21 @@ class MemoryStore:
                 if tag_filter and not tag_filter.intersection(set(obj['tags'])):
                     continue
                 content_text = obj['content'] if isinstance(obj['content'], str) else json.dumps(obj['content'], ensure_ascii=False)
-                if not contains_query(obj['title'], content_text, query):
-                    continue
-                score = 1.0
-                if query:
-                    q = query.lower()
-                    if q in obj['title'].lower():
-                        score = 2.0
-                rows.append({'score': score, 'node': obj})
-                if len(rows) >= k:
-                    break
+                candidates.append((obj, content_text))
 
+            if not query.strip():
+                # No query: fall back to a recency listing (prior behavior).
+                rows = [{'score': 1.0, 'node': obj} for obj, _ in candidates[:k]]
+                return {'results': rows, 'next_cursor': None}
+
+            scores = rank_bm25(
+                ((obj['node_id'], obj['title'], content_text) for obj, content_text in candidates),
+                query,
+            )
+            scored = [(scores[obj['node_id']], obj) for obj, _ in candidates if obj['node_id'] in scores]
+            # Stable sort: equal scores keep the updated_at DESC order from SQL.
+            scored.sort(key=lambda p: p[0], reverse=True)
+            rows = [{'score': round(s, 6), 'node': obj} for s, obj in scored[:k]]
             return {'results': rows, 'next_cursor': None}
 
     def upsert_edge(self, req: dict, actor: str, request_id: str = '') -> dict:

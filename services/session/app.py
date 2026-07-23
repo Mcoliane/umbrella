@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import threading
 import uuid
@@ -19,7 +20,7 @@ from services.environment import survey_environment
 from services.id_utils import validate_identifier
 from services.memory.auth import check_auth
 from services.persistence import atomic_write_json, file_lock, update_json
-from services.runtime_model import call_model_broker, discover_broker_url, load_model_broker, load_model_provider, mask_secret, provider_enabled, save_model_provider
+from services.runtime_model import call_model_broker, discover_broker_url, load_model_broker, load_model_provider, mask_secret, provider_chat_url, provider_enabled, provider_headers, save_model_provider
 
 LEGACY_ACTION_ALIASES = {
     'memory.get': 'skill.memory.get',
@@ -818,6 +819,314 @@ class SessionEngine:
             return f'Mayor summary for "{objective}": {status}. ' + ' | '.join(snippets)
         return f'Mayor summary for "{objective}": {status}.'
 
+    def _debrief_and_extract(self, *, content: str, raw_summary: str, tags: list | None = None) -> tuple:
+        """ONE model call that both (a) writes the user-facing plain-language debrief and
+        (b) distills durable long-term facts — collapsing the former narrate + Layer-2
+        extract calls into a single lean direct call (no heavy broker prefix). Returns
+        (reply, facts). Falls back to (raw_summary, []) on any failure."""
+        raw = str(raw_summary or '').strip()
+        try:
+            provider = load_model_provider(self.root)
+            if not provider_enabled(provider):
+                return raw, []
+            model = str((provider.get('provider') or {}).get('defaultModel', '')).strip()
+            if not model:
+                return raw, []
+            hint = ', '.join([str(t).strip() for t in (tags or []) if str(t).strip()])
+            hint_s = f' (produced via {hint})' if hint else ''
+            prompt = (
+                "You are the mayor of a town of worker agents, debriefing the user after delegated work "
+                "finished, and also curating a SHARED long-term memory every future session can read.\n\n"
+                f"The user's request was: \"{content}\".\n"
+                f"The delegated work{hint_s} just finished. Raw result:\n\"\"\"\n{raw[:4000]}\n\"\"\"\n\n"
+                "Return ONE JSON object with exactly two keys:\n"
+                "1. \"reply\": tell the USER, in a clear sentence or two (plain language, conversational, first "
+                "person as the mayor), what was done, what each shop found or produced, and the final outcome — "
+                "if it failed, WHY in plain language and what you can do next. No status codes, no the phrase "
+                "\"Mayor summary\", no JSON inside it.\n"
+                "2. \"facts\": a JSON array of durable, town-independent facts worth remembering for FUTURE "
+                "sessions (general facts, reusable how-tos, stable facts about this machine or its toolchain, or "
+                "a real failure lesson — keep those even when they name a tool path). EXCLUDE anything tied to "
+                "the current run (this town's directories/files, transient state, greetings, uncertain results) "
+                "and private personal data. Use [] if nothing is durable.\n\n"
+                "Return ONLY the JSON object: {\"reply\":\"...\",\"facts\":[\"...\"]}"
+            )
+            payload = {'model': model, 'messages': [{'role': 'user', 'content': prompt}],
+                       'temperature': 0.2, 'max_tokens': 2000}
+            req = urllib.request.Request(provider_chat_url(provider), method='POST',
+                data=json.dumps(payload).encode('utf-8'), headers=provider_headers(provider))
+            with urllib.request.urlopen(req, timeout=45) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+            text = str(((data.get('choices') or [{}])[0].get('message') or {}).get('content') or '').strip()
+        except Exception:  # noqa: BLE001
+            return raw, []
+        reply, facts = self._parse_debrief(text)
+        return (reply or raw), facts
+
+    def _parse_debrief(self, text: str) -> tuple:
+        """Pull (reply, facts) from a {"reply":..,"facts":[..]} model response. Tolerant of
+        surrounding prose / truncation; returns ('', []) if nothing usable."""
+        s = str(text or '').strip()
+        start, end = s.find('{'), s.rfind('}')
+        if start != -1 and end > start:
+            try:
+                obj = json.loads(s[start:end + 1])
+                if isinstance(obj, dict):
+                    reply = str(obj.get('reply', '')).strip()
+                    fa = obj.get('facts')
+                    facts = [str(x).strip()[:1000] for x in fa
+                             if str(x).strip() and len(str(x).strip()) >= 8][:12] if isinstance(fa, list) else []
+                    return reply, facts
+            except Exception:  # noqa: BLE001
+                pass
+        # Salvage a truncated/malformed object: reply string + facts array separately.
+        reply = ''
+        m = re.search(r'"reply"\s*:\s*"((?:[^"\\]|\\.)*)"', s)
+        if m:
+            try:
+                reply = json.loads('"' + m.group(1) + '"').strip()
+            except Exception:  # noqa: BLE001
+                reply = m.group(1).strip()
+        fidx = s.find('"facts"')
+        facts = self._parse_fact_list(s[fidx:]) if fidx != -1 else []
+        return reply, facts
+
+    # Long-term memory shared across every town. Short-term memory lives in a
+    # per-session namespace (`town:<sessionId>`); this one accumulates durable
+    # knowledge that any future town can recall.
+    SHARED_MEMORY_NS = 'shared:longterm'
+    # Below this length an outcome (or an extracted fact) is treated as a trivial
+    # blip and never promoted to long-term. Kept low so short atomic facts survive.
+    _LONGTERM_MIN_LEN = 16
+
+    def _memory_base_url(self) -> str:
+        """Resolve the durable memory service URL from the platform manifest (dynamic port)."""
+        cached = getattr(self, '_memory_url_cache', None)
+        if cached is not None:
+            return cached
+        url = ''
+        try:
+            manifest = json.loads((self.root / 'control-plane' / 'runtime' / 'platform-manifest.json').read_text(encoding='utf-8'))
+            url = str(((manifest.get('services') or {}).get('memory') or {}).get('url', '')).strip()
+        except Exception:  # noqa: BLE001
+            url = ''
+        self._memory_url_cache = url
+        return url
+
+    def _write_memory_node(self, base: str, ns: str, *, owner_type: str, owner_id: str,
+                           visibility: str, title: str, content: str, tags: list, source: str) -> None:
+        """Ensure a namespace exists and write one node into it. Raises on failure;
+        callers wrap this best-effort so the conversation flow is never blocked."""
+        self._post_json(base, '/v1/namespaces',
+                        {'id': ns, 'owner_type': owner_type, 'owner_id': owner_id, 'visibility': visibility}, timeout=8)
+        self._post_json(base, '/v1/nodes', {
+            'node_id': f'mem-{uuid.uuid4().hex[:16]}', 'namespace': ns, 'kind': 'delegation-outcome',
+            'title': title, 'content': content, 'tags': tags, 'source': source,
+        }, timeout=8)
+
+    def _capture_to_memory(self, session_id: str, *, title: str, content: str, tags: list | None = None,
+                           longterm_facts: list | None = None) -> None:
+        """Persist a delegation outcome to durable memory so the mayor can recall it later.
+        Writes to two tiers — the session's short-term namespace and the shared long-term
+        namespace every town reads. Best-effort: never raises into the conversation flow.
+
+        If `longterm_facts` is provided, they are used directly (already distilled by the
+        combined debrief+extract call) and Layer 2's extra model call is skipped."""
+        base = self._memory_base_url()
+        text = str(content or '').strip()
+        if not base or not text:
+            return
+        title_s = (str(title or 'delegation').strip() or 'delegation')[:200]
+        content_s = text[:4000]
+        tag_list = [str(t).strip() for t in (tags or []) if str(t).strip()]
+        # Short-term: this session's own working memory — captured verbatim, no gate.
+        try:
+            self._write_memory_node(base, f'town:{session_id}', owner_type='town', owner_id=session_id,
+                                    visibility='private', title=title_s, content=content_s,
+                                    tags=tag_list, source='town-conversation')
+        except Exception:  # noqa: BLE001
+            pass
+        # Long-term: shared across every town — gated so only durable, town-independent
+        # knowledge lands there (Layer 1 deterministic + Layer 2 model curation).
+        if longterm_facts is not None:
+            # Facts already distilled upstream (debrief+extract) — no extra model call.
+            self._promote_facts_to_longterm(base, longterm_facts, tag_list)
+        else:
+            self._promote_to_longterm(base, content_s, tag_list)
+
+    def _recall_from_memory(self, session_id: str, query: str, k: int = 5) -> str:
+        """Return a short block of prior town memory relevant to `query`, for injection
+        into the mayor's context. Best-effort: returns '' on any failure."""
+        base = self._memory_base_url()
+        if not base or not str(query or '').strip():
+            return ''
+        # Search this session's short-term memory and the shared long-term store
+        # together, ranked in one BM25 corpus. Over-fetch to leave room for dedup.
+        namespaces = [f'town:{session_id}', self.SHARED_MEMORY_NS]
+        try:
+            out = self._post_json(base, '/v1/nodes/search',
+                                  {'namespaces': namespaces, 'query': query, 'k': max(k * 2, 10)}, timeout=8)
+        except Exception:  # noqa: BLE001
+            return ''
+        results = out.get('results') if isinstance(out, dict) and isinstance(out.get('results'), list) else []
+        lines: list[str] = []
+        seen: set[str] = set()
+        for r in results:
+            if not isinstance(r, dict):
+                continue
+            # Search returns [{score, node: {title, content, ...}}]; fall back to a
+            # flat shape just in case the store ever returns the node directly.
+            node = r.get('node') if isinstance(r.get('node'), dict) else r
+            content = str(node.get('content', '')).strip()
+            if not content:
+                continue
+            # Dedup on the FULL normalized content so identical short/long copies
+            # collapse but two distinct facts sharing a prefix are both kept.
+            key = ' '.join(content.lower().split())
+            if key in seen:
+                continue
+            seen.add(key)
+            title = str(node.get('title', '')).strip()
+            lines.append(f"- {(title + ': ') if title else ''}{content[:400]}")
+            if len(lines) >= k:
+                break
+        return '\n'.join(lines)
+
+    # ---- Long-term promotion gate (Layer 1 deterministic + Layer 2 model) -------
+
+    @staticmethod
+    def _norm_word_set(text: str) -> set:
+        return set(re.findall(r'[^\W_]+', str(text or '').lower(), re.UNICODE))
+
+    def _promote_to_longterm(self, base: str, content: str, tags: list) -> None:
+        """Gate an outcome before it reaches the shared long-term store, extracting facts
+        with a dedicated model call. Used only when facts weren't already distilled by the
+        combined debrief+extract call. Best-effort: never raises."""
+        text = str(content or '').strip()
+        # Layer 1a: length floor — trivial/templated blips are never durable knowledge.
+        if len(text) < self._LONGTERM_MIN_LEN:
+            return
+        # Layer 2: distill the outcome into durable, town-independent atomic facts.
+        facts = self._model_extract_facts(text, ', '.join(tags) if tags else '')
+        self._promote_facts_to_longterm(base, facts, tags)
+
+    def _promote_facts_to_longterm(self, base: str, facts: list, tags: list) -> None:
+        """Layer 1 gate + write for already-distilled facts: length floor, dedup, then
+        write each surviving fact to the shared long-term store. Best-effort."""
+        for fact in facts or []:
+            fact = str(fact or '').strip()
+            if len(fact) < self._LONGTERM_MIN_LEN:
+                continue
+            # Layer 1b: dedup — don't rewrite a fact the shared store already holds.
+            if self._longterm_duplicate(base, fact):
+                continue
+            try:
+                self._write_memory_node(
+                    base, self.SHARED_MEMORY_NS, owner_type='platform', owner_id='shared',
+                    visibility='shared', title=fact[:120], content=fact[:4000],
+                    tags=(tags or []) + ['longterm'], source='longterm-curated')
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _model_extract_facts(self, content: str, hint: str = '') -> list:
+        """Layer 2: ask the model to distill an outcome into durable, town-independent
+        facts worth sharing across every town. Returns a list of atomic statements, or
+        [] on any failure / if nothing qualifies. Best-effort — never raises, tight
+        timeout, no retries (this must not stall a delegation)."""
+        text = str(content or '').strip()
+        if not text:
+            return []
+        try:
+            provider = load_model_provider(self.root)
+            if not provider_enabled(provider):
+                return []
+            model = str((provider.get('provider') or {}).get('defaultModel', '')).strip()
+            if not model:
+                return []
+            hint_s = f' (produced via {hint})' if hint else ''
+            prompt = (
+                "You curate a SHARED long-term memory that EVERY future work session can read. "
+                "Only durable, session-independent knowledge belongs there.\n\n"
+                "From the outcome below, extract the facts worth remembering for future sessions: "
+                "general facts, reusable procedures or how-tos, stable facts about this machine or its "
+                "toolchain, or a real lesson learned from a failure (e.g. which interpreter/command works "
+                "for a task — keep these even when they name a specific tool path). EXCLUDE anything that "
+                "only matters to the current run: this town's working directories and generated files, its "
+                "transient run state, \"this town\", one-off errors, greetings, or partial/uncertain results. "
+                "Also exclude anything that reads as private personal data.\n\n"
+                "Return ONLY a JSON array of short, self-contained statements — each written as a "
+                "standalone fact (not \"I did X\"). Return [] if nothing here is durable.\n\n"
+                f"Outcome{hint_s}:\n\"\"\"\n{text[:4000]}\n\"\"\""
+            )
+            # Generous ceiling: this provider can spend a lot of tokens deliberating
+            # before emitting the array, and a truncated reply (finish_reason=length)
+            # yields empty/!parseable content. _parse_fact_list also salvages a
+            # truncated array, but giving room avoids the common case.
+            payload = {'model': model, 'messages': [{'role': 'user', 'content': prompt}],
+                       'temperature': 0.1, 'max_tokens': 2000}
+            req = urllib.request.Request(
+                provider_chat_url(provider), method='POST',
+                data=json.dumps(payload).encode('utf-8'), headers=provider_headers(provider))
+            with urllib.request.urlopen(req, timeout=25) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+            reply = str(((data.get('choices') or [{}])[0].get('message') or {}).get('content') or '').strip()
+        except Exception:  # noqa: BLE001
+            return []
+        return self._parse_fact_list(reply)
+
+    @staticmethod
+    def _parse_fact_list(reply: str) -> list:
+        """Extract a JSON array of fact strings from a model reply. Tolerant of code
+        fences / surrounding prose, and salvages complete strings from a TRUNCATED
+        array (finish_reason=length). Returns [] on anything unusable."""
+        s = str(reply or '').strip()
+        start = s.find('[')
+        if start == -1:
+            return []
+        end = s.rfind(']')
+        region = s[start:end + 1] if end > start else s[start:]
+        items: list = []
+        try:
+            arr = json.loads(region)
+            if isinstance(arr, list):
+                items = arr
+        except Exception:  # noqa: BLE001
+            # Array was truncated or malformed: pull out each complete "..." literal.
+            for raw in re.findall(r'"(?:[^"\\]|\\.)*"', region):
+                try:
+                    items.append(json.loads(raw))
+                except Exception:  # noqa: BLE001
+                    continue
+        out = []
+        for item in items:
+            f = str(item).strip()
+            if len(f) >= 8:  # drop trivial fragments
+                out.append(f[:1000])
+        return out[:12]
+
+    def _longterm_duplicate(self, base: str, fact: str) -> bool:
+        """Layer 1b dedup: True if `fact` is already substantially present in the shared
+        long-term store (token Jaccard >= 0.82 with a top hit). Best-effort: on any
+        search failure returns False so a genuine fact is never silently dropped."""
+        ft = self._norm_word_set(fact)
+        if not ft:
+            return False
+        try:
+            out = self._post_json(base, '/v1/nodes/search',
+                                  {'namespace': self.SHARED_MEMORY_NS, 'query': fact, 'k': 3}, timeout=8)
+        except Exception:  # noqa: BLE001
+            return False
+        results = out.get('results') if isinstance(out, dict) and isinstance(out.get('results'), list) else []
+        for r in results:
+            node = r.get('node') if isinstance(r, dict) and isinstance(r.get('node'), dict) else r
+            existing = self._norm_word_set(str((node or {}).get('content', '')))
+            if not existing:
+                continue
+            union = len(ft | existing)
+            if union and (len(ft & existing) / union) >= 0.82:
+                return True
+        return False
+
     def _resolve_orchestration_inputs(self, item: dict, completed_steps: dict[str, dict]) -> dict:
         inputs = dict(item.get('inputs') or {}) if isinstance(item.get('inputs'), dict) else {}
         bindings = item.get('inputBindings') if isinstance(item.get('inputBindings'), list) else []
@@ -1504,6 +1813,7 @@ class SessionEngine:
         session = self.store.update(session_id, _append_user)
 
         if role == 'mayor':
+            recalled = self._recall_from_memory(session_id, content)
             direct = self._converse_direct(
                 session_id,
                 session=session,
@@ -1515,6 +1825,7 @@ class SessionEngine:
                 content=content,
                 system_prompt=prompt_text,
                 instructions='Answer directly when possible. Delegate only when specialized worker work is needed.',
+                extra_inputs={'recalledMemory': recalled} if recalled else None,
             )
             if not direct.get('ok', False):
                 return {'ok': False, 'target': target, 'agentId': agent_id, 'shopId': shop_id, 'error': {'message': 'mayor conversation action failed'}, 'invocation': direct.get('invocation')}
@@ -1546,13 +1857,21 @@ class SessionEngine:
                     'modelUsed': str(direct.get('modelUsed', '')).strip(),
                     'fallbackUsed': bool(direct.get('fallbackUsed', False)),
                     'latencyMs': int(direct.get('latencyMs', 0) or 0),
+                    'usage': direct.get('usage') if isinstance(direct.get('usage'), dict) else None,
                 }
 
                 if wait_for_result:
                     # Synchronous path: block until the delegated work completes.
                     orchestrated = self.orchestrate_turn(session_id=session_id, turn_id=turn_id, plan=plan, metadata={'source': 'session-converse', 'allowDelegation': True, 'suppressSummaryMessage': True})
                     reconciliation = orchestrated.get('reconciliation') if isinstance(orchestrated.get('reconciliation'), dict) else {}
-                    reply = str(reconciliation.get('summary', '')).strip() or compact_text(str(direct.get('reply', '')).strip() or 'The delegated work is complete.')
+                    raw_summary = str(reconciliation.get('summary', '')).strip()
+                    reply = raw_summary or compact_text(str(direct.get('reply', '')).strip() or 'The delegated work is complete.')
+                    if raw_summary:
+                        shop_tags = [str(x.get('shopId', '')).strip() for x in plan if isinstance(x, dict) and x.get('shopId')]
+                        # One call produces BOTH the user debrief and the durable facts.
+                        reply, facts = self._debrief_and_extract(content=content, raw_summary=raw_summary, tags=shop_tags)
+                        self._capture_to_memory(session_id, title=content, content=reply,
+                                                tags=shop_tags, longterm_facts=facts)
                     appended: dict = {}
 
                     def _append_summary(fresh: dict) -> dict:
@@ -1584,6 +1903,12 @@ class SessionEngine:
                         orchestrated = self.orchestrate_turn(session_id=session_id, turn_id=turn_id, plan=plan, metadata={'source': 'session-converse', 'allowDelegation': True, 'suppressSummaryMessage': True})
                         reconciliation = orchestrated.get('reconciliation') if isinstance(orchestrated.get('reconciliation'), dict) else {}
                         summary = str(reconciliation.get('summary', '')).strip() or 'The delegated work is complete.'
+                        # One call turns the raw reconciliation line into a plain-language
+                        # debrief AND distills durable facts (this async path is the TUI default).
+                        shop_tags = [str(x.get('shopId', '')).strip() for x in plan if isinstance(x, dict) and x.get('shopId')]
+                        summary, facts = self._debrief_and_extract(content=content, raw_summary=summary, tags=shop_tags)
+                        self._capture_to_memory(session_id, title=content, content=summary,
+                                                tags=shop_tags, longterm_facts=facts)
                         delegation_ids = [str(r.get('delegationId', '')).strip() for r in (orchestrated.get('delegations') or []) if isinstance(r, dict)]
                         status = 'completed'
                     except Exception as ex:  # noqa: BLE001 — record the failure as a message

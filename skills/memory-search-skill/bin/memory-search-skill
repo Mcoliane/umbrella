@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -21,6 +22,72 @@ def direct_search(base_url: str, namespace: str, query: str, k: int, token: str)
         req.add_header('Authorization', f'Bearer {token}')
     with urllib.request.urlopen(req, timeout=20) as resp:
         return json.loads(resp.read().decode('utf-8'))
+
+
+def _load_model() -> dict:
+    root = Path(os.environ.get('UMBRELLA_ROOT') or Path(__file__).resolve().parents[3])
+    runtime = root / 'control-plane' / 'runtime'
+    def rj(p):
+        try:
+            return json.loads(p.read_text(encoding='utf-8'))
+        except Exception:
+            return {}
+    cfg, secrets = rj(runtime / 'model-broker.json'), rj(runtime / 'model-broker.secrets.json')
+    conns = cfg.get('connections') if isinstance(cfg.get('connections'), dict) else {}
+    routing = cfg.get('routing') if isinstance(cfg.get('routing'), dict) else {}
+    cid = 'code' if 'code' in conns else (str(routing.get('defaultConnectionId', '')).strip() or 'default')
+    conn = conns.get(cid) if isinstance(conns.get(cid), dict) else {}
+    sconn = ((secrets.get('connections') or {}).get(cid) or {}) if isinstance(secrets, dict) else {}
+    # Synthesis is an auxiliary (mechanical summarization) task, so prefer the lighter
+    # auxModel when configured — measured equal-or-better quality at ~half the tokens.
+    model = str(conn.get('auxModel') or conn.get('defaultModel', '')).strip()
+    return {'baseUrl': str(conn.get('baseUrl', '')).strip(), 'model': model,
+            'apiKey': str(sconn.get('apiKey', '')).strip()}
+
+
+def _chat(prompt: str) -> str:
+    """Best-effort single-shot model call for synthesis; returns '' on any failure."""
+    mc = _load_model()
+    if not mc['baseUrl'] or not mc['model']:
+        return ''
+    body = json.dumps({'model': mc['model'], 'messages': [{'role': 'user', 'content': prompt}],
+                       'temperature': 0.2, 'max_tokens': 600}).encode('utf-8')
+    headers = {'Content-Type': 'application/json'}
+    if mc['apiKey']:
+        headers['Authorization'] = f"Bearer {mc['apiKey']}"
+    url = mc['baseUrl'].rstrip('/') + '/chat/completions'
+    # Synthesis sits on the memory.search response path, so bound worst-case latency:
+    # one retry, short timeout (<=50s total) rather than 3x60s. It's best-effort —
+    # on any failure the caller falls back to a formatted list.
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(url, data=body, method='POST', headers=headers)
+            with urllib.request.urlopen(req, timeout=25) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+            return str(((data.get('choices') or [{}])[0].get('message') or {}).get('content') or '').strip()
+        except urllib.error.HTTPError as ex:
+            if ex.code not in (429, 500, 502, 503, 504) or attempt == 1:
+                return ''
+        except Exception:  # noqa: BLE001
+            if attempt == 1:
+                return ''
+    return ''
+
+
+def _node_text(r) -> str:
+    if isinstance(r, dict):
+        return str(r.get('content') or r.get('text') or r.get('summary') or r.get('label') or r.get('value') or json.dumps(r))
+    return str(r)
+
+
+def _synthesize_memory(query: str, namespace: str, results: list) -> str:
+    if not results:
+        return ''
+    body = '\n'.join(f"{i+1}. {_node_text(r)[:300]}" for i, r in enumerate(results[:12]))
+    subject = f"the query {query!r}" if query else 'recent context'
+    return _chat(f"These are memory records retrieved from the '{namespace}' knowledge store for {subject}:\n\n{body}"
+                 "\n\nSynthesize them into a concise recap for a colleague (2-4 sentences): what the store actually "
+                 "knows that's relevant here. If nothing relevant is present, say so plainly.")
 
 
 def main() -> int:
@@ -64,17 +131,18 @@ def main() -> int:
         result = direct_search(base_url=base_url, namespace=namespace, query=query, k=k, token=token)
 
     results = result.get('results') if isinstance(result.get('results'), list) else []
-    print(
-        json.dumps(
-            {
-                'ok': True,
-                'namespace': namespace,
-                'query': query,
-                'results': results,
-                'summary': f'memory.search returned {len(results)} result(s) from {namespace}',
-            }
-        )
-    )
+    # Synthesize the retrieved nodes into a conversation-ready recap for the mayor,
+    # falling back to a formatted list (still real content, never just a count).
+    synthesis = _synthesize_memory(query, namespace, results)
+    if synthesis:
+        summary = synthesis
+    elif results:
+        summary = (f"{len(results)} memory record(s) from {namespace}:\n" +
+                   '\n'.join(f"- {_node_text(r)[:200]}" for r in results[:5]))
+    else:
+        summary = (f"No memory records for {query!r} in {namespace}" if query
+                   else f"No memory records in {namespace}")
+    print(json.dumps({'ok': True, 'namespace': namespace, 'query': query, 'results': results, 'summary': summary}))
     return 0
 
 

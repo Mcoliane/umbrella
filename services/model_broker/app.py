@@ -156,6 +156,36 @@ def summarize_shops(rows: list[dict], limit: int = 8) -> str:
     return "\n".join(parts)
 
 
+def extract_usage(raw: dict) -> dict:
+    """Normalize the provider's `usage` block into a stable shape, including prompt-cache
+    hit/miss (this provider caches repeated prefixes automatically and reports the split).
+    Returns zeros when the provider omits usage. Never raises."""
+    u = raw.get("usage") if isinstance(raw, dict) and isinstance(raw.get("usage"), dict) else {}
+
+    def _i(v) -> int:
+        try:
+            return int(v or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    prompt = _i(u.get("prompt_tokens"))
+    # Cache hits are reported as `prompt_cache_hit_tokens` and/or nested
+    # `prompt_tokens_details.cached_tokens` depending on the endpoint — take whichever is present.
+    hit = _i(u.get("prompt_cache_hit_tokens"))
+    if not hit:
+        details = u.get("prompt_tokens_details") if isinstance(u.get("prompt_tokens_details"), dict) else {}
+        hit = _i(details.get("cached_tokens"))
+    miss = _i(u.get("prompt_cache_miss_tokens")) or max(prompt - hit, 0)
+    return {
+        "promptTokens": prompt,
+        "completionTokens": _i(u.get("completion_tokens")),
+        "totalTokens": _i(u.get("total_tokens")) or (prompt + _i(u.get("completion_tokens"))),
+        "cachedTokens": hit,
+        "cacheMissTokens": miss,
+        "cacheHitRatio": round(hit / prompt, 3) if prompt else 0.0,
+    }
+
+
 class BrokerEngine:
     def __init__(self, root: Path):
         self.root = Path(root).resolve()
@@ -443,6 +473,7 @@ class BrokerEngine:
         instructions = str(request.get("instructions", "")).strip() or "Mode must be direct or delegate."
         message = str(request.get("message", "")).strip()
         environment_summary = str(request.get("environmentSummary", "")).strip()
+        recalled_memory = str(request.get("recalledMemory", "")).strip()
         town_context = request.get("townContext") if isinstance(request.get("townContext"), dict) else {}
         available_shops = request.get("availableShops") if isinstance(request.get("availableShops"), list) else []
         conversation_history = request.get("conversationHistory") if isinstance(request.get("conversationHistory"), list) else []
@@ -522,6 +553,11 @@ class BrokerEngine:
                         "task specifies. Follow COHERENCE notes literally; prefer already-installed tools and only add what is required.\n"
                         "Return ONLY the JSON object, no prose outside it."
                     ),
+                },
+                {
+                    "role": "system",
+                    "content": ("Memory — what you've already learned or done in this town. Use it to answer directly "
+                                "instead of re-running work you've already done:\n" + (recalled_memory or "nothing relevant yet.")),
                 },
                 {
                     "role": "system",
@@ -630,6 +666,15 @@ class BrokerEngine:
                 out["modelUsed"] = model
                 out["latencyMs"] = int((time.time() - started) * 1000)
                 out["attempts"] = attempt + 1
+                # Surface token + prompt-cache usage so callers can record it and we
+                # can see the cache actually working (hits bill at a fraction of input).
+                usage = extract_usage(raw)
+                out["usage"] = usage
+                if usage["promptTokens"]:
+                    print(f"[broker] {model} prompt={usage['promptTokens']} "
+                          f"cached={usage['cachedTokens']} ({int(usage['cacheHitRatio'] * 100)}% hit) "
+                          f"completion={usage['completionTokens']} latency={out['latencyMs']}ms",
+                          file=sys.stderr, flush=True)
                 # Structured clarifying questions (mode "clarify" was normalized to
                 # "direct" above): sanitize into {question, options, multiSelect} so
                 # the client can render them as a selectable picker.
