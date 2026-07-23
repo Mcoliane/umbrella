@@ -30,14 +30,14 @@
   "actions": [
     {
       "id": "skill.files.query",
-      "title": "Query Local Files (read-only)",
-      "description": "Answer a question about the user's local files by finding, listing, reading, and summarizing them (READ-ONLY, scope-enforced to safe roots like Desktop/Documents/Downloads). Use this for 'find the file on my desktop', 'what's in this folder', 'read/summarize this document', 'how did the analysis on my desktop go'.",
+      "title": "Query or Edit Local Files",
+      "description": "Find, read, and summarize the user's local files, and — when allowWrite is true — create, edit, and reorganize them. Scope-enforced to safe roots (Desktop/Documents/Downloads/cwd), refuses secret/hidden files, read-only unless allowWrite is set, and has no delete. Use for 'find the file on my desktop', 'read/summarize this document', 'how did the analysis on my desktop go' (read); and 'write a note to my desktop', 'edit this file', 'reorganize these files' (pass allowWrite: true).",
       "requiredCapabilities": [],
       "policyHints": {
-        "riskClass": "medium",
-        "approvalMode": "auto",
+        "riskClass": "high",
+        "approvalMode": "required",
         "memoryAccess": "none",
-        "fsAccess": "read",
+        "fsAccess": "read-write",
         "networkAccess": "http-outbound",
         "processAccess": "none",
         "delegationAllowed": true,
@@ -48,6 +48,7 @@
         "properties": {
           "task": { "type": "string" },
           "roots": { "type": "string" },
+          "allowWrite": { "type": "boolean" },
           "maxIterations": { "type": "integer" }
         },
         "required": ["task"]

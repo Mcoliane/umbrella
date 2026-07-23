@@ -82,32 +82,47 @@ def _fn(name, desc, props, required):
             "parameters": {"type": "object", "properties": props, "required": required}}}
 
 
-TOOLS = [
+_READ_TOOLS = [
     _fn("list_dir", "List the entries (files and folders, with sizes) in a directory. Refused for paths outside the "
         "allowed roots.", {"path": {"type": "string"}}, ["path"]),
     _fn("find", "Search for files under a directory, by filename glob (`name`, e.g. '*gateway*') and/or by text "
-        "`contains`. Read-only, scoped, and capped. Returns matching paths (with a snippet for content matches).",
+        "`contains`. Scoped and capped. Returns matching paths (with a snippet for content matches).",
         {"path": {"type": "string"}, "name": {"type": "string"}, "contains": {"type": "string"}}, ["path"]),
     _fn("read_file", "Read a text file's content (truncated). Refused for paths outside the allowed roots.",
         {"path": {"type": "string"}}, ["path"]),
-    _fn("finish", "Finish with a clear answer to the user's question about their files.",
-        {"answer": {"type": "string"}}, ["answer"]),
 ]
+_WRITE_TOOLS = [
+    _fn("write_file", "Create or OVERWRITE a text file with the given content. Scoped to the allowed roots, and "
+        "refused for secret-looking or hidden files. Only available when write access was granted for this task.",
+        {"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"]),
+    _fn("move_file", "Move or rename a file from `src` to `dst` (both must be in scope; refused for secret/hidden "
+        "files). Use this to reorganize files. Only available when write access was granted.",
+        {"src": {"type": "string"}, "dst": {"type": "string"}}, ["src", "dst"]),
+]
+_FINISH_TOOL = _fn("finish", "Finish with a clear answer/summary of what you found or did — cite the file path(s).",
+                   {"answer": {"type": "string"}}, ["answer"])
 
-SYSTEM = """You are a READ-ONLY workspace/files agent inside Umbrella. You answer questions about the user's local
-files by finding, listing, reading, and summarizing them. Work like a careful assistant:
+SYSTEM = """You are a workspace/files agent inside Umbrella. You help with the user's local files: finding, reading,
+and summarizing them, and — when write access is granted for the task — creating, editing, and reorganizing them.
+Work like a careful assistant:
 1. Use `find` to locate the relevant file(s) by name and/or content under the allowed roots.
 2. Use `list_dir` to orient yourself in a folder when you're unsure.
-3. Use `read_file` to read what you found, then answer the actual question the user asked (e.g. summarize how an
-   analysis went, extract the relevant details, tell them what a file contains).
-4. Call `finish` with a clear, direct answer grounded in what you actually read — cite the file path(s) you used.
+3. Use `read_file` to read what you found.
+4. If you have write tools and the task calls for it, use `write_file` / `move_file` to make ONLY the change the
+   task asks for, and confirm the target path is what the user intends before overwriting an existing file.
+5. Call `finish` with a clear answer grounded in what you actually did/read — cite the file path(s).
 
 Hard rules:
-- You are READ-ONLY. You never create, modify, move, or delete anything. There are no tools to do so.
-- You stay within the allowed roots. If a path is refused as out of scope, do not try to work around it — say so.
-- Do not read or surface obvious secrets (private keys, credentials, .env values) even if you stumble on them;
-  note that they exist and move on.
-- Ground your answer in the file contents you read; do not invent what a file says."""
+- Stay within the allowed roots. If a path is refused as out of scope, do not try to work around it — say so.
+- Never read, write, or surface secrets (private keys, credentials, .env values). Refuse those files.
+- There is NO delete tool; you never delete anything.
+- Ground your answer in reality — do not invent what a file says or claim a change you did not make."""
+
+_READONLY_NOTE = ("\n\nThis task is READ-ONLY: you have find/list/read only. You cannot create, modify, or move "
+                  "files; if the user is asking for a change, say it wasn't granted write access.")
+_WRITE_NOTE = ("\n\nThis task has WRITE access: write_file and move_file are available. Create/overwrite/move files "
+               "ONLY within the allowed roots and only as the task requires; prefer a new file over overwriting an "
+               "existing one unless the user clearly wants the overwrite.")
 
 
 def _safe_roots(roots_input: str) -> list[Path]:
@@ -147,6 +162,7 @@ class Engine:
     def __init__(self, roots: list[Path]):
         self.roots = roots
         self.files_read: list[str] = []
+        self.files_written: list[str] = []
 
     def _scope(self, path: str):
         p = _resolve_in_scope(path, self.roots)
@@ -217,6 +233,52 @@ class Engine:
         trailer = "" if len(data) <= READ_CAP else f"\n…(truncated, {len(data)} bytes total)"
         return f"{p}:\n{data[:READ_CAP]}{trailer}"
 
+    def _write_guard(self, p: Path) -> str:
+        if any(s in p.name.lower() for s in _SECRETISH) or p.name.startswith("."):
+            return f"REFUSED: {p.name} is a secret/hidden file — off-limits for writing."
+        if p.is_dir():
+            return f"REFUSED: {p} is a directory."
+        return ""
+
+    def write_file(self, args):
+        p, err = self._scope(str(args.get("path", "")))
+        if err:
+            return err
+        guard = self._write_guard(p)
+        if guard:
+            return guard
+        content = str(args.get("content", ""))
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)  # parent is in-scope (p passed the scope check)
+            existed = p.is_file()
+            p.write_text(content, encoding="utf-8")
+        except Exception as ex:  # noqa: BLE001
+            return f"write error: {type(ex).__name__}: {ex}"
+        self.files_written.append(str(p))
+        return f"{'overwrote' if existed else 'wrote'} {p} ({len(content)} bytes)"
+
+    def move_file(self, args):
+        src, err = self._scope(str(args.get("src", "")))
+        if err:
+            return err
+        dst, err = self._scope(str(args.get("dst", "")))
+        if err:
+            return err
+        guard = self._write_guard(dst) or (f"REFUSED: {src.name} is a secret/hidden file."
+                                           if any(s in src.name.lower() for s in _SECRETISH) or src.name.startswith(".")
+                                           else "")
+        if guard:
+            return guard
+        if not src.is_file():
+            return f"not a file: {src}"
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            src.rename(dst)
+        except Exception as ex:  # noqa: BLE001
+            return f"move error: {type(ex).__name__}: {ex}"
+        self.files_written.append(str(dst))
+        return f"moved {src} -> {dst}"
+
 
 def main() -> int:
     try:
@@ -231,6 +293,9 @@ def main() -> int:
         return 1
     roots = _safe_roots(str(inputs.get("roots", "")))
     max_iters = max(4, min(int(inputs.get("maxIterations", 24) or 24), 60))
+    allow_write = bool(inputs.get("allowWrite", False))
+    tools = _READ_TOOLS + (_WRITE_TOOLS if allow_write else []) + [_FINISH_TOOL]
+    system = SYSTEM + (_WRITE_NOTE if allow_write else _READONLY_NOTE)
 
     root = Path(os.environ.get("UMBRELLA_ROOT") or Path(__file__).resolve().parents[3])
     model_cfg = load_model(root)
@@ -240,14 +305,15 @@ def main() -> int:
 
     eng = Engine(roots)
     context = (f"QUESTION / TASK: {task}\nALLOWED ROOTS: {[str(r) for r in roots]}\n"
-               "Locate and read the relevant file(s), then answer.")
-    messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": context}]
+               f"WRITE ACCESS: {'granted' if allow_write else 'NOT granted (read-only)'}\n"
+               "Locate the relevant file(s), then answer the question or make the requested change.")
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": context}]
     iters, finished, answer, no_tool = 0, False, "", 0
 
     while iters < max_iters and not finished:
         iters += 1
         try:
-            msg = chat_raw(model_cfg, messages, tools=TOOLS)
+            msg = chat_raw(model_cfg, messages, tools=tools)
         except Exception as ex:  # noqa: BLE001
             answer = f"model error after {iters} step(s): {type(ex).__name__}: {ex}"
             break
@@ -280,6 +346,10 @@ def main() -> int:
                 result = eng.find(args if isinstance(args, dict) else {})
             elif name == "read_file":
                 result = eng.read_file(args if isinstance(args, dict) else {})
+            elif name == "write_file":
+                result = eng.write_file(args if isinstance(args, dict) else {}) if allow_write else "REFUSED: write access was not granted for this task."
+            elif name == "move_file":
+                result = eng.move_file(args if isinstance(args, dict) else {}) if allow_write else "REFUSED: write access was not granted for this task."
             else:
                 result = f"unknown tool: {name}"
             messages.append({"role": "tool", "tool_call_id": str(tc.get("id") or ""), "content": str(result)[:OBS_CAP]})
@@ -291,6 +361,7 @@ def main() -> int:
         "summary": (answer or "no answer")[:400],
         "answer": answer or "I couldn't find an answer in the allowed file locations.",
         "filesRead": eng.files_read,
+        "filesWritten": eng.files_written,
         "iterations": iters,
         "verified": finished,
     }))
