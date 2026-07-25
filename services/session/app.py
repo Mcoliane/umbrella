@@ -251,6 +251,9 @@ class SessionEngine:
         self.store = SessionStore(umbrella_root)
         self.profile_store = ShopProfileStore(umbrella_root)
         self.package_store = AgentPackageStore(umbrella_root)
+        # In-flight run ids per session, so /abort can find and kill them via plugin-host.
+        self._active_runs: dict[str, set] = {}
+        self._active_runs_lock = threading.Lock()
 
     def _headers(self) -> dict:
         headers = {'Content-Type': 'application/json'}
@@ -794,9 +797,15 @@ class SessionEngine:
             shop_id = str(delegation.get('shopId', '')).strip() or 'shop'
             invocation = invocation_by_id.get(delegation_id, {})
             plugin_result = ((((invocation.get('result') or {}).get('result') or {}).get('pluginResult')) or {})
-            summary = str(plugin_result.get('summary', '')).strip() or str(plugin_result.get('reply', '')).strip()
+            summary = (str(plugin_result.get('summary', '')).strip()
+                       or str(plugin_result.get('answer', '')).strip()
+                       or str(plugin_result.get('reply', '')).strip())
             if summary:
                 snippets.append(f'{shop_id}: {summary}')
+            else:
+                # Make an empty result EXPLICIT so the mayor can't pass "it ran" off as
+                # "it's done" — the debrief is told to refuse hollow success on this signal.
+                snippets.append(f'{shop_id} ran but returned NO substantive output (no answer to the request)')
         # Surface the ACTUAL failure reason for each failed delegation so the mayor
         # reports what really happened (e.g. a 900s timeout) instead of confabulating.
         for delegation in failed:
@@ -840,10 +849,13 @@ class SessionEngine:
                 f"The user's request was: \"{content}\".\n"
                 f"The delegated work{hint_s} just finished. Raw result:\n\"\"\"\n{raw[:4000]}\n\"\"\"\n\n"
                 "Return ONE JSON object with exactly two keys:\n"
-                "1. \"reply\": tell the USER, in a clear sentence or two (plain language, conversational, first "
-                "person as the mayor), what was done, what each shop found or produced, and the final outcome — "
-                "if it failed, WHY in plain language and what you can do next. No status codes, no the phrase "
-                "\"Mayor summary\", no JSON inside it.\n"
+                "1. \"reply\": ANSWER the user's request using what the shops ACTUALLY produced — lead with the "
+                "substance (the real findings/answer/result), in plain conversational language as the mayor. Judge "
+                "whether the request was truly answered: if a shop 'ran' or 'completed' but returned NO substantive "
+                "output (or only a status), do NOT report success — say plainly that you don't have a real answer "
+                "yet, why, and what you'd try next. NEVER dress up an empty or status-only result as \"done\" or "
+                "\"completed successfully\", and never invent findings that weren't produced. If it genuinely "
+                "failed, say WHY in plain language. No status codes, no the phrase \"Mayor summary\", no JSON in the reply.\n"
                 "2. \"facts\": a JSON array of durable, town-independent facts worth remembering for FUTURE "
                 "sessions (general facts, reusable how-tos, stable facts about this machine or its toolchain, or "
                 "a real failure lesson — keep those even when they name a tool path). EXCLUDE anything tied to "
@@ -929,6 +941,39 @@ class SessionEngine:
             url = ''
         self._memory_url_cache = url
         return url
+
+    def _plugin_host_url(self) -> str:
+        """Resolve the plugin-host service URL from the platform manifest (dynamic port)."""
+        cached = getattr(self, '_plugin_host_url_cache', None)
+        if cached is not None:
+            return cached
+        url = ''
+        try:
+            manifest = json.loads((self.root / 'control-plane' / 'runtime' / 'platform-manifest.json').read_text(encoding='utf-8'))
+            url = str(((manifest.get('services') or {}).get('plugin-host') or {}).get('url', '')).strip()
+        except Exception:  # noqa: BLE001
+            url = ''
+        self._plugin_host_url_cache = url
+        return url
+
+    def abort_session(self, session_id: str) -> dict:
+        """Abort the session's in-flight work: kill each running skill subprocess via the
+        plugin-host. A killed run surfaces as a cancelled delegation, which the mayor then
+        debriefs honestly — so no separate message posting is needed here."""
+        session_id = validate_identifier(session_id, 'sessionId')
+        with self._active_runs_lock:
+            run_ids = sorted(self._active_runs.get(session_id, set()))
+        ph_url = self._plugin_host_url()
+        cancelled = 0
+        for run_id in run_ids:
+            if not ph_url:
+                break
+            try:
+                out = self._post_json(ph_url, '/v1/plugin-host/cancel', {'runId': run_id}, timeout=8)
+                cancelled += int(out.get('cancelled', 0) or 0)
+            except Exception:  # noqa: BLE001
+                pass
+        return {'ok': True, 'sessionId': session_id, 'runsInFlight': len(run_ids), 'cancelled': cancelled}
 
     def _write_memory_node(self, base: str, ns: str, *, owner_type: str, owner_id: str,
                            visibility: str, title: str, content: str, tags: list, source: str) -> None:
@@ -1736,6 +1781,7 @@ class SessionEngine:
                 'umbrella.research-agent.v1',
                 'umbrella.security-agent.v1',
                 'umbrella.workspace-agent.v1',
+                'umbrella.analysis-agent.v1',
             ]
         for worker_package_id in worker_package_ids:
             self._stamp_worker_shop(session, shops, package_id=str(worker_package_id).strip(), created_at=created_at)
@@ -2597,6 +2643,10 @@ class SessionEngine:
                 'delegationId': delegation_id,
             },
         }
+        # Register this run as in-flight so /abort can locate and kill its subprocess
+        # while the call below blocks; always deregister when it returns.
+        with self._active_runs_lock:
+            self._active_runs.setdefault(session_id, set()).add(run_id)
         try:
             execution = self._post_json(
                 self.execution_url,
@@ -2613,6 +2663,13 @@ class SessionEngine:
             except Exception:
                 body = ''
             raise RuntimeError(f'HTTP {ex.code}: {body or ex.reason}') from ex
+        finally:
+            with self._active_runs_lock:
+                bucket = self._active_runs.get(session_id)
+                if bucket is not None:
+                    bucket.discard(run_id)
+                    if not bucket:
+                        self._active_runs.pop(session_id, None)
 
         runtime = self._resolved_runtime(resolved_action_id, metadata)
         invocation = {
@@ -3244,6 +3301,9 @@ def handler_factory(engine: SessionEngine, token: str):
                         shop_id=str(body.get('shopId', '')),
                     )
                     return json_response(self, 200, out)
+                if path.endswith('/abort') and path.startswith('/v1/sessions/'):
+                    session_id = path[len('/v1/sessions/') : -len('/abort')].strip('/')
+                    return json_response(self, 200, engine.abort_session(session_id=session_id))
                 return json_response(self, 404, err('NOT_FOUND', 'route not found', req_id))
             except ValueError as ex:
                 return json_response(self, 400, err('VALIDATION_ERROR', str(ex), req_id))

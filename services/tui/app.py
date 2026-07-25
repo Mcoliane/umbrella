@@ -57,6 +57,7 @@ class UmbrellaTui:
             {"name": "refresh", "args": "", "desc": "Refresh home + town"},
             {"name": "start", "args": "[full|core]", "desc": "Start the service stack"},
             {"name": "stop", "args": "", "desc": "Stop the service stack"},
+            {"name": "abort", "args": "", "desc": "Abort the current in-flight run (kills the running shop)"},
             {"name": "quit", "args": "", "desc": "Exit the TUI"},
         ]
 
@@ -816,6 +817,21 @@ class UmbrellaTui:
             return
         if name == "stop":
             self.stop_platform()
+            return
+        if name == "abort":
+            sid = self.state.selected_session_id
+            if not sid:
+                self.add_local_event("error", "No town open to abort.")
+                return
+            try:
+                out = self.client.abort_session(session_id=sid)
+                n = int(out.get("cancelled", 0) or 0)
+                self.state.status = f"Aborted — killed {n} running shop(s)." if n else "Nothing in-flight to abort."
+            except Exception as ex:  # noqa: BLE001
+                self.state.status = f"Abort failed: {type(ex).__name__}"
+                self.add_local_event("error", self.state.status)
+            self._clear_pending()
+            self.refresh_session()
             return
         if name in {"quit", "exit"}:
             raise SystemExit(0)

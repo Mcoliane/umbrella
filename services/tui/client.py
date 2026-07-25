@@ -204,6 +204,15 @@ class TuiClient:
             timeout=10.0,
         )["json"]
 
+    def abort_session(self, *, session_id: str) -> dict:
+        base = self.service_url("session")
+        return self._request(
+            "POST",
+            f"{base}/v1/sessions/{urllib.parse.quote(session_id)}/abort",
+            {},
+            timeout=15.0,
+        )["json"]
+
     def append_message(self, *, session_id: str, role: str, content: str) -> dict:
         base = self.service_url("session")
         return self._request(

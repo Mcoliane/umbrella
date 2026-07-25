@@ -5,8 +5,10 @@ import argparse
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import uuid
 import urllib.error
 import urllib.request
@@ -89,6 +91,30 @@ class PluginHostEngine:
         self.container_runtime_preference = str(container_runtime or 'auto').strip() or 'auto'
         self.scratch_root = self.root / 'control-plane' / 'observability' / 'plugin-host' / 'scratch'
         self.scratch_root.mkdir(parents=True, exist_ok=True)
+        # Registry of in-flight skill subprocesses keyed by runId, so an /abort can
+        # actually kill a running skill (not just stop waiting for it).
+        self._running: dict[str, subprocess.Popen] = {}
+        self._cancelled: set[str] = set()
+        self._running_lock = threading.Lock()
+
+    def cancel(self, run_id: str) -> dict:
+        """Kill the in-flight skill subprocess for `run_id`, if any."""
+        run_id = str(run_id or '').strip()
+        with self._running_lock:
+            proc = self._running.get(run_id)
+            if proc is None:
+                return {'ok': False, 'cancelled': 0, 'reason': 'no running subprocess for runId'}
+            self._cancelled.add(run_id)
+        # Kill the whole process GROUP (the skill runs in its own session), so a child the
+        # skill spawned — e.g. the code agent running pytest — dies too, not just the skill.
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except Exception:  # noqa: BLE001
+            try:
+                proc.terminate()  # fallback if the group kill isn't available
+            except Exception:  # noqa: BLE001
+                pass
+        return {'ok': True, 'cancelled': 1, 'runId': run_id}
 
     def resolve_container_runtime(self) -> str:
         if self.container_runtime_preference == 'none':
@@ -288,17 +314,41 @@ class PluginHostEngine:
         else:
             raise ValueError(f'unsupported plugin runtime: {runtime}')
 
+        run_id = str(invocation.get('runId', '')).strip()
+        # Popen (not subprocess.run) so the process is registered by runId and an
+        # /abort can terminate it mid-flight instead of only a maxRuntimeSec timeout.
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
-                input=payload_json,
-                capture_output=True,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True,
                 cwd=str(install_root),
                 env=env,
-                timeout=policy['maxRuntimeSec'],
+                start_new_session=True,  # own process group, so /abort can kill the whole tree
             )
+        except Exception as ex:  # noqa: BLE001
+            return {
+                'ok': False, 'exitCode': 126, 'failureCategory': 'runtime',
+                'failureSource': 'plugin-host', 'failureReason': 'spawn_failed',
+                'result': {'status': 'FAILED', 'kind': 'plugin', 'error': str(ex)},
+                'stderr': truncate_text(str(ex), policy['maxOutputBytes']), 'command': cmd,
+                'scratchDir': str(scratch_dir), 'executionPolicy': policy, 'policyWarnings': policy_warnings,
+            }
+        if run_id:
+            with self._running_lock:
+                self._running[run_id] = proc
+        try:
+            stdout_raw, stderr_raw = proc.communicate(input=payload_json, timeout=policy['maxRuntimeSec'])
         except subprocess.TimeoutExpired as ex:
+            proc.kill()
+            try:
+                proc.communicate(timeout=5)
+            except Exception:  # noqa: BLE001
+                pass
+            if run_id:
+                with self._running_lock:
+                    self._running.pop(run_id, None)
+                    self._cancelled.discard(run_id)
             return {
                 'ok': False,
                 'exitCode': 124,
@@ -312,9 +362,29 @@ class PluginHostEngine:
                 'executionPolicy': policy,
                 'policyWarnings': policy_warnings,
             }
+        was_cancelled = False
+        if run_id:
+            with self._running_lock:
+                self._running.pop(run_id, None)
+                was_cancelled = run_id in self._cancelled
+                self._cancelled.discard(run_id)
+        if was_cancelled:
+            return {
+                'ok': False,
+                'exitCode': proc.returncode if proc.returncode is not None else -15,
+                'failureCategory': 'runtime',
+                'failureSource': 'plugin-host',
+                'failureReason': 'cancelled',
+                'result': {'status': 'CANCELLED', 'kind': 'plugin', 'cancelled': True},
+                'stderr': 'aborted by user',
+                'command': cmd,
+                'scratchDir': str(scratch_dir),
+                'executionPolicy': policy,
+                'policyWarnings': policy_warnings,
+            }
 
-        stdout = truncate_text(proc.stdout or '', policy['maxOutputBytes'])
-        stderr = truncate_text(proc.stderr or '', policy['maxOutputBytes'])
+        stdout = truncate_text(stdout_raw or '', policy['maxOutputBytes'])
+        stderr = truncate_text(stderr_raw or '', policy['maxOutputBytes'])
         parsed = parse_payload(stdout)
         status = 'SUCCESS' if proc.returncode == 0 else 'FAILED'
         result = parsed if isinstance(parsed, dict) else {'stdout': stdout}
@@ -384,6 +454,8 @@ def handler_factory(engine: PluginHostEngine, token: str):
                         return json_response(self, 400, err('VALIDATION_ERROR', 'actionId is required', req_id))
                     out = engine.invoke(action_id=action_id, invocation=body.get('invocation') or {})
                     return json_response(self, 200, out)
+                if path == '/v1/plugin-host/cancel':
+                    return json_response(self, 200, engine.cancel(run_id=str(body.get('runId', '')).strip()))
                 return json_response(self, 404, err('NOT_FOUND', 'route not found', req_id))
             except urllib.error.URLError as ex:
                 return json_response(self, 502, err('DEPENDENCY_UNAVAILABLE', str(ex), req_id))

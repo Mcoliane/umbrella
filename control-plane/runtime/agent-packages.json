@@ -218,6 +218,35 @@
         "temperatureDefault": 0.2,
         "maxTokensDefault": 1200
       }
+    },
+    "umbrella.analysis-agent.v1": {
+      "packageId": "umbrella.analysis-agent.v1",
+      "name": "Analysis Agent",
+      "runtimeId": "umbrella-agent-runtime",
+      "role": "analyst",
+      "defaultTitle": "Analysis Agent",
+      "defaultShopName": "Analysis Shop",
+      "shopType": "analysis-shop",
+      "shopProfileId": "",
+      "enabledActionIds": [
+        "skill.chat.respond",
+        "skill.memory.search",
+        "skill.memory.get",
+        "skill.analysis.review"
+      ],
+      "capabilityFamilies": [
+        "catalog.skill.invoke",
+        "shop.action.invoke",
+        "delegation.invoke"
+      ],
+      "metadata": {
+        "runtimePreferred": "umbrella-agent-runtime",
+        "business": "analysis-shop",
+        "promptTemplate": "control-plane/runtime/prompts/analysis-agent.txt",
+        "conversationStyle": "concise-operational",
+        "temperatureDefault": 0.2,
+        "maxTokensDefault": 1200
+      }
     }
   }
 }

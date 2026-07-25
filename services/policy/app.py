@@ -210,7 +210,7 @@ class PolicyEngine:
     # for default-named towns (a randomly-named mayor delegates memory to these).
     # Seeded with memory capabilities so their shops can actually read/write the
     # knowledge + operational memory planes instead of being denied registration.
-    _TOWN_AGENT_ROLES = ('mayor', 'originator', 'programmer', 'web', 'researcher', 'redteam', 'workspace')
+    _TOWN_AGENT_ROLES = ('mayor', 'originator', 'programmer', 'web', 'researcher', 'redteam', 'workspace', 'analyst')
     _MEMORY_CAPABILITIES = (
         'knowledge.read', 'knowledge.write', 'knowledge.promote', 'knowledge.backfill',
         'memorycore.read', 'memorycore.write', 'memorycore.delete',

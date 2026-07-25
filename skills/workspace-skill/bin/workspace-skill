@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
 """Umbrella workspace / files skill.
 
-A READ-ONLY, scope-enforced agent for answering questions about the user's local
-files: find files by name/content, read them, and summarize. The model is the
-reasoning glue over real file tools, NOT raw filesystem access. Guardrails:
+A scope-enforced agent for the user's local files: find files by name/content, read and
+summarize them, and — when write access is granted — create, edit, and reorganize them.
+The model is the reasoning glue over real file tools, NOT raw filesystem access.
 
-  * SCOPE — every path is checked against an allow-list of roots (by default the
-    user's Desktop/Documents/Downloads and the working dir); anything outside is
-    refused, so the agent can't wander into dotfiles/secrets or the wider system.
-  * READ-ONLY — it lists, searches, and reads; it never writes, moves, or deletes.
-  * LIMITS — reads and result sets are truncated so a huge tree/file can't blow up.
+The scope-enforced file tools (read + write) come from the shared services.skill_fs
+module — one audited implementation of the scope/secret-guard/read/write path, not
+reimplemented here. Guardrails: scoped to safe roots, refuses secrets/hidden files,
+read-only unless allowWrite is set, no delete, capped reads.
 
 Reads a job JSON on stdin ({"invocation":{"inputs":{...}}}); emits a JSON answer.
 """
 from __future__ import annotations
 
-import fnmatch
 import json
 import os
 import sys
@@ -23,10 +21,15 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+# Shared, audited file tools (scope enforcement + secret guard) live in one module so
+# skills don't reimplement the security-critical path. Reachable via UMBRELLA_ROOT (with
+# a parents[3] fallback) exactly like the code agent imports services.environment.
+_ROOT = Path(os.environ.get("UMBRELLA_ROOT") or Path(__file__).resolve().parents[3])
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+from services.skill_fs import ScopedFiles, READ_TOOLS, WRITE_TOOLS, safe_roots, OBS_CAP, _fn  # noqa: E402
+
 MODEL_TIMEOUT = 120
-OBS_CAP = 12000
-READ_CAP = 20000
-MAX_HITS = 60
 
 
 def _read_json(path: Path) -> dict:
@@ -77,28 +80,6 @@ def chat_raw(model_cfg: dict, messages: list, tools: list | None = None, tempera
     return {}
 
 
-def _fn(name, desc, props, required):
-    return {"type": "function", "function": {"name": name, "description": desc,
-            "parameters": {"type": "object", "properties": props, "required": required}}}
-
-
-_READ_TOOLS = [
-    _fn("list_dir", "List the entries (files and folders, with sizes) in a directory. Refused for paths outside the "
-        "allowed roots.", {"path": {"type": "string"}}, ["path"]),
-    _fn("find", "Search for files under a directory, by filename glob (`name`, e.g. '*gateway*') and/or by text "
-        "`contains`. Scoped and capped. Returns matching paths (with a snippet for content matches).",
-        {"path": {"type": "string"}, "name": {"type": "string"}, "contains": {"type": "string"}}, ["path"]),
-    _fn("read_file", "Read a text file's content (truncated). Refused for paths outside the allowed roots.",
-        {"path": {"type": "string"}}, ["path"]),
-]
-_WRITE_TOOLS = [
-    _fn("write_file", "Create or OVERWRITE a text file with the given content. Scoped to the allowed roots, and "
-        "refused for secret-looking or hidden files. Only available when write access was granted for this task.",
-        {"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"]),
-    _fn("move_file", "Move or rename a file from `src` to `dst` (both must be in scope; refused for secret/hidden "
-        "files). Use this to reorganize files. Only available when write access was granted.",
-        {"src": {"type": "string"}, "dst": {"type": "string"}}, ["src", "dst"]),
-]
 _FINISH_TOOL = _fn("finish", "Finish with a clear answer/summary of what you found or did — cite the file path(s).",
                    {"answer": {"type": "string"}}, ["answer"])
 
@@ -125,161 +106,6 @@ _WRITE_NOTE = ("\n\nThis task has WRITE access: write_file and move_file are ava
                "existing one unless the user clearly wants the overwrite.")
 
 
-def _safe_roots(roots_input: str) -> list[Path]:
-    home = Path.home()
-    explicit = []
-    for tok in str(roots_input or "").replace(",", " ").split():
-        p = Path(os.path.expanduser(tok))
-        try:
-            p = p.resolve()
-        except Exception:
-            continue
-        if p.exists():
-            explicit.append(p)
-    if explicit:
-        return explicit
-    return [p for p in (home / "Desktop", home / "Documents", home / "Downloads", Path.cwd()) if p.exists()]
-
-
-def _resolve_in_scope(path: str, roots: list[Path]) -> Path | None:
-    try:
-        p = Path(os.path.expanduser(str(path))).resolve()
-    except Exception:
-        return None
-    for r in roots:
-        try:
-            p.relative_to(r)
-            return p
-        except ValueError:
-            continue
-    return p if p in roots else None
-
-
-_SECRETISH = ("id_rsa", "id_ed25519", ".pem", ".key", "credentials", ".env", ".secret", "id_dsa")
-
-
-class Engine:
-    def __init__(self, roots: list[Path]):
-        self.roots = roots
-        self.files_read: list[str] = []
-        self.files_written: list[str] = []
-
-    def _scope(self, path: str):
-        p = _resolve_in_scope(path, self.roots)
-        if p is None:
-            return None, f"REFUSED: {path} is OUTSIDE the allowed roots {[str(r) for r in self.roots]}. Stay in scope."
-        return p, ""
-
-    def list_dir(self, args):
-        p, err = self._scope(str(args.get("path", "")))
-        if err:
-            return err
-        if not p.is_dir():
-            return f"not a directory: {p}"
-        rows = []
-        for entry in sorted(p.iterdir())[:200]:
-            try:
-                kind = "d" if entry.is_dir() else "f"
-                size = entry.stat().st_size if entry.is_file() else ""
-                rows.append(f"  {kind} {entry.name} {size}")
-            except OSError:
-                continue
-        return f"{p}:\n" + "\n".join(rows) if rows else f"{p}: (empty)"
-
-    def find(self, args):
-        base, err = self._scope(str(args.get("path", "")))
-        if err:
-            return err
-        name = str(args.get("name", "")).strip()
-        contains = str(args.get("contains", "")).strip()
-        hits = []
-        for dirpath, dirnames, filenames in os.walk(base):
-            dirnames[:] = [d for d in dirnames if not d.startswith(".")]  # skip dotdirs
-            for fn in filenames:
-                if fn.startswith("."):
-                    continue
-                if name and not fnmatch.fnmatch(fn.lower(), name.lower()):
-                    continue
-                fp = Path(dirpath) / fn
-                if contains:
-                    try:
-                        text = fp.read_text(encoding="utf-8", errors="ignore")
-                    except Exception:
-                        continue
-                    idx = text.lower().find(contains.lower())
-                    if idx < 0:
-                        continue
-                    snippet = text[max(0, idx - 40):idx + 80].replace("\n", " ")
-                    hits.append(f"  {fp}  …{snippet}…")
-                else:
-                    hits.append(f"  {fp}")
-                if len(hits) >= MAX_HITS:
-                    return f"matches (capped at {MAX_HITS}):\n" + "\n".join(hits)
-        return ("matches:\n" + "\n".join(hits)) if hits else "no matches"
-
-    def read_file(self, args):
-        p, err = self._scope(str(args.get("path", "")))
-        if err:
-            return err
-        if any(s in p.name.lower() for s in _SECRETISH):
-            return f"REFUSED to read {p.name}: looks like a secret/credential file."
-        if not p.is_file():
-            return f"not a file: {p}"
-        try:
-            data = p.read_text(encoding="utf-8", errors="replace")
-        except Exception as ex:  # noqa: BLE001
-            return f"read error: {type(ex).__name__}: {ex}"
-        self.files_read.append(str(p))
-        trailer = "" if len(data) <= READ_CAP else f"\n…(truncated, {len(data)} bytes total)"
-        return f"{p}:\n{data[:READ_CAP]}{trailer}"
-
-    def _write_guard(self, p: Path) -> str:
-        if any(s in p.name.lower() for s in _SECRETISH) or p.name.startswith("."):
-            return f"REFUSED: {p.name} is a secret/hidden file — off-limits for writing."
-        if p.is_dir():
-            return f"REFUSED: {p} is a directory."
-        return ""
-
-    def write_file(self, args):
-        p, err = self._scope(str(args.get("path", "")))
-        if err:
-            return err
-        guard = self._write_guard(p)
-        if guard:
-            return guard
-        content = str(args.get("content", ""))
-        try:
-            p.parent.mkdir(parents=True, exist_ok=True)  # parent is in-scope (p passed the scope check)
-            existed = p.is_file()
-            p.write_text(content, encoding="utf-8")
-        except Exception as ex:  # noqa: BLE001
-            return f"write error: {type(ex).__name__}: {ex}"
-        self.files_written.append(str(p))
-        return f"{'overwrote' if existed else 'wrote'} {p} ({len(content)} bytes)"
-
-    def move_file(self, args):
-        src, err = self._scope(str(args.get("src", "")))
-        if err:
-            return err
-        dst, err = self._scope(str(args.get("dst", "")))
-        if err:
-            return err
-        guard = self._write_guard(dst) or (f"REFUSED: {src.name} is a secret/hidden file."
-                                           if any(s in src.name.lower() for s in _SECRETISH) or src.name.startswith(".")
-                                           else "")
-        if guard:
-            return guard
-        if not src.is_file():
-            return f"not a file: {src}"
-        try:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            src.rename(dst)
-        except Exception as ex:  # noqa: BLE001
-            return f"move error: {type(ex).__name__}: {ex}"
-        self.files_written.append(str(dst))
-        return f"moved {src} -> {dst}"
-
-
 def main() -> int:
     try:
         payload = json.loads(sys.stdin.read() or "{}")
@@ -291,10 +117,10 @@ def main() -> int:
     if not task:
         print(json.dumps({"ok": False, "error": "'task' is required"}))
         return 1
-    roots = _safe_roots(str(inputs.get("roots", "")))
+    roots = safe_roots(str(inputs.get("roots", "")))
     max_iters = max(4, min(int(inputs.get("maxIterations", 24) or 24), 60))
     allow_write = bool(inputs.get("allowWrite", False))
-    tools = _READ_TOOLS + (_WRITE_TOOLS if allow_write else []) + [_FINISH_TOOL]
+    tools = READ_TOOLS + (WRITE_TOOLS if allow_write else []) + [_FINISH_TOOL]
     system = SYSTEM + (_WRITE_NOTE if allow_write else _READONLY_NOTE)
 
     root = Path(os.environ.get("UMBRELLA_ROOT") or Path(__file__).resolve().parents[3])
@@ -303,7 +129,7 @@ def main() -> int:
         print(json.dumps({"ok": False, "error": "no model connection configured for the workspace skill"}))
         return 1
 
-    eng = Engine(roots)
+    eng = ScopedFiles(roots)
     context = (f"QUESTION / TASK: {task}\nALLOWED ROOTS: {[str(r) for r in roots]}\n"
                f"WRITE ACCESS: {'granted' if allow_write else 'NOT granted (read-only)'}\n"
                "Locate the relevant file(s), then answer the question or make the requested change.")
