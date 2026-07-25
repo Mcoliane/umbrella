@@ -32,11 +32,52 @@ _STOPWORDS = frozenset(
 )
 
 
+_VOWELS = frozenset("aeiou")
+
+
+def _undouble(s: str) -> str:
+    """Collapse a trailing doubled consonant (runn->run) but keep ll/ss/zz/ff."""
+    if len(s) >= 3 and s[-1] == s[-2] and s[-1] not in _VOWELS and s[-1] not in "lszf":
+        return s[:-1]
+    return s
+
+
+def _stem(word: str) -> str:
+    """Light, conservative English stemmer — pure Python, no deps. Collapses the common
+    inflections (plurals, -ing/-ed, -ly) so query and document morphology match. It is
+    deliberately simple and predictable, not full Porter: it favors not mangling a word
+    over maximal stemming, and a few silent-e cases (use/using) are knowingly left alone.
+    Because the SAME function runs on both indexed text and queries, exact stems don't
+    matter — only that variants of a word map to the same token."""
+    w = word
+    if len(w) <= 3:
+        return w
+    # plural / 3rd-person -s
+    if w.endswith("ies") and len(w) > 4:
+        w = w[:-3] + "y"                                             # ponies->pony
+    elif w.endswith("sses"):
+        w = w[:-2]                                                  # caresses->caress
+    elif w.endswith("es") and len(w) > 3 and (w[-3] in "sxzo" or w[-4:-2] in ("ch", "sh")):
+        w = w[:-2]                                                  # boxes->box, matches->match
+    elif w.endswith("s") and not w.endswith("ss") and w[-2:] not in ("is", "us"):
+        w = w[:-1]                                                  # capitals->capital (but not paris/status/basis)
+    # gerund / past
+    if w.endswith("ing") and len(w) > 5:
+        w = _undouble(w[:-3])                                       # running->run
+    elif w.endswith("ed") and len(w) > 4:
+        w = _undouble(w[:-2])                                       # stopped->stop
+    # adverb -ly
+    if w.endswith("ly") and len(w) > 4:
+        w = w[:-2]                                                  # quickly->quick
+    return w
+
+
 def tokenize(text: str) -> list[str]:
-    """Lowercase, split on non-alphanumeric runs, drop stopwords."""
+    """Lowercase, split on non-alphanumeric runs, drop stopwords, and light-stem so
+    morphological variants (install/installing/installed) collapse to one term."""
     if not text:
         return []
-    return [t for t in _TOKEN_RE.findall(text.lower()) if t not in _STOPWORDS]
+    return [_stem(t) for t in _TOKEN_RE.findall(text.lower()) if t not in _STOPWORDS]
 
 
 def contains_query(title: str, content_text: str, query: str) -> bool:

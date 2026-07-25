@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import sqlite3
 import threading
@@ -12,6 +13,24 @@ from pathlib import Path
 
 from .events import event_payload
 from .search import rank_bm25
+
+# Recency weighting for ranked search: a mild freshness multiplier on top of the BM25
+# relevance score, so that among comparably-relevant memories the more recent ones sort
+# first. Bounded and small on purpose — relevance still dominates; recency only breaks
+# near-ties and gently favors fresh knowledge. Factor ranges (1, 1+RECENCY_WEIGHT].
+RECENCY_WEIGHT = 0.30
+RECENCY_HALFLIFE_DAYS = 14.0
+
+
+def _recency_factor(updated_at: str, now: datetime) -> float:
+    try:
+        ts = datetime.fromisoformat(str(updated_at))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return 1.0
+    age_days = max(0.0, (now - ts).total_seconds() / 86400.0)
+    return 1.0 + RECENCY_WEIGHT * math.exp(-age_days / RECENCY_HALFLIFE_DAYS)
 
 
 def now_iso() -> str:
@@ -290,11 +309,22 @@ class MemoryStore:
                 rows = [{'score': 1.0, 'node': obj} for obj, _ in candidates[:k]]
                 return {'results': rows, 'next_cursor': None}
 
+            # Tokenize tags into the searchable text too, so write-time enrichment
+            # (alternate phrasings stored as tags) lets a paraphrased query match a fact
+            # even when the fact's own words differ. Structural tags (longterm, shop ids)
+            # are high-frequency so IDF makes them near-noise; the alias phrases are rare
+            # and do the real bridging. Displayed content is untouched.
             scores = rank_bm25(
-                ((obj['node_id'], obj['title'], content_text) for obj, content_text in candidates),
+                ((obj['node_id'], obj['title'],
+                  content_text + ' ' + ' '.join(str(t) for t in (obj.get('tags') or [])))
+                 for obj, content_text in candidates),
                 query,
             )
-            scored = [(scores[obj['node_id']], obj) for obj, _ in candidates if obj['node_id'] in scores]
+            # Blend BM25 relevance with a mild recency multiplier so fresher memories win
+            # near-ties without letting recency override a clearly-more-relevant older hit.
+            now = datetime.now(timezone.utc)
+            scored = [(scores[obj['node_id']] * _recency_factor(obj.get('updated_at', ''), now), obj)
+                      for obj, _ in candidates if obj['node_id'] in scores]
             # Stable sort: equal scores keep the updated_at DESC order from SQL.
             scored.sort(key=lambda p: p[0], reverse=True)
             rows = [{'score': round(s, 6), 'node': obj} for s, obj in scored[:k]]

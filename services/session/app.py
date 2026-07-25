@@ -848,8 +848,11 @@ class SessionEngine:
                 "sessions (general facts, reusable how-tos, stable facts about this machine or its toolchain, or "
                 "a real failure lesson — keep those even when they name a tool path). EXCLUDE anything tied to "
                 "the current run (this town's directories/files, transient state, greetings, uncertain results) "
-                "and private personal data. Use [] if nothing is durable.\n\n"
-                "Return ONLY the JSON object: {\"reply\":\"...\",\"facts\":[\"...\"]}"
+                "and private personal data. For EACH fact, also give \"aka\": 2-3 alternate phrasings or keywords "
+                "someone might later search for it by (synonyms, rewordings, the key entities), so it can be found "
+                "even when a future query uses different words. Use [] if nothing is durable.\n\n"
+                "Return ONLY the JSON object: "
+                "{\"reply\":\"...\",\"facts\":[{\"fact\":\"<statement>\",\"aka\":[\"<alt phrasing>\",\"<keyword>\"]}]}"
             )
             payload = {'model': model, 'messages': [{'role': 'user', 'content': prompt}],
                        'temperature': 0.2, 'max_tokens': 2000}
@@ -864,19 +867,16 @@ class SessionEngine:
         return (reply or raw), facts
 
     def _parse_debrief(self, text: str) -> tuple:
-        """Pull (reply, facts) from a {"reply":..,"facts":[..]} model response. Tolerant of
-        surrounding prose / truncation; returns ('', []) if nothing usable."""
+        """Pull (reply, facts) from a {"reply":.., "facts":[{"fact","aka"}]} model response.
+        Tolerant of surrounding prose, truncation, and the older plain-string fact form;
+        returns ('', []) if nothing usable. facts is a list of {'fact','aka'} dicts."""
         s = str(text or '').strip()
         start, end = s.find('{'), s.rfind('}')
         if start != -1 and end > start:
             try:
                 obj = json.loads(s[start:end + 1])
                 if isinstance(obj, dict):
-                    reply = str(obj.get('reply', '')).strip()
-                    fa = obj.get('facts')
-                    facts = [str(x).strip()[:1000] for x in fa
-                             if str(x).strip() and len(str(x).strip()) >= 8][:12] if isinstance(fa, list) else []
-                    return reply, facts
+                    return str(obj.get('reply', '')).strip(), self._normalize_facts(obj.get('facts'))
             except Exception:  # noqa: BLE001
                 pass
         # Salvage a truncated/malformed object: reply string + facts array separately.
@@ -888,8 +888,25 @@ class SessionEngine:
             except Exception:  # noqa: BLE001
                 reply = m.group(1).strip()
         fidx = s.find('"facts"')
-        facts = self._parse_fact_list(s[fidx:]) if fidx != -1 else []
-        return reply, facts
+        salvaged = self._parse_fact_list(s[fidx:]) if fidx != -1 else []
+        return reply, self._normalize_facts(salvaged)
+
+    @staticmethod
+    def _normalize_facts(fa) -> list:
+        """Normalize a facts array — {fact, aka} objects OR plain strings (from the older
+        format / the fallback extractor) — into clean {'fact': str, 'aka': [str]} entries."""
+        out = []
+        if not isinstance(fa, list):
+            return out
+        for item in fa:
+            if isinstance(item, dict):
+                fact = str(item.get('fact', '')).strip()
+                aka = [str(a).strip()[:120] for a in (item.get('aka') or []) if str(a).strip()][:5]
+            else:
+                fact, aka = str(item or '').strip(), []
+            if len(fact) >= 8:
+                out.append({'fact': fact[:1000], 'aka': aka})
+        return out[:12]
 
     # Long-term memory shared across every town. Short-term memory lives in a
     # per-session namespace (`town:<sessionId>`); this one accumulates durable
@@ -987,7 +1004,15 @@ class SessionEngine:
                 continue
             seen.add(key)
             title = str(node.get('title', '')).strip()
-            lines.append(f"- {(title + ': ') if title else ''}{content[:400]}")
+            body = content[:400]
+            # Curated facts store the fact as both title and content, which would render
+            # "- fact: fact". Only prefix a title when it's genuinely distinct from the body
+            # (e.g. short-term captures, where title=the request and content=the outcome).
+            tl, bl = title.lower(), content.lower()
+            if title and not (bl.startswith(tl) or tl.startswith(bl)):
+                lines.append(f"- {title}: {body}")
+            else:
+                lines.append(f"- {body}")
             if len(lines) >= k:
                 break
         return '\n'.join(lines)
@@ -1011,20 +1036,23 @@ class SessionEngine:
         self._promote_facts_to_longterm(base, facts, tags)
 
     def _promote_facts_to_longterm(self, base: str, facts: list, tags: list) -> None:
-        """Layer 1 gate + write for already-distilled facts: length floor, dedup, then
-        write each surviving fact to the shared long-term store. Best-effort."""
-        for fact in facts or []:
-            fact = str(fact or '').strip()
+        """Layer 1 gate + write for already-distilled facts (objects {fact, aka} or plain
+        strings): length floor, dedup on the clean fact, then write. The fact is stored as
+        content (clean display, clean dedup); its aka phrasings ride along as tags, which
+        search tokenizes — so a paraphrased query can still find the fact. Best-effort."""
+        for item in self._normalize_facts(facts):
+            fact = item['fact']
             if len(fact) < self._LONGTERM_MIN_LEN:
                 continue
-            # Layer 1b: dedup — don't rewrite a fact the shared store already holds.
+            # Layer 1b: dedup on the fact itself (not its aliases) — don't rewrite a fact
+            # the shared store already holds.
             if self._longterm_duplicate(base, fact):
                 continue
             try:
                 self._write_memory_node(
                     base, self.SHARED_MEMORY_NS, owner_type='platform', owner_id='shared',
                     visibility='shared', title=fact[:120], content=fact[:4000],
-                    tags=(tags or []) + ['longterm'], source='longterm-curated')
+                    tags=(tags or []) + ['longterm'] + item['aka'], source='longterm-curated')
             except Exception:  # noqa: BLE001
                 pass
 

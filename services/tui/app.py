@@ -833,7 +833,8 @@ class UmbrellaTui:
             curses.init_pair(2, curses.COLOR_GREEN, -1)    # agent / ok
             curses.init_pair(3, curses.COLOR_YELLOW, -1)   # system / warn
             curses.init_pair(4, curses.COLOR_RED, -1)      # error
-            curses.init_pair(5, curses.COLOR_MAGENTA, -1)  # delegation / activity
+            # delegation / activity — amber (256-color index 214 when available, else yellow)
+            curses.init_pair(5, 214 if getattr(curses, "COLORS", 0) >= 256 else curses.COLOR_YELLOW, -1)
             curses.init_pair(6, curses.COLOR_WHITE, curses.COLOR_BLUE)  # header bar
             curses.init_pair(7, curses.COLOR_BLUE, -1)     # accent / headings
             self.has_color = True
@@ -954,13 +955,18 @@ class UmbrellaTui:
             elif role == "assistant":
                 dstatus = str(md.get("delegationStatus", "")).strip()
                 shop = str(md.get("targetShopId", "")).strip()
-                if dstatus:
-                    icon = {"running": "⟳", "completed": "✓", "failed": "✗"}.get(dstatus, "•")
-                    bubble(f"{icon} delegation → {shop or 'shop'} · {dstatus}", self._c(5, curses.A_BOLD), content, self._c(5))
+                if dstatus == "running":
+                    # In-progress delegation: keep a compact status line.
+                    bubble(f"⟳ delegation → {shop or 'shop'} · running", self._c(5, curses.A_BOLD), content, self._c(5))
                 else:
+                    # A finished delegation's content IS the mayor's plain-language
+                    # debrief, so render it as the mayor speaking (with a small ✓/✗
+                    # marker of where it came from) rather than as a status bubble.
                     target = str(md.get("targetAgentId", "")).strip() or str(md.get("target", "")).strip() or "agent"
                     tag = self._provenance_tag(md)
-                    header = target + (f"   {tag}" if tag else "")
+                    mark = {"completed": " ✓", "failed": " ✗"}.get(dstatus, "")
+                    via = f"{mark} via {shop}" if (mark and shop) else mark
+                    header = target + via + (f"   {tag}" if tag else "")
                     bubble(header, self._c(2, curses.A_BOLD), content, self._c(2))
             else:
                 bubble(role, self._c(3), content, self._c(3))
