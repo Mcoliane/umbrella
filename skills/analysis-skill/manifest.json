@@ -9,29 +9,48 @@
   "defaultEnabled": true,
   "isolationMode": "process",
   "compatibility": {
-    "umbrella": { "minVersion": "0.4.0" },
-    "pluginHostRuntimes": ["python"],
-    "apiVersions": ["umbrella.catalog.manifest.v1"],
-    "actionSchemaVersions": ["umbrella.catalog.action.v1"],
+    "umbrella": {
+      "minVersion": "0.4.0"
+    },
+    "pluginHostRuntimes": [
+      "python"
+    ],
+    "apiVersions": [
+      "umbrella.catalog.manifest.v1"
+    ],
+    "actionSchemaVersions": [
+      "umbrella.catalog.action.v1"
+    ],
     "requiresFeatures": []
   },
   "executionPolicy": {
-    "envAllowlist": ["HOME", "USER", "PATH", "TMPDIR", "LANG", "SHELL"],
+    "envAllowlist": [
+      "HOME",
+      "USER",
+      "PATH",
+      "TMPDIR",
+      "LANG",
+      "SHELL"
+    ],
     "network": "http-outbound",
-    "fs": "read",
+    "fs": "scratch-only",
     "maxRuntimeSec": 900,
     "maxOutputBytes": 262144,
     "maxInputBytes": 262144,
     "isolationProfile": "http-outbound"
   },
   "sessionHooks": {
-    "suggestedContexts": ["analysis", "review", "audit"]
+    "suggestedContexts": [
+      "analysis",
+      "review",
+      "audit"
+    ]
   },
   "actions": [
     {
       "id": "skill.analysis.review",
       "title": "Review & Analyze Code/Files",
-      "description": "Read a codebase or set of files and produce a STRUCTURED, evidence-based REVIEW REPORT — architecture, code-quality, security, or an adversarial critique — with concrete findings, each grounded in a real file path. Read-only and scope-enforced (Desktop/Documents/Downloads/cwd), refuses secret/hidden files. Use for 'adversarially review this system', 'audit the codebase for security issues', 'review the architecture of the project on my desktop', 'analyze this code and tell me the weaknesses'. This is the shop for ANALYZING and REPORTING; use the development shop to actually build or fix code.",
+      "description": "Read a codebase or set of files and produce a STRUCTURED, evidence-based REVIEW REPORT \u2014 architecture, code-quality, security, or an adversarial critique \u2014 with concrete findings, each grounded in a real file path. Read-only and scope-enforced (Desktop/Documents/Downloads/cwd), refuses secret/hidden files. Use for 'adversarially review this system', 'audit the codebase for security issues', 'review the architecture of the project on my desktop', 'analyze this code and tell me the weaknesses'. This is the shop for ANALYZING and REPORTING; use the development shop to actually build or fix code.",
       "requiredCapabilities": [],
       "policyHints": {
         "riskClass": "moderate",
@@ -46,21 +65,41 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "task": { "type": "string" },
-          "roots": { "type": "string" },
-          "target": { "type": "string" },
-          "maxIterations": { "type": "integer" }
+          "task": {
+            "type": "string"
+          },
+          "roots": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "maxIterations": {
+            "type": "integer"
+          }
         },
-        "required": ["task"]
+        "required": [
+          "task"
+        ]
       },
       "outputSchema": {
         "type": "object",
         "properties": {
-          "summary": { "type": "string" },
-          "report": { "type": "string" },
-          "filesRead": { "type": "array" },
-          "iterations": { "type": "integer" },
-          "verified": { "type": "boolean" }
+          "summary": {
+            "type": "string"
+          },
+          "report": {
+            "type": "string"
+          },
+          "filesRead": {
+            "type": "array"
+          },
+          "iterations": {
+            "type": "integer"
+          },
+          "verified": {
+            "type": "boolean"
+          }
         }
       }
     }

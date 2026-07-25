@@ -9,29 +9,47 @@
   "defaultEnabled": true,
   "isolationMode": "process",
   "compatibility": {
-    "umbrella": { "minVersion": "0.4.0" },
-    "pluginHostRuntimes": ["python"],
-    "apiVersions": ["umbrella.catalog.manifest.v1"],
-    "actionSchemaVersions": ["umbrella.catalog.action.v1"],
+    "umbrella": {
+      "minVersion": "0.4.0"
+    },
+    "pluginHostRuntimes": [
+      "python"
+    ],
+    "apiVersions": [
+      "umbrella.catalog.manifest.v1"
+    ],
+    "actionSchemaVersions": [
+      "umbrella.catalog.action.v1"
+    ],
     "requiresFeatures": []
   },
   "executionPolicy": {
-    "envAllowlist": ["HOME", "USER", "PATH", "TMPDIR", "LANG", "SHELL"],
+    "envAllowlist": [
+      "HOME",
+      "USER",
+      "PATH",
+      "TMPDIR",
+      "LANG",
+      "SHELL"
+    ],
     "network": "http-outbound",
-    "fs": "read",
+    "fs": "scratch-only",
     "maxRuntimeSec": 600,
     "maxOutputBytes": 262144,
     "maxInputBytes": 262144,
     "isolationProfile": "http-outbound"
   },
   "sessionHooks": {
-    "suggestedContexts": ["files", "workspace"]
+    "suggestedContexts": [
+      "files",
+      "workspace"
+    ]
   },
   "actions": [
     {
       "id": "skill.files.query",
       "title": "Query or Edit Local Files",
-      "description": "Find, read, and summarize the user's local files, and — when allowWrite is true — create, edit, and reorganize them. Scope-enforced to safe roots (Desktop/Documents/Downloads/cwd), refuses secret/hidden files, read-only unless allowWrite is set, and has no delete. Use for 'find the file on my desktop', 'read/summarize this document', 'how did the analysis on my desktop go' (read); and 'write a note to my desktop', 'edit this file', 'reorganize these files' (pass allowWrite: true).",
+      "description": "Find, read, and summarize the user's local files, and \u2014 when allowWrite is true \u2014 create, edit, and reorganize them. Scope-enforced to safe roots (Desktop/Documents/Downloads/cwd), refuses secret/hidden files, read-only unless allowWrite is set, and has no delete. Use for 'find the file on my desktop', 'read/summarize this document', 'how did the analysis on my desktop go' (read); and 'write a note to my desktop', 'edit this file', 'reorganize these files' (pass allowWrite: true).",
       "requiredCapabilities": [],
       "policyHints": {
         "riskClass": "high",
@@ -46,21 +64,41 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "task": { "type": "string" },
-          "roots": { "type": "string" },
-          "allowWrite": { "type": "boolean" },
-          "maxIterations": { "type": "integer" }
+          "task": {
+            "type": "string"
+          },
+          "roots": {
+            "type": "string"
+          },
+          "allowWrite": {
+            "type": "boolean"
+          },
+          "maxIterations": {
+            "type": "integer"
+          }
         },
-        "required": ["task"]
+        "required": [
+          "task"
+        ]
       },
       "outputSchema": {
         "type": "object",
         "properties": {
-          "summary": { "type": "string" },
-          "answer": { "type": "string" },
-          "filesRead": { "type": "array" },
-          "iterations": { "type": "integer" },
-          "verified": { "type": "boolean" }
+          "summary": {
+            "type": "string"
+          },
+          "answer": {
+            "type": "string"
+          },
+          "filesRead": {
+            "type": "array"
+          },
+          "iterations": {
+            "type": "integer"
+          },
+          "verified": {
+            "type": "boolean"
+          }
         }
       }
     }
