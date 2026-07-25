@@ -27,8 +27,8 @@
     "envAllowlist": ["HOME", "USER", "PATH", "TMPDIR", "LANG"],
     "network": "none",
     "fs": "scratch-only",
-    "maxRuntimeSec": 60,
-    "maxOutputBytes": 65536,
+    "maxRuntimeSec": 180,
+    "maxOutputBytes": 262144,
     "maxInputBytes": 262144,
     "isolationProfile": "process-default"
   },

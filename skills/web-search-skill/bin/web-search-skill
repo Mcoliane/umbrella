@@ -73,12 +73,12 @@ def _chat(prompt: str) -> str:
     if not mc["baseUrl"] or not mc["model"]:
         return ""
     body = json.dumps({"model": mc["model"], "messages": [{"role": "user", "content": prompt}],
-                       "temperature": 0.2, "max_tokens": 700}).encode("utf-8")
+                       "temperature": 0.2, "max_tokens": 1500}).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if mc["apiKey"]:
         headers["Authorization"] = f"Bearer {mc['apiKey']}"
     url = mc["baseUrl"].rstrip("/") + "/chat/completions"
-    for attempt in range(3):
+    for attempt in range(5):
         try:
             req = urllib.request.Request(url, data=body, method="POST", headers=headers)
             with urllib.request.urlopen(req, timeout=60) as resp:

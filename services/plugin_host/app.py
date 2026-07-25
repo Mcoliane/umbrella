@@ -21,9 +21,9 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 from services.memory.auth import check_auth
 
 
-DEFAULT_INPUT_BYTES = 32768
-DEFAULT_OUTPUT_BYTES = 4096
-DEFAULT_TIMEOUT_SEC = 30
+DEFAULT_INPUT_BYTES = 1048576
+DEFAULT_OUTPUT_BYTES = 1048576
+DEFAULT_TIMEOUT_SEC = 600
 ALLOWED_FS_POLICIES = {'scratch-only', 'install-root'}
 ALLOWED_NETWORK_POLICIES = {'none', 'http-outbound'}
 ALLOWED_ISOLATION_PROFILES = {'process-default', 'shell-restricted', 'python-restricted', 'http-outbound', 'container-default', 'container-restricted'}
@@ -132,7 +132,7 @@ class PluginHostEngine:
             headers['Authorization'] = f'Bearer {self.mesh_token}'
         return headers
 
-    def _get_json(self, path: str, timeout: int = 15) -> dict:
+    def _get_json(self, path: str, timeout: int = 60) -> dict:
         req = urllib.request.Request(f'{self.catalog_url}{path}', method='GET', headers=self._headers())
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode('utf-8'))
@@ -342,7 +342,7 @@ class PluginHostEngine:
         except subprocess.TimeoutExpired as ex:
             proc.kill()
             try:
-                proc.communicate(timeout=5)
+                proc.communicate(timeout=30)
             except Exception:  # noqa: BLE001
                 pass
             if run_id:

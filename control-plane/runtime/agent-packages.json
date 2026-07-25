@@ -31,7 +31,7 @@
         "delegationPolicy": "delegate-when-specialized",
         "modelPreference": "gpt-4.1",
         "temperatureDefault": 0.2,
-        "maxTokensDefault": 1200
+        "maxTokensDefault": 8192
       }
     },
     "umbrella.originator.v1": {
@@ -63,7 +63,7 @@
         "conversationStyle": "concise-operational",
         "modelPreference": "gpt-4.1-mini",
         "temperatureDefault": 0.2,
-        "maxTokensDefault": 1200
+        "maxTokensDefault": 8192
       }
     },
     "umbrella.programming-agent.v1": {
@@ -95,7 +95,7 @@
         "conversationStyle": "technical",
         "modelPreference": "gpt-4.1",
         "temperatureDefault": 0.2,
-        "maxTokensDefault": 400
+        "maxTokensDefault": 16384
       }
     },
     "umbrella.web-agent.v1": {
@@ -124,7 +124,7 @@
         "promptTemplate": "control-plane/runtime/prompts/web-agent.txt",
         "conversationStyle": "concise-operational",
         "temperatureDefault": 0.2,
-        "maxTokensDefault": 1200
+        "maxTokensDefault": 8192
       }
     },
     "umbrella.research-agent.v1": {
@@ -155,7 +155,7 @@
         "promptTemplate": "control-plane/runtime/prompts/research-agent.txt",
         "conversationStyle": "analytical",
         "temperatureDefault": 0.3,
-        "maxTokensDefault": 1200
+        "maxTokensDefault": 8192
       }
     },
     "umbrella.security-agent.v1": {
@@ -186,7 +186,7 @@
         "promptTemplate": "control-plane/runtime/prompts/security-agent.txt",
         "conversationStyle": "technical",
         "temperatureDefault": 0.2,
-        "maxTokensDefault": 1200
+        "maxTokensDefault": 8192
       }
     },
     "umbrella.workspace-agent.v1": {
@@ -216,7 +216,7 @@
         "promptTemplate": "control-plane/runtime/prompts/workspace-agent.txt",
         "conversationStyle": "concise-operational",
         "temperatureDefault": 0.2,
-        "maxTokensDefault": 1200
+        "maxTokensDefault": 8192
       }
     },
     "umbrella.analysis-agent.v1": {
@@ -245,7 +245,7 @@
         "promptTemplate": "control-plane/runtime/prompts/analysis-agent.txt",
         "conversationStyle": "concise-operational",
         "temperatureDefault": 0.2,
-        "maxTokensDefault": 1200
+        "maxTokensDefault": 8192
       }
     }
   }

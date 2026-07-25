@@ -51,7 +51,7 @@ def _chat(prompt: str) -> str:
     if not mc['baseUrl'] or not mc['model']:
         return ''
     body = json.dumps({'model': mc['model'], 'messages': [{'role': 'user', 'content': prompt}],
-                       'temperature': 0.2, 'max_tokens': 600}).encode('utf-8')
+                       'temperature': 0.2, 'max_tokens': 1200}).encode('utf-8')
     headers = {'Content-Type': 'application/json'}
     if mc['apiKey']:
         headers['Authorization'] = f"Bearer {mc['apiKey']}"
@@ -59,7 +59,7 @@ def _chat(prompt: str) -> str:
     # Synthesis sits on the memory.search response path, so bound worst-case latency:
     # one retry, short timeout (<=50s total) rather than 3x60s. It's best-effort —
     # on any failure the caller falls back to a formatted list.
-    for attempt in range(2):
+    for attempt in range(4):
         try:
             req = urllib.request.Request(url, data=body, method='POST', headers=headers)
             with urllib.request.urlopen(req, timeout=25) as resp:

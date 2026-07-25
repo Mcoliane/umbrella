@@ -36,9 +36,9 @@
     ],
     "network": "http-outbound",
     "fs": "scratch-only",
-    "maxRuntimeSec": 180,
-    "maxOutputBytes": 4096,
-    "maxInputBytes": 32768,
+    "maxRuntimeSec": 300,
+    "maxOutputBytes": 262144,
+    "maxInputBytes": 262144,
     "isolationProfile": "python-restricted"
   },
   "sessionHooks": {

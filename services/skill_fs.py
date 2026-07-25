@@ -17,9 +17,9 @@ import fnmatch
 import os
 from pathlib import Path
 
-OBS_CAP = 12000      # max chars of a tool result fed back to the model
-READ_CAP = 20000     # max chars returned from read_file
-MAX_HITS = 60        # max find() matches
+OBS_CAP = 24000      # max chars of a tool result fed back to the model
+READ_CAP = 48000     # max chars returned from read_file
+MAX_HITS = 200        # max find() matches
 
 SECRETISH = ("id_rsa", "id_ed25519", ".pem", ".key", "credentials", ".env", ".secret", "id_dsa")
 
@@ -101,7 +101,7 @@ class ScopedFiles:
         if not p.is_dir():
             return f"not a directory: {p}"
         rows = []
-        for entry in sorted(p.iterdir())[:200]:
+        for entry in sorted(p.iterdir())[:1000]:
             try:
                 kind = "d" if entry.is_dir() else "f"
                 size = entry.stat().st_size if entry.is_file() else ""

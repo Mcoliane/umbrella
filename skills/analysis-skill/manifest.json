@@ -35,7 +35,7 @@
     "network": "http-outbound",
     "fs": "scratch-only",
     "maxRuntimeSec": 900,
-    "maxOutputBytes": 262144,
+    "maxOutputBytes": 1048576,
     "maxInputBytes": 262144,
     "isolationProfile": "http-outbound"
   },

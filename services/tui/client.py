@@ -278,7 +278,7 @@ class TuiClient:
                 "target": target,
                 "content": content,
             },
-            timeout=180.0,
+            timeout=600.0,
         )["json"]
 
     def list_agent_packages(self) -> dict:

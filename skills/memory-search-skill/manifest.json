@@ -30,8 +30,8 @@
     ],
     "network": "none",
     "fs": "scratch-only",
-    "maxRuntimeSec": 10,
-    "maxOutputBytes": 8192,
+    "maxRuntimeSec": 60,
+    "maxOutputBytes": 131072,
     "maxInputBytes": 16384,
     "isolationProfile": "python-restricted"
   },

@@ -29,7 +29,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 from services.skill_fs import ScopedFiles, READ_TOOLS, WRITE_TOOLS, safe_roots, OBS_CAP, _fn  # noqa: E402
 
-MODEL_TIMEOUT = 120
+MODEL_TIMEOUT = 300
 
 
 def _read_json(path: Path) -> dict:
@@ -56,7 +56,7 @@ def load_model(root: Path) -> dict:
 
 
 def chat_raw(model_cfg: dict, messages: list, tools: list | None = None, temperature: float = 0.1) -> dict:
-    payload = {"model": model_cfg["model"], "messages": messages, "temperature": temperature, "max_tokens": 4096}
+    payload = {"model": model_cfg["model"], "messages": messages, "temperature": temperature, "max_tokens": 8192}
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
@@ -65,7 +65,7 @@ def chat_raw(model_cfg: dict, messages: list, tools: list | None = None, tempera
     if model_cfg["apiKey"]:
         headers["Authorization"] = f"Bearer {model_cfg['apiKey']}"
     url = model_cfg["baseUrl"].rstrip("/") + "/chat/completions"
-    for attempt in range(4):
+    for attempt in range(6):
         try:
             req = urllib.request.Request(url, data=body, method="POST", headers=headers)
             with urllib.request.urlopen(req, timeout=MODEL_TIMEOUT) as resp:
@@ -184,7 +184,7 @@ def main() -> int:
 
     print(json.dumps({
         "ok": True,
-        "summary": (answer or "no answer")[:400],
+        "summary": (answer or "no answer")[:4000],
         "answer": answer or "I couldn't find an answer in the allowed file locations.",
         "filesRead": eng.files_read,
         "filesWritten": eng.files_written,

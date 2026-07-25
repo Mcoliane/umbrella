@@ -27,9 +27,9 @@
     "envAllowlist": [],
     "network": "http-outbound",
     "fs": "scratch-only",
-    "maxRuntimeSec": 30,
-    "maxOutputBytes": 65536,
-    "maxInputBytes": 16384,
+    "maxRuntimeSec": 120,
+    "maxOutputBytes": 262144,
+    "maxInputBytes": 65536,
     "isolationProfile": "http-outbound"
   },
   "sessionHooks": {

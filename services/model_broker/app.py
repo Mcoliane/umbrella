@@ -23,8 +23,8 @@ from services.runtime_model import load_model_broker, mask_secret, save_model_br
 # content (flaky providers do this). The adapter retries transient 5xx/network
 # errors underneath each call; these govern how many times chat_respond re-asks
 # when a 200 body is unusable before giving up.
-_COMPLETION_ATTEMPTS = 3
-_COMPLETION_BACKOFF_SEC = 0.5
+_COMPLETION_ATTEMPTS = 6
+_COMPLETION_BACKOFF_SEC = 1.0
 
 # Canonical provider type. Every backend Umbrella talks to is an OpenAI-compatible
 # /chat/completions endpoint; there is one adapter.
@@ -57,7 +57,7 @@ def err(code: str, message: str, request_id: str) -> dict:
     return {"error": {"code": code, "message": message, "request_id": request_id}}
 
 
-def http_error_detail(exc: urllib.error.HTTPError, limit: int = 500) -> str:
+def http_error_detail(exc: urllib.error.HTTPError, limit: int = 4000) -> str:
     # Keep the provider's own explanation (truncated) instead of reducing every
     # failure to an opaque status code.
     try:
@@ -105,7 +105,7 @@ def _salvage_control_reply(content: str) -> str | None:
         return m.group(1)
 
 
-def summarize_history(rows: list[dict], limit: int = 8) -> str:
+def summarize_history(rows: list[dict], limit: int = 20) -> str:
     lines: list[str] = []
     for row in rows[-limit:]:
         if not isinstance(row, dict):
@@ -139,7 +139,7 @@ ACTION_GUIDE = {
 }
 
 
-def summarize_shops(rows: list[dict], limit: int = 8) -> str:
+def summarize_shops(rows: list[dict], limit: int = 24) -> str:
     parts: list[str] = []
     for row in rows[:limit]:
         if not isinstance(row, dict):
@@ -151,7 +151,7 @@ def summarize_shops(rows: list[dict], limit: int = 8) -> str:
         parts.append(f"- shop id={shop_id} ({name}, {shop_type}):")
         if not actions:
             parts.append("    (no actions enabled)")
-        for action in actions[:8]:
+        for action in actions[:24]:
             guide = ACTION_GUIDE.get(action, "custom action")
             parts.append(f"    - {action}: {guide}")
     return "\n".join(parts)
@@ -488,7 +488,7 @@ class BrokerEngine:
         if not model:
             return {"ok": False, "error": {"message": "default model is not configured"}}
         temperature = float(request.get("temperature") if request.get("temperature") is not None else request.get("temperatureDefault", 0.2) or 0.2)
-        max_tokens = int(request.get("maxTokens") if request.get("maxTokens") is not None else request.get("maxTokensDefault", 1200) or 1200)
+        max_tokens = int(request.get("maxTokens") if request.get("maxTokens") is not None else request.get("maxTokensDefault", 8192) or 8192)
         history_text = summarize_history(conversation_history)
         shops_text = summarize_shops(available_shops)
         context_lines = [
@@ -577,7 +577,7 @@ class BrokerEngine:
         started = time.time()
         base_url = str(connection.get("baseUrl", "")).strip()
         api_key = str(secret.get("apiKey", "")).strip()
-        timeout = float(connection.get("timeoutSec", 120) or 120)
+        timeout = float(connection.get("timeoutSec", 600) or 600)
         # Ask up to _COMPLETION_ATTEMPTS times. The adapter already retries
         # transient 5xx/network errors inside each call, so an HTTPError that
         # reaches here is terminal (bad key, 4xx, exhausted 5xx) and we stop.
@@ -682,13 +682,13 @@ class BrokerEngine:
                 clean_questions = []
                 raw_questions = parsed.get("questions")
                 if isinstance(raw_questions, list):
-                    for q in raw_questions[:5]:
+                    for q in raw_questions[:12]:
                         if not isinstance(q, dict):
                             continue
                         qtext = str(q.get("question", "")).strip()
                         if not qtext:
                             continue
-                        options = [str(o).strip() for o in (q.get("options") or []) if str(o).strip()][:6]
+                        options = [str(o).strip() for o in (q.get("options") or []) if str(o).strip()][:12]
                         clean_questions.append({"question": qtext, "options": options, "multiSelect": bool(q.get("multiSelect"))})
                 out["questions"] = clean_questions
                 return out
@@ -698,7 +698,7 @@ class BrokerEngine:
             provider_payload.pop("response_format", None)
             last_error = "provider returned empty content" if not content else "provider returned no usable reply"
             if attempt < _COMPLETION_ATTEMPTS - 1:
-                time.sleep(_COMPLETION_BACKOFF_SEC * (attempt + 1) + random.uniform(0, 0.25))
+                time.sleep(_COMPLETION_BACKOFF_SEC * (attempt + 1) + random.uniform(0, 0.5))
 
         return {"ok": False, "error": {"message": last_error}}
 

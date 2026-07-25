@@ -847,10 +847,13 @@ class SessionEngine:
                 "You are the mayor of a town of worker agents, debriefing the user after delegated work "
                 "finished, and also curating a SHARED long-term memory every future session can read.\n\n"
                 f"The user's request was: \"{content}\".\n"
-                f"The delegated work{hint_s} just finished. Raw result:\n\"\"\"\n{raw[:4000]}\n\"\"\"\n\n"
+                f"The delegated work{hint_s} just finished. Raw result:\n\"\"\"\n{raw[:60000]}\n\"\"\"\n\n"
                 "Return ONE JSON object with exactly two keys:\n"
                 "1. \"reply\": ANSWER the user's request using what the shops ACTUALLY produced — lead with the "
-                "substance (the real findings/answer/result), in plain conversational language as the mayor. Judge "
+                "substance (the real findings/answer/result), in plain conversational language as the mayor. If a "
+                "shop produced a DETAILED report or list of findings (a code review, an audit, a multi-point "
+                "analysis), relay it FAITHFULLY and IN FULL — preserve every finding, do not condense, drop, or "
+                "summarize detail away. Judge "
                 "whether the request was truly answered: if a shop 'ran' or 'completed' but returned NO substantive "
                 "output (or only a status), do NOT report success — say plainly that you don't have a real answer "
                 "yet, why, and what you'd try next. NEVER dress up an empty or status-only result as \"done\" or "
@@ -867,10 +870,10 @@ class SessionEngine:
                 "{\"reply\":\"...\",\"facts\":[{\"fact\":\"<statement>\",\"aka\":[\"<alt phrasing>\",\"<keyword>\"]}]}"
             )
             payload = {'model': model, 'messages': [{'role': 'user', 'content': prompt}],
-                       'temperature': 0.2, 'max_tokens': 2000}
+                       'temperature': 0.2, 'max_tokens': 16000}
             req = urllib.request.Request(provider_chat_url(provider), method='POST',
                 data=json.dumps(payload).encode('utf-8'), headers=provider_headers(provider))
-            with urllib.request.urlopen(req, timeout=45) as resp:
+            with urllib.request.urlopen(req, timeout=180) as resp:
                 data = json.loads(resp.read().decode('utf-8'))
             text = str(((data.get('choices') or [{}])[0].get('message') or {}).get('content') or '').strip()
         except Exception:  # noqa: BLE001
@@ -913,11 +916,11 @@ class SessionEngine:
         for item in fa:
             if isinstance(item, dict):
                 fact = str(item.get('fact', '')).strip()
-                aka = [str(a).strip()[:120] for a in (item.get('aka') or []) if str(a).strip()][:5]
+                aka = [str(a).strip()[:200] for a in (item.get('aka') or []) if str(a).strip()][:8]
             else:
                 fact, aka = str(item or '').strip(), []
             if len(fact) >= 8:
-                out.append({'fact': fact[:1000], 'aka': aka})
+                out.append({'fact': fact[:2000], 'aka': aka})
         return out[:12]
 
     # Long-term memory shared across every town. Short-term memory lives in a
@@ -998,8 +1001,8 @@ class SessionEngine:
         text = str(content or '').strip()
         if not base or not text:
             return
-        title_s = (str(title or 'delegation').strip() or 'delegation')[:200]
-        content_s = text[:4000]
+        title_s = (str(title or 'delegation').strip() or 'delegation')[:400]
+        content_s = text[:16000]
         tag_list = [str(t).strip() for t in (tags or []) if str(t).strip()]
         # Short-term: this session's own working memory — captured verbatim, no gate.
         try:
@@ -1016,7 +1019,7 @@ class SessionEngine:
         else:
             self._promote_to_longterm(base, content_s, tag_list)
 
-    def _recall_from_memory(self, session_id: str, query: str, k: int = 5) -> str:
+    def _recall_from_memory(self, session_id: str, query: str, k: int = 8) -> str:
         """Return a short block of prior town memory relevant to `query`, for injection
         into the mayor's context. Best-effort: returns '' on any failure."""
         base = self._memory_base_url()
@@ -1049,7 +1052,7 @@ class SessionEngine:
                 continue
             seen.add(key)
             title = str(node.get('title', '')).strip()
-            body = content[:400]
+            body = content[:1200]
             # Curated facts store the fact as both title and content, which would render
             # "- fact: fact". Only prefix a title when it's genuinely distinct from the body
             # (e.g. short-term captures, where title=the request and content=the outcome).
@@ -1096,7 +1099,7 @@ class SessionEngine:
             try:
                 self._write_memory_node(
                     base, self.SHARED_MEMORY_NS, owner_type='platform', owner_id='shared',
-                    visibility='shared', title=fact[:120], content=fact[:4000],
+                    visibility='shared', title=fact[:200], content=fact[:16000],
                     tags=(tags or []) + ['longterm'] + item['aka'], source='longterm-curated')
             except Exception:  # noqa: BLE001
                 pass
@@ -1129,18 +1132,18 @@ class SessionEngine:
                 "Also exclude anything that reads as private personal data.\n\n"
                 "Return ONLY a JSON array of short, self-contained statements — each written as a "
                 "standalone fact (not \"I did X\"). Return [] if nothing here is durable.\n\n"
-                f"Outcome{hint_s}:\n\"\"\"\n{text[:4000]}\n\"\"\""
+                f"Outcome{hint_s}:\n\"\"\"\n{text[:16000]}\n\"\"\""
             )
             # Generous ceiling: this provider can spend a lot of tokens deliberating
             # before emitting the array, and a truncated reply (finish_reason=length)
             # yields empty/!parseable content. _parse_fact_list also salvages a
             # truncated array, but giving room avoids the common case.
             payload = {'model': model, 'messages': [{'role': 'user', 'content': prompt}],
-                       'temperature': 0.1, 'max_tokens': 2000}
+                       'temperature': 0.1, 'max_tokens': 6000}
             req = urllib.request.Request(
                 provider_chat_url(provider), method='POST',
                 data=json.dumps(payload).encode('utf-8'), headers=provider_headers(provider))
-            with urllib.request.urlopen(req, timeout=25) as resp:
+            with urllib.request.urlopen(req, timeout=60) as resp:
                 data = json.loads(resp.read().decode('utf-8'))
             reply = str(((data.get('choices') or [{}])[0].get('message') or {}).get('content') or '').strip()
         except Exception:  # noqa: BLE001
@@ -1429,7 +1432,7 @@ class SessionEngine:
         except Exception:
             return ''
 
-    def _conversation_history(self, session: dict, limit: int = 12) -> list[dict]:
+    def _conversation_history(self, session: dict, limit: int = 20) -> list[dict]:
         messages = session.get('messages') if isinstance(session.get('messages'), list) else []
         rows: list[dict] = []
         for message in messages[-limit:]:
@@ -1600,7 +1603,7 @@ class SessionEngine:
             action_id=action_id,
             inputs=inputs,
             metadata={
-                'timeoutSec': 120,
+                'timeoutSec': 300,
                 'role': str((self._agent_map(session).get(agent_id) or {}).get('role', '')).strip(),
                 **(invocation_metadata if isinstance(invocation_metadata, dict) else {}),
             },
