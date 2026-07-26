@@ -1065,6 +1065,100 @@ class SessionEngine:
                 break
         return '\n'.join(lines)
 
+    # ---- Run artifacts: persist full shop reports, relay bounded, retrieve on demand ----
+    # A large shop report (a code review, an audit) used to be truncated at the relay
+    # boundary and the tail was simply lost — so the mayor confabulated "that's all".
+    # Instead we persist the FULL report to a durable per-session file, relay a bounded
+    # summary with an honest pointer, and re-inject the full text into the mayor's context
+    # only when the user actually asks for more. Bound the relay; keep the artifact fetchable.
+    _ARTIFACT_PERSIST_MIN = 2000       # only persist substantial reports (chars)
+    _ARTIFACT_POINTER_MIN = 12000      # only surface the "full report retained" pointer above this
+    _ARTIFACT_INJECT_CAP = 120000      # max chars of a retrieved artifact injected into the mayor context
+    _ARTIFACT_INDEX_CAP = 30           # keep the last N artifact records on the session
+    # Phrases that signal the user wants more of a report already produced this session.
+    _MORE_RE = re.compile(
+        r'\b(the rest|rest of|full report|in full|full (list|findings?)|whole (report|thing|list)|'
+        r'complete report|everything|all of (them|it|the findings?)|all the findings?|other findings?|'
+        r'remaining|what else|anything else|continue|keep going|go on|more detail|show me more|see more|'
+        r'the other|cut off|(was |got )?truncated|did\W?n\W?t finish|finish(ing)? (it|the)|'
+        r'finding\s*#?\d+|#\d+)\b', re.IGNORECASE)
+
+    def _artifact_dir(self, session_id: str) -> Path:
+        d = self.store.root / session_id / 'artifacts'
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _looks_like_more_request(self, content: str) -> bool:
+        return bool(self._MORE_RE.search(str(content or '')))
+
+    def _persist_run_artifacts(self, session_id: str, turn_id: str, content: str, orchestrated: dict) -> list:
+        """Write each substantial full shop report to a durable per-session file and return
+        index records ({artifactId, turnId, shopId, actionId, title, chars, path, createdAt}).
+        The full `report` is kept UNTRUNCATED so it can be retrieved on demand; the relay
+        stays bounded. Best-effort — never raises (an artifact failure must not fail the turn)."""
+        records: list = []
+        try:
+            invocations = orchestrated.get('invocations') if isinstance(orchestrated.get('invocations'), list) else []
+            delegations = orchestrated.get('delegations') if isinstance(orchestrated.get('delegations'), list) else []
+            shop_by_deleg = {str(d.get('delegationId', '')).strip(): str(d.get('shopId', '')).strip()
+                             for d in delegations if isinstance(d, dict)}
+            for inv in invocations:
+                if not isinstance(inv, dict):
+                    continue
+                pr = ((((inv.get('result') or {}).get('result') or {}).get('pluginResult')) or {})
+                full = (str(pr.get('report', '')).strip() or str(pr.get('summary', '')).strip()
+                        or str(pr.get('answer', '')).strip() or str(pr.get('reply', '')).strip())
+                if len(full) < self._ARTIFACT_PERSIST_MIN:
+                    continue
+                deleg_id = str(inv.get('delegationId', '')).strip()
+                shop = shop_by_deleg.get(deleg_id, '') or str(pr.get('shopId', '')).strip() or 'shop'
+                artifact_id = f'art-{uuid.uuid4().hex[:12]}'
+                path = self._artifact_dir(session_id) / f'{artifact_id}.md'
+                path.write_text(full, encoding='utf-8')
+                records.append({
+                    'artifactId': artifact_id, 'turnId': str(turn_id or ''), 'shopId': shop,
+                    'actionId': str(inv.get('actionId', '')).strip(), 'title': str(content or '')[:200],
+                    'chars': len(full), 'path': str(path), 'createdAt': now_iso(),
+                })
+        except Exception:  # noqa: BLE001
+            pass
+        return records
+
+    def _artifact_pointer(self, records: list) -> str:
+        """An honest, bounded pointer appended to the mayor's reply when a persisted report
+        is large enough that the relay likely couldn't carry all of it. '' when nothing big."""
+        big = [r for r in records if isinstance(r, dict) and int(r.get('chars', 0)) >= self._ARTIFACT_POINTER_MIN]
+        if not big:
+            return ''
+        r = max(big, key=lambda x: int(x.get('chars', 0)))
+        return (f"\n\n— \U0001F4C4 Full report retained ({int(r['chars']):,} chars, {r.get('shopId', 'shop')}). "
+                "Ask for “the rest”, “the full report”, or a specific finding and I’ll pull it up.")
+
+    @staticmethod
+    def _index_artifacts(fresh: dict, records: list, cap: int) -> None:
+        """Append artifact records to the session index (kept to the last `cap`)."""
+        if not records:
+            return
+        idx = fresh.get('artifacts') if isinstance(fresh.get('artifacts'), list) else []
+        idx.extend(records)
+        fresh['artifacts'] = idx[-cap:]
+
+    def _retrieve_artifact(self, session: dict, content: str) -> str:
+        """When the user asks to see more of a report produced this session, load the full
+        text of the most recent artifact for injection into the mayor's context. '' otherwise."""
+        arts = session.get('artifacts') if isinstance(session.get('artifacts'), list) else []
+        if not arts or not self._looks_like_more_request(content):
+            return ''
+        rec = arts[-1] if isinstance(arts[-1], dict) else {}
+        try:
+            text = Path(str(rec.get('path', ''))).read_text(encoding='utf-8')
+        except Exception:  # noqa: BLE001
+            return ''
+        if not text.strip():
+            return ''
+        header = f"[from {rec.get('shopId', 'shop')} · {rec.get('actionId', '')} · {int(rec.get('chars', 0))} chars]\n"
+        return header + text[:self._ARTIFACT_INJECT_CAP]
+
     # ---- Long-term promotion gate (Layer 1 deterministic + Layer 2 model) -------
 
     @staticmethod
@@ -1891,6 +1985,15 @@ class SessionEngine:
 
         if role == 'mayor':
             recalled = self._recall_from_memory(session_id, content)
+            # If the user is asking to see more of a report a shop already produced this
+            # session, pull the full text back in so the mayor answers from it instead of
+            # re-running the work (or confabulating what it can't remember).
+            retrieved = self._retrieve_artifact(session, content)
+            extra: dict = {}
+            if recalled:
+                extra['recalledMemory'] = recalled
+            if retrieved:
+                extra['retrievedArtifact'] = retrieved
             direct = self._converse_direct(
                 session_id,
                 session=session,
@@ -1902,7 +2005,7 @@ class SessionEngine:
                 content=content,
                 system_prompt=prompt_text,
                 instructions='Answer directly when possible. Delegate only when specialized worker work is needed.',
-                extra_inputs={'recalledMemory': recalled} if recalled else None,
+                extra_inputs=extra or None,
             )
             if not direct.get('ok', False):
                 return {'ok': False, 'target': target, 'agentId': agent_id, 'shopId': shop_id, 'error': {'message': 'mayor conversation action failed'}, 'invocation': direct.get('invocation')}
@@ -1943,12 +2046,18 @@ class SessionEngine:
                     reconciliation = orchestrated.get('reconciliation') if isinstance(orchestrated.get('reconciliation'), dict) else {}
                     raw_summary = str(reconciliation.get('summary', '')).strip()
                     reply = raw_summary or compact_text(str(direct.get('reply', '')).strip() or 'The delegated work is complete.')
+                    arts: list = []
                     if raw_summary:
                         shop_tags = [str(x.get('shopId', '')).strip() for x in plan if isinstance(x, dict) and x.get('shopId')]
                         # One call produces BOTH the user debrief and the durable facts.
                         reply, facts = self._debrief_and_extract(content=content, raw_summary=raw_summary, tags=shop_tags)
                         self._capture_to_memory(session_id, title=content, content=reply,
                                                 tags=shop_tags, longterm_facts=facts)
+                        # Persist the full report(s) durably and add an honest pointer so the
+                        # relay stays bounded but nothing is lost.
+                        arts = self._persist_run_artifacts(session_id, turn_id, content, orchestrated)
+                        if arts:
+                            reply = reply + self._artifact_pointer(arts)
                     appended: dict = {}
 
                     def _append_summary(fresh: dict) -> dict:
@@ -1959,6 +2068,7 @@ class SessionEngine:
                              'delegationIds': [str(row.get('delegationId', '')).strip() for row in (orchestrated.get('delegations') or []) if isinstance(row, dict)],
                              **provider_meta},
                         )
+                        self._index_artifacts(fresh, arts, self._ARTIFACT_INDEX_CAP)
                         return fresh
 
                     session = self.store.update(session_id, _append_summary)
@@ -1976,6 +2086,7 @@ class SessionEngine:
                 ack = compact_text(str(direct.get('reply', '')).strip()) or f"On it — delegating to {plan[0]['shopId']}. I'll post the result here when it's done."
 
                 def _run_delegation() -> None:
+                    arts: list = []
                     try:
                         orchestrated = self.orchestrate_turn(session_id=session_id, turn_id=turn_id, plan=plan, metadata={'source': 'session-converse', 'allowDelegation': True, 'suppressSummaryMessage': True})
                         reconciliation = orchestrated.get('reconciliation') if isinstance(orchestrated.get('reconciliation'), dict) else {}
@@ -1986,6 +2097,11 @@ class SessionEngine:
                         summary, facts = self._debrief_and_extract(content=content, raw_summary=summary, tags=shop_tags)
                         self._capture_to_memory(session_id, title=content, content=summary,
                                                 tags=shop_tags, longterm_facts=facts)
+                        # Persist the full report(s) durably and add an honest pointer; the
+                        # relay stays bounded, the full text stays fetchable on demand.
+                        arts = self._persist_run_artifacts(session_id, turn_id, content, orchestrated)
+                        if arts:
+                            summary = summary + self._artifact_pointer(arts)
                         delegation_ids = [str(r.get('delegationId', '')).strip() for r in (orchestrated.get('delegations') or []) if isinstance(r, dict)]
                         status = 'completed'
                     except Exception as ex:  # noqa: BLE001 — record the failure as a message
@@ -1998,6 +2114,7 @@ class SessionEngine:
                              'delegationStatus': status, 'turnId': turn_id, 'delegationIds': delegation_ids,
                              'async': True, **provider_meta},
                         )
+                        self._index_artifacts(fresh, arts, self._ARTIFACT_INDEX_CAP)
                         return fresh
 
                     try:

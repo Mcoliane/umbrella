@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -31,6 +32,21 @@ from services.skill_fs import ScopedFiles, READ_TOOLS, safe_roots, OBS_CAP, _fn 
 
 MODEL_TIMEOUT = 300
 REPORT_CAP = 60000
+
+# Path-like tokens (~/..., /abs/..., ./rel) so a review that names its target inline in the
+# task text still scopes correctly when the caller forgot to set `target`.
+_PATH_RE = re.compile(r"(?:~|\.{0,2}/)[^\s\"'`]+")
+
+
+def _paths_in_text(text: str) -> str:
+    """Best-effort recovery of path-like tokens from the task text, space-joined for
+    safe_roots to validate (only existing paths survive). '' when none look like paths."""
+    hits = []
+    for m in _PATH_RE.findall(str(text or "")):
+        tok = m.rstrip(".,:;)]}")
+        if len(tok) > 2:
+            hits.append(tok)
+    return " ".join(hits)
 
 
 def _read_json(path: Path) -> dict:
@@ -121,7 +137,23 @@ def main() -> int:
     if not task:
         print(json.dumps({"ok": False, "error": "'task' is required"}))
         return 1
-    roots = safe_roots(str(inputs.get("roots", "") or inputs.get("target", "")))
+    # Scope is REQUIRED. A review runs ONLY inside an explicitly named folder/project — an
+    # unscoped review must never silently crawl the whole home tree (Desktop/Documents/
+    # Downloads). Prefer the caller's target/roots; else try to recover a path from the task
+    # text; else ask which folder rather than scanning everything.
+    roots = safe_roots(str(inputs.get("roots", "") or inputs.get("target", "")), fallback_broad=False)
+    if not roots:
+        roots = safe_roots(_paths_in_text(task), fallback_broad=False)
+    if not roots:
+        print(json.dumps({
+            "ok": True, "verified": False, "filesRead": [], "iterations": 0,
+            "summary": ("I need a folder to review. Tell me which project or path to look at "
+                        "(for example ~/Desktop/Emcom_umbrella0.4) and I'll scope the review to it — "
+                        "I won't scan your whole home folder by default."),
+            "report": ("No review performed: no target folder was given. Re-run with a specific path in "
+                       "`target` (e.g. ~/Desktop/Emcom_umbrella0.4) to scope the review to that project."),
+        }))
+        return 0
     max_iters = max(6, min(int(inputs.get("maxIterations", 30) or 30), 60))
 
     root = Path(os.environ.get("UMBRELLA_ROOT") or Path(__file__).resolve().parents[3])

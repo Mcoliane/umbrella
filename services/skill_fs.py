@@ -48,7 +48,12 @@ WRITE_TOOLS = [
 ]
 
 
-def safe_roots(roots_input: str) -> list[Path]:
+def safe_roots(roots_input: str, *, fallback_broad: bool = True) -> list[Path]:
+    """Resolve the allow-list of roots from a space/comma-separated input. When nothing
+    explicit resolves: with `fallback_broad` (the default, used by the workspace shop for
+    'find my file on the desktop' queries) fall back to the user's Desktop/Documents/
+    Downloads; with `fallback_broad=False` (used by the analysis shop) return [] so the
+    caller can REQUIRE an explicit target instead of silently crawling the whole home tree."""
     home = Path.home()
     explicit = []
     for tok in str(roots_input or "").replace(",", " ").split():
@@ -61,6 +66,8 @@ def safe_roots(roots_input: str) -> list[Path]:
             explicit.append(p)
     if explicit:
         return explicit
+    if not fallback_broad:
+        return []
     return [p for p in (home / "Desktop", home / "Documents", home / "Downloads", Path.cwd()) if p.exists()]
 
 

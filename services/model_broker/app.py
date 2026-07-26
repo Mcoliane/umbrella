@@ -127,7 +127,7 @@ ACTION_GUIDE = {
     "skill.code.run": "run a single Python or Bash snippet and return its output — inputs: code (required), language ('python' or 'bash')",
     "skill.security.scan": "run an AUTHORIZED red-team / vulnerability scan of a target from the outside (recon, enumeration, auth/access-control/injection/SSRF/misconfig testing) and return a findings report — inputs: target (required: the URL/host to test), authorized (required: true, only if the operator owns or is contracted to test it), scope (optional: extra in-scope hosts), thoroughness (optional). Use this for security testing / pentest / 'find vulnerabilities' requests, NOT the code agent.",
     "skill.files.query": "find, read, and summarize the user's LOCAL files, and (with allowWrite:true) create/edit/reorganize them (scoped to safe folders like Desktop/Documents/Downloads; no delete) — inputs: task (required, e.g. 'find the gateway.gold analysis on my desktop and summarize it', or 'write a summary note to my desktop'), roots (optional folder(s)), allowWrite (optional: set true ONLY for create/edit/move tasks). Use for a SPECIFIC FILE or folder listing: 'it's on my desktop', 'read/summarize this file', 'what's in this folder', 'write/edit a file', 'reorganize these files'. Do NOT use for reviewing/auditing a CODEBASE — that's the analysis shop.",
-    "skill.analysis.review": "read a codebase or set of files and produce a STRUCTURED review REPORT — architecture, code quality, security, or an adversarial critique — with concrete findings grounded in real file paths (read-only, never changes anything) — inputs: task (required, e.g. 'adversarially review the umbrella codebase for weaknesses', 'audit this project for security issues', 'review the architecture of the project on my desktop'), target/roots (optional folder). Use this whenever the user wants to REVIEW / AUDIT / ANALYZE code or a project and get findings back — including 'take a look at the codebase and tell me how it's built', 'find the weaknesses', 'assess this system'. This is the shop for ANALYZING and REPORTING; use the workspace shop only for a single file, and the code agent to actually build or fix code.",
+    "skill.analysis.review": "read a codebase or set of files and produce a STRUCTURED review REPORT — architecture, code quality, security, or an adversarial critique — with concrete findings grounded in real file paths (read-only, never changes anything) — inputs: task (required, e.g. 'adversarially review the umbrella codebase for weaknesses', 'audit this project for security issues', 'review the architecture of the project on my desktop'), target (the folder/project PATH to review, e.g. ~/Desktop/Emcom_umbrella0.4 — set it whenever the user names or implies a location; the shop reviews ONLY that path and will ASK which folder if none is given rather than scanning the whole home folder). Use this whenever the user wants to REVIEW / AUDIT / ANALYZE code or a project and get findings back — including 'take a look at the codebase and tell me how it's built', 'find the weaknesses', 'assess this system'. This is the shop for ANALYZING and REPORTING; use the workspace shop only for a single file, and the code agent to actually build or fix code.",
     "skill.web.search": "search the web and return ranked results — inputs: query (required)",
     "skill.web.fetch": "fetch a URL and return its readable text — inputs: url (required)",
     "skill.memory.search": "search durable knowledge memory — inputs: query (required)",
@@ -475,6 +475,7 @@ class BrokerEngine:
         message = str(request.get("message", "")).strip()
         environment_summary = str(request.get("environmentSummary", "")).strip()
         recalled_memory = str(request.get("recalledMemory", "")).strip()
+        retrieved_artifact = str(request.get("retrievedArtifact", "")).strip()
         town_context = request.get("townContext") if isinstance(request.get("townContext"), dict) else {}
         available_shops = request.get("availableShops") if isinstance(request.get("availableShops"), list) else []
         conversation_history = request.get("conversationHistory") if isinstance(request.get("conversationHistory"), list) else []
@@ -489,6 +490,10 @@ class BrokerEngine:
             return {"ok": False, "error": {"message": "default model is not configured"}}
         temperature = float(request.get("temperature") if request.get("temperature") is not None else request.get("temperatureDefault", 0.2) or 0.2)
         max_tokens = int(request.get("maxTokens") if request.get("maxTokens") is not None else request.get("maxTokensDefault", 8192) or 8192)
+        # A retrieval turn (user asking to see more of a stored report) needs room to
+        # relay a large chunk faithfully in one reply, so give it extra output headroom.
+        if retrieved_artifact:
+            max_tokens = max(max_tokens, 16000)
         history_text = summarize_history(conversation_history)
         shops_text = summarize_shops(available_shops)
         context_lines = [
@@ -545,6 +550,9 @@ class BrokerEngine:
                         "3. Pick the shopId and actionId from the list above, and fill inputs exactly as that action describes. "
                         "For skill.code.agent put the user's full request in inputs.task, and if they name a location set inputs.workingDir "
                         "(e.g. a folder 'prism-code' on the desktop -> \"~/Desktop/prism-code\").\n"
+                        "For skill.analysis.review set inputs.target to the folder/project PATH the user wants reviewed whenever they name "
+                        "or imply one; if the location is genuinely unknown, ask them for the path (mode:direct) rather than guessing — the "
+                        "shop reviews ONLY the given path and will not scan the whole home folder.\n"
                         "4. Only use shopIds and actionIds that appear above. If no shop fits, answer directly and say what worker would be needed.\n"
                         "5. Answer directly (mode:direct) for questions, chat, explanations, status, and for asking clarifying questions before a big build.\n"
                         "6. TOOL COHERENCE: when the machine toolchain is provided, pick the runtime that has ALL the pieces the "
@@ -560,6 +568,19 @@ class BrokerEngine:
                     "content": ("Memory — what you've already learned or done in this town. Use it to answer directly "
                                 "instead of re-running work you've already done:\n" + (recalled_memory or "nothing relevant yet.")),
                 },
+                # Retrieval: the full text of a report a shop already produced this session,
+                # fetched because the user asked to see more of it. Answer FROM it — never
+                # re-run the work you already have the result for.
+                *([{
+                    "role": "system",
+                    "content": (
+                        "RETRIEVED FULL REPORT. A shop already produced this report earlier in the session, and the "
+                        "user is now asking to see more of it (e.g. 'the rest', 'the full report', a specific finding). "
+                        "The COMPLETE report text is below. If the user is asking about it, ANSWER DIRECTLY (mode:direct) "
+                        "from this text — relay the part they asked for FAITHFULLY and IN FULL, preserving every finding, "
+                        "and do NOT delegate or re-run the work (you already have the full result here). If their message "
+                        "turns out to be unrelated, ignore this block.\n\"\"\"\n" + retrieved_artifact + "\n\"\"\""),
+                }] if retrieved_artifact else []),
                 {
                     "role": "system",
                     "content": "Recent conversation:\n" + (history_text or "none"),
