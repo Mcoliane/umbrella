@@ -829,18 +829,18 @@ class SessionEngine:
         return f'Mayor summary for "{objective}": {status}.'
 
     def _debrief_and_extract(self, *, content: str, raw_summary: str, tags: list | None = None) -> tuple:
-        """ONE model call that both (a) writes the user-facing plain-language debrief and
-        (b) distills durable long-term facts — collapsing the former narrate + Layer-2
-        extract calls into a single lean direct call (no heavy broker prefix). Returns
-        (reply, facts). Falls back to (raw_summary, []) on any failure."""
+        """ONE model call that (a) writes the user-facing debrief as a DISTILLATION — a bright
+        headline (the conclusion) plus dimmer supporting detail — and (b) distills durable
+        long-term facts. Returns (headline, detail, facts). The full report is retained as a
+        retrievable artifact, so this DISTILLS rather than dumps. Falls back to (raw, '', [])."""
         raw = str(raw_summary or '').strip()
         try:
             provider = load_model_provider(self.root)
             if not provider_enabled(provider):
-                return raw, []
+                return raw, '', []
             model = str((provider.get('provider') or {}).get('defaultModel', '')).strip()
             if not model:
-                return raw, []
+                return raw, '', []
             hint = ', '.join([str(t).strip() for t in (tags or []) if str(t).strip()])
             hint_s = f' (produced via {hint})' if hint else ''
             prompt = (
@@ -848,18 +848,20 @@ class SessionEngine:
                 "finished, and also curating a SHARED long-term memory every future session can read.\n\n"
                 f"The user's request was: \"{content}\".\n"
                 f"The delegated work{hint_s} just finished. Raw result:\n\"\"\"\n{raw[:60000]}\n\"\"\"\n\n"
-                "Return ONE JSON object with exactly two keys:\n"
-                "1. \"reply\": ANSWER the user's request using what the shops ACTUALLY produced — lead with the "
-                "substance (the real findings/answer/result), in plain conversational language as the mayor. If a "
-                "shop produced a DETAILED report or list of findings (a code review, an audit, a multi-point "
-                "analysis), relay it FAITHFULLY and IN FULL — preserve every finding, do not condense, drop, or "
-                "summarize detail away. Judge "
-                "whether the request was truly answered: if a shop 'ran' or 'completed' but returned NO substantive "
-                "output (or only a status), do NOT report success — say plainly that you don't have a real answer "
-                "yet, why, and what you'd try next. NEVER dress up an empty or status-only result as \"done\" or "
-                "\"completed successfully\", and never invent findings that weren't produced. If it genuinely "
-                "failed, say WHY in plain language. No status codes, no the phrase \"Mayor summary\", no JSON in the reply.\n"
-                "2. \"facts\": a JSON array of durable, town-independent facts worth remembering for FUTURE "
+                "The FULL raw result is saved and the user can ask for it or any specific part, so you DISTILL it "
+                "here — you do not need to relay every detail verbatim. Return ONE JSON object with three keys:\n"
+                "1. \"headline\": the DISTILLED answer, LEADING WITH THE CONCLUSION — plain conversational language "
+                "as the mayor, 1-4 sentences: what the shops actually found or produced and the few things that "
+                "matter most. This is what the user reads first. Judge honestly: if a shop 'ran' or 'completed' but "
+                "returned NO substantive output (or only a status), do NOT report success — say plainly you don't "
+                "have a real answer yet, why, and what you'd try next. NEVER dress up an empty or status-only result "
+                "as \"done\", and never invent findings. If it failed, say WHY. No status codes, no the phrase "
+                "\"Mayor summary\", no JSON in the text.\n"
+                "2. \"detail\": the SUPPORTING substance beneath the headline — the key findings or points, "
+                "CONCISELY (a short list or a few sentences). Distill; do NOT dump every finding verbatim (the full "
+                "report is retained for that). Use \"\" when the headline already fully answers — a short reply, a "
+                "plain failure, or a simple result needs no detail.\n"
+                "3. \"facts\": a JSON array of durable, town-independent facts worth remembering for FUTURE "
                 "sessions (general facts, reusable how-tos, stable facts about this machine or its toolchain, or "
                 "a real failure lesson — keep those even when they name a tool path). EXCLUDE anything tied to "
                 "the current run (this town's directories/files, transient state, greetings, uncertain results) "
@@ -867,7 +869,7 @@ class SessionEngine:
                 "someone might later search for it by (synonyms, rewordings, the key entities), so it can be found "
                 "even when a future query uses different words. Use [] if nothing is durable.\n\n"
                 "Return ONLY the JSON object: "
-                "{\"reply\":\"...\",\"facts\":[{\"fact\":\"<statement>\",\"aka\":[\"<alt phrasing>\",\"<keyword>\"]}]}"
+                "{\"headline\":\"...\",\"detail\":\"...\",\"facts\":[{\"fact\":\"<statement>\",\"aka\":[\"<alt phrasing>\",\"<keyword>\"]}]}"
             )
             payload = {'model': model, 'messages': [{'role': 'user', 'content': prompt}],
                        'temperature': 0.2, 'max_tokens': 16000}
@@ -877,34 +879,53 @@ class SessionEngine:
                 data = json.loads(resp.read().decode('utf-8'))
             text = str(((data.get('choices') or [{}])[0].get('message') or {}).get('content') or '').strip()
         except Exception:  # noqa: BLE001
-            return raw, []
-        reply, facts = self._parse_debrief(text)
-        return (reply or raw), facts
+            return raw, '', []
+        headline, detail, facts = self._parse_debrief(text)
+        return (headline or raw), detail, facts
+
+    def _compose_reply(self, headline: str, detail: str, pointer: str = '') -> tuple:
+        """Assemble a tiered mayor reply from a distilled (headline, detail) pair plus an
+        optional artifact pointer. Returns (content, meta): `content` is the complete text
+        (headline, then the dimmer detail, then the pointer) so every client shows the full
+        answer; `meta` carries headlineChars so the TUI renders the headline bright and the
+        detail/pointer dimmed. No detail and no pointer -> a flat reply (meta empty)."""
+        headline = str(headline or '').strip()
+        body = '\n\n'.join(p for p in (str(detail or '').strip(), str(pointer or '').strip()) if p)
+        if not body:
+            return headline, {}
+        if not headline:
+            return body, {}
+        return headline + '\n\n' + body, {'headlineChars': len(headline)}
 
     def _parse_debrief(self, text: str) -> tuple:
-        """Pull (reply, facts) from a {"reply":.., "facts":[{"fact","aka"}]} model response.
-        Tolerant of surrounding prose, truncation, and the older plain-string fact form;
-        returns ('', []) if nothing usable. facts is a list of {'fact','aka'} dicts."""
+        """Pull (headline, detail, facts) from a {"headline","detail","facts":[{"fact","aka"}]}
+        response. Tolerant of surrounding prose, truncation, the older {"reply",...} form, and
+        the plain-string fact form; returns ('', '', []) if nothing usable."""
         s = str(text or '').strip()
         start, end = s.find('{'), s.rfind('}')
         if start != -1 and end > start:
             try:
                 obj = json.loads(s[start:end + 1])
                 if isinstance(obj, dict):
-                    return str(obj.get('reply', '')).strip(), self._normalize_facts(obj.get('facts'))
+                    headline = str(obj.get('headline', obj.get('reply', ''))).strip()
+                    detail = str(obj.get('detail', '')).strip()
+                    return headline, detail, self._normalize_facts(obj.get('facts'))
             except Exception:  # noqa: BLE001
                 pass
-        # Salvage a truncated/malformed object: reply string + facts array separately.
-        reply = ''
-        m = re.search(r'"reply"\s*:\s*"((?:[^"\\]|\\.)*)"', s)
-        if m:
+        # Salvage a truncated/malformed object: string fields + facts array separately.
+        def _grab(key: str) -> str:
+            m = re.search(r'"' + key + r'"\s*:\s*"((?:[^"\\]|\\.)*)"', s)
+            if not m:
+                return ''
             try:
-                reply = json.loads('"' + m.group(1) + '"').strip()
+                return json.loads('"' + m.group(1) + '"').strip()
             except Exception:  # noqa: BLE001
-                reply = m.group(1).strip()
+                return m.group(1).strip()
+        headline = _grab('headline') or _grab('reply')
+        detail = _grab('detail')
         fidx = s.find('"facts"')
         salvaged = self._parse_fact_list(s[fidx:]) if fidx != -1 else []
-        return reply, self._normalize_facts(salvaged)
+        return headline, detail, self._normalize_facts(salvaged)
 
     @staticmethod
     def _normalize_facts(fa) -> list:
@@ -2047,17 +2068,17 @@ class SessionEngine:
                     raw_summary = str(reconciliation.get('summary', '')).strip()
                     reply = raw_summary or compact_text(str(direct.get('reply', '')).strip() or 'The delegated work is complete.')
                     arts: list = []
+                    tier_meta: dict = {}
                     if raw_summary:
                         shop_tags = [str(x.get('shopId', '')).strip() for x in plan if isinstance(x, dict) and x.get('shopId')]
-                        # One call produces BOTH the user debrief and the durable facts.
-                        reply, facts = self._debrief_and_extract(content=content, raw_summary=raw_summary, tags=shop_tags)
+                        # One call distills BOTH the tiered debrief (headline + detail) and the durable facts.
+                        headline, detail, facts = self._debrief_and_extract(content=content, raw_summary=raw_summary, tags=shop_tags)
+                        # Persist the full report(s) durably; the relay distills and points at them.
+                        arts = self._persist_run_artifacts(session_id, turn_id, content, orchestrated)
+                        pointer = self._artifact_pointer(arts) if arts else ''
+                        reply, tier_meta = self._compose_reply(headline, detail, pointer)
                         self._capture_to_memory(session_id, title=content, content=reply,
                                                 tags=shop_tags, longterm_facts=facts)
-                        # Persist the full report(s) durably and add an honest pointer so the
-                        # relay stays bounded but nothing is lost.
-                        arts = self._persist_run_artifacts(session_id, turn_id, content, orchestrated)
-                        if arts:
-                            reply = reply + self._artifact_pointer(arts)
                     appended: dict = {}
 
                     def _append_summary(fresh: dict) -> dict:
@@ -2066,7 +2087,7 @@ class SessionEngine:
                             {'targetAgentId': agent_id, 'targetShopId': shop_id, 'modeResolved': 'delegate',
                              'delegationStatus': 'completed', 'turnId': turn_id,
                              'delegationIds': [str(row.get('delegationId', '')).strip() for row in (orchestrated.get('delegations') or []) if isinstance(row, dict)],
-                             **provider_meta},
+                             **tier_meta, **provider_meta},
                         )
                         self._index_artifacts(fresh, arts, self._ARTIFACT_INDEX_CAP)
                         return fresh
@@ -2087,21 +2108,21 @@ class SessionEngine:
 
                 def _run_delegation() -> None:
                     arts: list = []
+                    tier_meta: dict = {}
                     try:
                         orchestrated = self.orchestrate_turn(session_id=session_id, turn_id=turn_id, plan=plan, metadata={'source': 'session-converse', 'allowDelegation': True, 'suppressSummaryMessage': True})
                         reconciliation = orchestrated.get('reconciliation') if isinstance(orchestrated.get('reconciliation'), dict) else {}
                         summary = str(reconciliation.get('summary', '')).strip() or 'The delegated work is complete.'
-                        # One call turns the raw reconciliation line into a plain-language
-                        # debrief AND distills durable facts (this async path is the TUI default).
+                        # One call distills the tiered debrief (bright headline + dimmer detail)
+                        # AND the durable facts (this async path is the TUI default).
                         shop_tags = [str(x.get('shopId', '')).strip() for x in plan if isinstance(x, dict) and x.get('shopId')]
-                        summary, facts = self._debrief_and_extract(content=content, raw_summary=summary, tags=shop_tags)
+                        headline, detail, facts = self._debrief_and_extract(content=content, raw_summary=summary, tags=shop_tags)
+                        # Persist the full report(s) durably; the relay distills and points at them.
+                        arts = self._persist_run_artifacts(session_id, turn_id, content, orchestrated)
+                        pointer = self._artifact_pointer(arts) if arts else ''
+                        summary, tier_meta = self._compose_reply(headline, detail, pointer)
                         self._capture_to_memory(session_id, title=content, content=summary,
                                                 tags=shop_tags, longterm_facts=facts)
-                        # Persist the full report(s) durably and add an honest pointer; the
-                        # relay stays bounded, the full text stays fetchable on demand.
-                        arts = self._persist_run_artifacts(session_id, turn_id, content, orchestrated)
-                        if arts:
-                            summary = summary + self._artifact_pointer(arts)
                         delegation_ids = [str(r.get('delegationId', '')).strip() for r in (orchestrated.get('delegations') or []) if isinstance(r, dict)]
                         status = 'completed'
                     except Exception as ex:  # noqa: BLE001 — record the failure as a message
@@ -2112,7 +2133,7 @@ class SessionEngine:
                             fresh, 'assistant', summary,
                             {'targetAgentId': agent_id, 'targetShopId': shop_id, 'modeResolved': 'delegate',
                              'delegationStatus': status, 'turnId': turn_id, 'delegationIds': delegation_ids,
-                             'async': True, **provider_meta},
+                             'async': True, **tier_meta, **provider_meta},
                         )
                         self._index_artifacts(fresh, arts, self._ARTIFACT_INDEX_CAP)
                         return fresh

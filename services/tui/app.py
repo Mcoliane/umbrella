@@ -957,6 +957,23 @@ class UmbrellaTui:
                 lines.append((body_attr, "  " + wl))
             lines.append((0, ""))
 
+        def tiered_bubble(header: str, header_attr: int, head: str, head_attr: int,
+                          detail: str, detail_attr: int) -> None:
+            """Like bubble, but the distilled headline renders bright and the supporting
+            detail renders dimmed — the same visual hierarchy Claude uses (conclusion up
+            top, detail lighter below). Detail paragraphs are wrapped individually so the
+            distilled findings keep their line breaks instead of collapsing to a blob."""
+            lines.append((header_attr, header))
+            for wl in (textwrap.wrap(head, wrap) or [""]):
+                lines.append((head_attr, "  " + wl))
+            for para in str(detail or "").split("\n"):
+                if not para.strip():
+                    lines.append((detail_attr, ""))
+                    continue
+                for wl in textwrap.wrap(para, wrap):
+                    lines.append((detail_attr, "  " + wl))
+            lines.append((0, ""))
+
         session = self.session_payload
         for message in (session.get("messages") or [])[-60:]:
             role = str(message.get("role", "")).lower()
@@ -983,7 +1000,15 @@ class UmbrellaTui:
                     mark = {"completed": " ✓", "failed": " ✗"}.get(dstatus, "")
                     via = f"{mark} via {shop}" if (mark and shop) else mark
                     header = target + via + (f"   {tag}" if tag else "")
-                    bubble(header, self._c(2, curses.A_BOLD), content, self._c(2))
+                    # A distilled debrief carries headlineChars: render the headline bright
+                    # and the supporting detail dimmed (conclusion first, detail lighter).
+                    hc = md.get("headlineChars")
+                    if isinstance(hc, int) and 0 < hc < len(content):
+                        tiered_bubble(header, self._c(2, curses.A_BOLD),
+                                      content[:hc].strip(), self._c(2),
+                                      content[hc:].strip(), self._c(2, curses.A_DIM))
+                    else:
+                        bubble(header, self._c(2, curses.A_BOLD), content, self._c(2))
             else:
                 bubble(role, self._c(3), content, self._c(3))
 
