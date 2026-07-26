@@ -91,6 +91,57 @@ def parse_json_content_block(content: str) -> dict | None:
     return None
 
 
+# Reasoning models sometimes leak their chain-of-thought and a thinking-end delimiter
+# (and occasionally SSE-style `data:` line prefixes) into the `content` field, ahead of
+# the real JSON control object. Keep only what follows the LAST thinking delimiter.
+_THINK_END_RE = re.compile(r"<\|\s*(?:end_of_thinking|end_of_thought|eot)\s*\|>|</think(?:ing)?>", re.IGNORECASE)
+
+
+def strip_reasoning(content: str) -> str:
+    parts = _THINK_END_RE.split(str(content or ""))
+    tail = parts[-1] if parts else str(content or "")
+    tail = re.sub(r"(?m)^\s*data:\s*", "", tail)  # drop leaked SSE 'data:' prefixes
+    return tail.strip()
+
+
+def find_control_json(text: str) -> dict | None:
+    """Find the first balanced {...} object embedded anywhere in `text` that parses as a
+    control dict (has 'mode' or 'reply'). String-aware brace matching so a brace inside a
+    reply string doesn't throw off the scan. Recovers JSON buried in reasoning/prose."""
+    s = str(text or "")
+    depth = 0
+    start = -1
+    in_str = False
+    esc = False
+    for i, ch in enumerate(s):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start != -1:
+                    try:
+                        obj = json.loads(s[start:i + 1])
+                    except Exception:
+                        obj = None
+                    if isinstance(obj, dict) and ("mode" in obj or "reply" in obj):
+                        return obj
+                    start = -1
+    return None
+
+
 def _salvage_control_reply(content: str) -> str | None:
     """When a model emits a control object that fails to parse (almost always its
     JSON was truncated mid-generation), pull out just the human-facing "reply"
@@ -638,11 +689,17 @@ class BrokerEngine:
             choices = raw.get("choices") if isinstance(raw.get("choices"), list) else []
             first = choices[0] if choices and isinstance(choices[0], dict) else {}
             msg = first.get("message") if isinstance(first.get("message"), dict) else {}
-            content = str((msg or {}).get("content") or "").strip()
+            content_raw = str((msg or {}).get("content") or "").strip()
+            # Drop any leaked chain-of-thought/thinking delimiter before the real answer.
+            content = strip_reasoning(content_raw) or content_raw
 
             parsed = parse_json_content_block(content)
             if not isinstance(parsed, dict):
-                looks_like_control = content.startswith("{") and ('"reply"' in content or '"mode"' in content)
+                # The control object may be embedded in surrounding prose/reasoning — scan
+                # the cleaned content, then the raw, for a balanced {...} control object.
+                parsed = find_control_json(content) or find_control_json(content_raw)
+            if not isinstance(parsed, dict):
+                looks_like_control = '"reply"' in content or '"mode"' in content
                 if looks_like_control and attempt < _COMPLETION_ATTEMPTS - 1:
                     # A control object that didn't parse — almost always the model's
                     # JSON was truncated mid-generation. Re-ask to recover the full

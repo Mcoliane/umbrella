@@ -57,7 +57,8 @@ class UmbrellaTui:
             {"name": "refresh", "args": "", "desc": "Refresh home + town"},
             {"name": "start", "args": "[full|core]", "desc": "Start the service stack"},
             {"name": "stop", "args": "", "desc": "Stop the service stack"},
-            {"name": "abort", "args": "", "desc": "Abort the current in-flight run (kills the running shop)"},
+            {"name": "abort", "args": "", "desc": "Abort the current in-flight run (kills the running shop; stops a loop)"},
+            {"name": "loop", "args": "<goal>", "desc": "Bounded, verifier-gated autonomous loop toward a goal (opt-in; /abort to stop)"},
             {"name": "quit", "args": "", "desc": "Exit the TUI"},
         ]
 
@@ -833,6 +834,28 @@ class UmbrellaTui:
             self._clear_pending()
             self.refresh_session()
             return
+        if name == "loop":
+            sid = self.state.selected_session_id
+            if not sid:
+                self.add_local_event("error", "No town open — open a town before starting a loop.")
+                return
+            goal = " ".join(args).strip()
+            if not goal:
+                self.add_local_event("system", "Usage: /loop <goal> — e.g. /loop build a CLI todo tool with add/list/done and tests. It runs one verifiable step at a time and pauses for you when a step isn't verified, the goal's met, or the budget's hit. /abort stops it.")
+                return
+            try:
+                out = self.client.start_loop(session_id=sid, goal=goal)
+                if isinstance(out, dict) and out.get("ok"):
+                    self.state.status = f"Loop running (up to {out.get('maxLegs', '')} legs) — /abort to stop."
+                else:
+                    msg = ((out or {}).get("error") or {}).get("message", "could not start loop") if isinstance(out, dict) else "could not start loop"
+                    self.add_local_event("error", f"Loop: {msg}")
+                    self.state.status = "Loop not started"
+            except Exception as ex:  # noqa: BLE001
+                self.state.status = f"Loop failed: {type(ex).__name__}"
+                self.add_local_event("error", self.state.status)
+            self.refresh_session()
+            return
         if name in {"quit", "exit"}:
             raise SystemExit(0)
         self.add_local_event("error", f"Unknown command: {command}")
@@ -988,7 +1011,12 @@ class UmbrellaTui:
             elif role == "assistant":
                 dstatus = str(md.get("delegationStatus", "")).strip()
                 shop = str(md.get("targetShopId", "")).strip()
-                if dstatus == "running":
+                loop_kind = str(md.get("loop", "")).strip()
+                if loop_kind in {"paused", "done"}:
+                    # A loop control message (goal met / paused / budget / abort): amber line.
+                    reason = str(md.get("loopReason", "")).strip() or loop_kind
+                    bubble(f"↻ loop · {reason}", self._c(5, curses.A_BOLD), content, self._c(5))
+                elif dstatus == "running":
                     # In-progress delegation: keep a compact status line.
                     bubble(f"⟳ delegation → {shop or 'shop'} · running", self._c(5, curses.A_BOLD), content, self._c(5))
                 else:
@@ -999,7 +1027,12 @@ class UmbrellaTui:
                     tag = self._provenance_tag(md)
                     mark = {"completed": " ✓", "failed": " ✗"}.get(dstatus, "")
                     via = f"{mark} via {shop}" if (mark and shop) else mark
-                    header = target + via + (f"   {tag}" if tag else "")
+                    if loop_kind == "leg":
+                        # A loop leg: label it as such (verified marker), then the tiered debrief.
+                        vmark = " ✓" if md.get("loopVerified") else " ⏸"
+                        header = f"↻ loop · leg {md.get('loopLeg', '')}{vmark}" + (f" via {shop}" if shop else "") + (f"   {tag}" if tag else "")
+                    else:
+                        header = target + via + (f"   {tag}" if tag else "")
                     # A distilled debrief carries headlineChars: render the headline bright
                     # and the supporting detail dimmed (conclusion first, detail lighter).
                     hc = md.get("headlineChars")
