@@ -52,7 +52,7 @@ class UmbrellaTui:
             {"name": "shops", "args": "", "desc": "List worker shops"},
             {"name": "workers", "args": "", "desc": "List workers"},
             {"name": "model", "args": "[setup|test|use|disable]", "desc": "Configure the model connection"},
-            {"name": "profile", "args": "[set <text>]", "desc": "View or replace the operator profile the mayor always knows"},
+            {"name": "profile", "args": "[set <text>|on|off]", "desc": "View, replace, or toggle the operator profile the mayor knows"},
             {"name": "autonomy", "args": "[auto|ask]", "desc": "Approval gating (auto = no prompts)"},
             {"name": "status", "args": "", "desc": "Platform + town status"},
             {"name": "refresh", "args": "", "desc": "Refresh home + town"},
@@ -778,14 +778,30 @@ class UmbrellaTui:
                     detail = str((out or {}).get("error", "")).strip() if isinstance(out, dict) else ""
                     self.add_local_event("error", f"Profile update failed: {detail or 'unknown error'}")
                 return
+            if args and args[0] in {"on", "off"}:
+                try:
+                    out = self.client.set_profile_enabled(args[0] == "on")
+                except Exception as ex:  # noqa: BLE001
+                    self.add_local_event("error", f"Profile toggle failed: {type(ex).__name__}")
+                    return
+                if isinstance(out, dict) and out.get("ok"):
+                    self.add_local_event("system", "Profile injection ON — the mayor sees it every turn."
+                                         if args[0] == "on" else
+                                         "Profile injection OFF — the text is kept, but not sent to the model.")
+                else:
+                    detail = str((out or {}).get("error", "")).strip() if isinstance(out, dict) else ""
+                    self.add_local_event("error", f"Profile toggle failed: {detail or 'unknown error'}")
+                return
             try:
                 out = self.client.get_profile()
             except Exception as ex:  # noqa: BLE001
                 self.add_local_event("error", f"Profile fetch failed: {type(ex).__name__}")
                 return
             profile = str((out or {}).get("profile", "")).strip() if isinstance(out, dict) else ""
+            enabled = bool(out.get("enabled", True)) if isinstance(out, dict) else True
             if profile:
-                self.add_local_event("system", "Operator profile (injected into every mayor turn):\n" + profile)
+                status = "injected into every mayor turn" if enabled else "OFF — kept but not sent to the model (/profile on to resume)"
+                self.add_local_event("system", f"Operator profile ({status}):\n" + profile)
             else:
                 self.add_local_event("system", "No operator profile yet. Set one with /profile set <text>; the mayor also grows it from your conversations.")
             return

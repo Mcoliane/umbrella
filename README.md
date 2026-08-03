@@ -294,6 +294,7 @@ Current command set (`/help` in the TUI is the source of truth):
 - `/new [title]`, `/open`, `/session <id>`, `/agent <id>`
 - `/shops`, `/workers`
 - `/model`, `/model setup`, `/model test`, `/model use <model>`, `/model disable`
+- `/profile [set <text>|on|off]` — the always-on operator profile the mayor carries into every turn (optional; off keeps the text but stops injecting it)
 - `/start [full|core]`, `/stop`
 - `/autonomy [auto|ask]` — note `auto` is the default and skips the approval gate
 - `/abort` stop an in-flight run, `/resume` continue a blocked one, `/quit`

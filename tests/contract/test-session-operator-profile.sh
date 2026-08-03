@@ -14,6 +14,10 @@ set -euo pipefail
 #      extra inputs, and the broker renders an OPERATOR PROFILE block. (The skill leg
 #      of the seam is enforced by test-chat-broker-request-parity.sh: the broker
 #      reading operatorProfile forces the skill to send it.)
+#   F. Injection is optional: {"enabled": false} keeps the text visible to the
+#      operator but stops it reaching the model; text-only saves preserve the off
+#      state; {"enabled": true} resumes. The off switch also halts automatic
+#      profile-note accumulation (source seam).
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 source "$ROOT/tests/contract/helpers/runtime-root.sh"
@@ -105,6 +109,19 @@ cap = int(call().get('maxChars', 0))
 assert cap > 0
 assert call({'profile': 'x' * (cap + 500)}).get('ok') is True
 assert len(call().get('profile')) <= cap
+
+# F. injection is optional — and switching off never hides or loses the text
+assert call().get('enabled') is True, 'profile must default to enabled'
+assert call({'enabled': False}).get('ok') is True
+out = call()
+assert out.get('enabled') is False and len(out.get('profile', '')) > 0, out
+# a text-only save must NOT silently flip injection back on
+assert call({'profile': 'just text while off'}).get('ok') is True
+out = call()
+assert out.get('profile') == 'just text while off' and out.get('enabled') is False, out
+assert call({'enabled': True}).get('ok') is True
+out = call()
+assert out.get('enabled') is True and out.get('profile') == 'just text while off', out
 print('operator profile CRUD PASS')
 PY
 
@@ -121,6 +138,12 @@ assert "extra['operatorProfile'] = profile" in session_src, \
     'session no longer injects operatorProfile into mayor extra inputs'
 assert '"operatorProfile"' in broker_src and 'OPERATOR PROFILE' in broker_src, \
     'broker no longer reads/renders the operator profile block'
+# The off switch gates BOTH consumers of the profile: injection reads _profile_text
+# (which returns '' when the disabled tag is set) and note accumulation checks the
+# enabled flag before growing the profile.
+assert '_PROFILE_DISABLED_TAG' in session_src, 'profile off switch removed'
+assert "if not payload['enabled']:" in session_src, \
+    'profile-note accumulation no longer respects the off switch'
 print('operator profile seam wiring PASS')
 PY
 

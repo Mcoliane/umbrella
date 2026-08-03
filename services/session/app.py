@@ -1074,41 +1074,66 @@ class SessionEngine:
     # is retained for free and no etag dance is needed.
     PROFILE_NS = 'profile:operator'
     _PROFILE_MAX_CHARS = 1600
+    # Injection is optional: the flag rides on the newest profile node's tags, so it
+    # needs no second store, survives restarts with the same durability as the text,
+    # and the node history records every toggle.
+    _PROFILE_DISABLED_TAG = 'profile-disabled'
 
-    def _profile_text(self) -> str:
-        """Newest operator-profile content, '' when unset or memory is unreachable."""
+    def _profile_node(self) -> dict | None:
+        """Newest operator-profile node, None when unset or memory is unreachable."""
         base = self._memory_base_url()
         if not base:
-            return ''
+            return None
         try:
             out = self._post_json(base, '/v1/nodes/search',
                                   {'namespace': self.PROFILE_NS, 'query': '', 'k': 1}, timeout=8)
         except Exception as ex:  # noqa: BLE001
             self._note_memory_failure('profile:read', f'{type(ex).__name__}: {ex}')
-            return ''
+            return None
         results = out.get('results') if isinstance(out, dict) and isinstance(out.get('results'), list) else []
         node = results[0].get('node') if results and isinstance(results[0], dict) else None
-        content = (node or {}).get('content', '')
+        return node if isinstance(node, dict) else None
+
+    def _profile_text(self) -> str:
+        """The profile as injected into mayor turns: '' when unset, unreachable, or
+        switched off. The injection path and the off switch share this one gate."""
+        node = self._profile_node()
+        if not node or self._PROFILE_DISABLED_TAG in (node.get('tags') or []):
+            return ''
+        content = node.get('content', '')
         return (content if isinstance(content, str) else '').strip()[:self._PROFILE_MAX_CHARS]
 
-    def save_profile(self, text: str) -> dict:
-        """Replace the operator profile (a new node; prior versions remain as history)."""
-        cleaned = str(text or '').strip()[:self._PROFILE_MAX_CHARS]
+    def profile_payload(self) -> dict:
+        """The profile as shown to the operator: text is returned even when injection
+        is off, so switching off never makes the content invisible or unrecoverable."""
+        node = self._profile_node() or {}
+        content = node.get('content', '')
+        return {
+            'ok': True,
+            'profile': (content if isinstance(content, str) else '').strip()[:self._PROFILE_MAX_CHARS],
+            'enabled': self._PROFILE_DISABLED_TAG not in (node.get('tags') or []),
+            'maxChars': self._PROFILE_MAX_CHARS,
+        }
+
+    def save_profile(self, text: str | None = None, enabled: bool | None = None) -> dict:
+        """Replace the profile text and/or flip injection; omitted fields keep their
+        current value. Every save writes a new node — prior versions remain as history."""
+        current = self.profile_payload()
+        cleaned = current['profile'] if text is None else str(text or '').strip()[:self._PROFILE_MAX_CHARS]
+        target_enabled = current['enabled'] if enabled is None else bool(enabled)
         base = self._memory_base_url()
         if not base:
             self._note_memory_failure('profile:write', 'no memory service URL resolved')
             return {'ok': False, 'error': 'memory service unavailable'}
+        tags = ['profile'] + ([] if target_enabled else [self._PROFILE_DISABLED_TAG])
         try:
             self._write_memory_node(base, self.PROFILE_NS, owner_type='platform', owner_id='operator',
                                     visibility='shared', title='operator profile', content=cleaned,
-                                    tags=['profile'], source='operator-profile', kind='operator-profile')
+                                    tags=tags, source='operator-profile', kind='operator-profile')
         except Exception as ex:  # noqa: BLE001
             self._note_memory_failure('profile:write', f'{type(ex).__name__}: {ex}')
             return {'ok': False, 'error': f'{type(ex).__name__}: {ex}'}
-        return {'ok': True, 'profile': cleaned}
-
-    def profile_payload(self) -> dict:
-        return {'ok': True, 'profile': self._profile_text(), 'maxChars': self._PROFILE_MAX_CHARS}
+        return {'ok': True, 'profile': cleaned, 'enabled': target_enabled}
 
     def _merge_profile_notes(self, notes: list) -> None:
         """Fold distilled operator facts into the profile: dedup on normalized line,
@@ -1118,7 +1143,11 @@ class SessionEngine:
             lines = [str(n).strip()[:200] for n in (notes or []) if str(n).strip()][:3]
             if not lines:
                 return
-            current = self._profile_text()
+            payload = self.profile_payload()
+            if not payload['enabled']:
+                # The off switch means off: no injection AND no silent accumulation.
+                return
+            current = payload['profile']
             have = {' '.join(l.lower().split()) for l in current.splitlines() if l.strip()}
             fresh = [l for l in lines if ' '.join(l.lower().split()) not in have]
             if not fresh:
@@ -3446,7 +3475,10 @@ def handler_factory(engine: SessionEngine, token: str):
                     )
                     return json_response(self, 200, out)
                 if path == '/v1/session/profile':
-                    return json_response(self, 200, engine.save_profile(str(body.get('profile', ''))))
+                    return json_response(self, 200, engine.save_profile(
+                        text=str(body['profile']) if 'profile' in body else None,
+                        enabled=body.get('enabled') if isinstance(body.get('enabled'), bool) else None,
+                    ))
                 if path == '/v1/runtime/model-broker/test':
                     return json_response(self, 200, engine.test_model_broker())
                 if path == '/v1/runtime/model-provider/test':
