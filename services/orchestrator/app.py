@@ -439,8 +439,24 @@ class OrchestratorEngine:
         plan_path = Path(plan)
         if not plan_path.is_absolute():
             plan_path = (self.root / plan_path).resolve()
-        parsed_plan = load_json(plan_path, {})
-        steps = parsed_plan.get('steps') or []
+        # A run that executed nothing must never report SUCCEEDED. load_json()
+        # collapses "file is missing" and "file is not JSON" into the same empty
+        # default, which used to yield steps=[] and fall straight through to a
+        # green terminal state — so a typo in a plan path produced a passing run
+        # that did no work. Both cases are rejected here, before any run state is
+        # written, and an empty steps list is rejected with them for the same
+        # reason: there is no legitimate plan that succeeds by doing nothing.
+        if not plan_path.exists():
+            raise ValueError(f'plan not found: {plan_path}')
+        try:
+            parsed_plan = json.loads(plan_path.read_text(encoding='utf-8'))
+        except Exception as ex:
+            raise ValueError(f'plan is not valid JSON: {plan_path}: {ex}') from ex
+        if not isinstance(parsed_plan, dict):
+            raise ValueError(f'plan must be a JSON object: {plan_path}')
+        steps = parsed_plan.get('steps')
+        if not isinstance(steps, list) or not steps:
+            raise ValueError(f'plan must declare a non-empty steps list: {plan_path}')
 
         run_dir = self.runs_root() / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -483,6 +499,12 @@ class OrchestratorEngine:
         step_states = {}
         for i, s in enumerate(steps, start=1):
             sid = validate_identifier(step_id(s, i), f'stepId[{i}]')
+            # step_states is keyed by stepId while run['steps'] is a list, so a
+            # repeated id used to leave an unreachable READY row in the list that
+            # the terminal-state decision (which reads step_states) could not see:
+            # the duplicate step never ran and the run still reported SUCCEEDED.
+            if sid in step_rows:
+                raise ValueError(f'duplicate stepId in plan: {sid}')
             prior_step = prior_success_steps.get(sid)
             if prior_step is not None:
                 row = dict(prior_step)
@@ -885,6 +907,11 @@ def handler_factory(engine: OrchestratorEngine, token: str):
                         mesh_token=str(body.get('meshToken', '')),
                     )
                     return json_response(self, 200, out)
+                except ValueError as ex:
+                    # Bad plan / bad identifier is a caller error, not an internal
+                    # fault — surface it as 400 so a typo'd plan path is visibly
+                    # rejected instead of masquerading as a server failure.
+                    return json_response(self, 400, err('VALIDATION_ERROR', str(ex), req_id))
                 except Exception as ex:
                     return json_response(self, 500, err('INTERNAL', str(ex), req_id))
 

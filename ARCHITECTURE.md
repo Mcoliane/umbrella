@@ -24,7 +24,7 @@ through them, and why the notable decisions were made.
    `http.server`. `git clone` + `./install.sh` and it runs — nothing to pip, no
    database to provision. (The only external call is to a model provider.)
 4. **Honest about itself.** Docs match the code, limitations are stated plainly,
-   and a 40-test contract gate plus a pattern-verifier keep it that way.
+   and the contract gate plus a pattern-verifier keep it that way.
 
 ---
 
@@ -376,7 +376,7 @@ services/            # every service: one app.py per service, stdlib only
 skills/              # native skills (chat, memory, web, code.run, code.agent, shop.originate)
 control-plane/       # runtime config, plans, policy, state machine, capability contract
 scripts/             # launchers, umbrellactl, tools (memory-core-reconcile, umbrella-backup, ...)
-tests/contract/      # the 40-test contract gate
+tests/contract/      # the contract gate (run-all-contracts.sh is the list)
 docs/                # user/operator + architecture docs
 ```
 

@@ -9,6 +9,7 @@ TESTS=(
   "$ROOT/tests/contract/test-approval-resume-idempotency.sh"
   "$ROOT/tests/contract/test-approval-run-status.sh"
   "$ROOT/tests/contract/test-run-transition-guard.sh"
+  "$ROOT/tests/contract/test-run-plan-validation.sh"
   "$ROOT/tests/contract/test-identifier-validation.sh"
   "$ROOT/tests/contract/test-catalog-service.sh"
   "$ROOT/tests/contract/test-plugin-host-execution.sh"
