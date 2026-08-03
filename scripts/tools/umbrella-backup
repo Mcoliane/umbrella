@@ -173,6 +173,12 @@ STATE_PATHS = [
     'control-plane/memory-core/store.json',
     'control-plane/approvals',
     'control-plane/extensions',
+    # Operator model + autonomy configuration. These are named individually rather than
+    # capturing control-plane/runtime wholesale, because that directory also holds
+    # *.secrets.json, which must stay behind the explicit --include-secrets opt-in below.
+    'control-plane/runtime/model-broker.json',
+    'control-plane/runtime/model-provider.json',
+    'control-plane/runtime/autonomy.json',
 ]
 if include_runs:
     STATE_PATHS.append('control-plane/observability/runs')

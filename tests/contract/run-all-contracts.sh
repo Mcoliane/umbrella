@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
 TESTS=(
   "$ROOT/tests/contract/test-default-posture.sh"
+  "$ROOT/tests/contract/test-upgrade-preserves-config.sh"
   "$ROOT/tests/contract/test-service-mesh-runner.sh"
   "$ROOT/tests/contract/test-approval-authority-runner.sh"
   "$ROOT/tests/contract/test-approval-resume-idempotency.sh"

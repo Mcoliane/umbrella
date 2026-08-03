@@ -170,7 +170,19 @@ rsync -a --delete \
   --exclude 'control-plane/runtime/service-token.txt' \
   --exclude 'control-plane/runtime/logs' \
   --exclude 'control-plane/memory-core/store.json' \
+  --exclude 'control-plane/memory-core/store.json.backup.*' \
+  --exclude '*.json.lock' \
   --exclude '*.secrets.json' \
+  `# Operator model + autonomy configuration. Without these the upgrade both DELETES` \
+  `# model-broker.json (absent from a clean checkout, so --delete removes it) and REVERTS` \
+  `# model-provider.json (tracked, so the shipped disabled template overwrites it) — or,` \
+  `# when the source tree happens to carry its own copies, silently installs the builder's` \
+  `# configuration over the operator's. runtime_model.py:281-284 reads the broker config` \
+  `# first and falls back to model-provider.json, so losing both at once disconnects the` \
+  `# model entirely while *.secrets.json survives above, orphaning the API key.` \
+  --exclude 'control-plane/runtime/model-broker.json' \
+  --exclude 'control-plane/runtime/model-provider.json' \
+  --exclude 'control-plane/runtime/autonomy.json' \
   "$ROOT/" "$APP_DIR/"
 
 # Purge stale mesh credentials propagated into APP_DIR by earlier installers;
