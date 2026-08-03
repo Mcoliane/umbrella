@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import threading
+import time
 import uuid
 import urllib.error
 import urllib.parse
@@ -831,17 +832,19 @@ class SessionEngine:
 
     def _debrief_and_extract(self, *, content: str, raw_summary: str, tags: list | None = None) -> tuple:
         """ONE model call that (a) writes the user-facing debrief as a DISTILLATION — a bright
-        headline (the conclusion) plus dimmer supporting detail — and (b) distills durable
-        long-term facts. Returns (headline, detail, facts). The full report is retained as a
-        retrievable artifact, so this DISTILLS rather than dumps. Falls back to (raw, '', [])."""
+        headline (the conclusion) plus dimmer supporting detail — (b) distills durable
+        long-term facts, and (c) surfaces new facts about the operator for the always-on
+        profile. Returns (headline, detail, facts, profile_notes). The full report is retained
+        as a retrievable artifact, so this DISTILLS rather than dumps. Falls back to
+        (raw, '', [], [])."""
         raw = str(raw_summary or '').strip()
         try:
             provider = load_model_provider(self.root)
             if not provider_enabled(provider):
-                return raw, '', []
+                return raw, '', [], []
             model = str((provider.get('provider') or {}).get('defaultModel', '')).strip()
             if not model:
-                return raw, '', []
+                return raw, '', [], []
             hint = ', '.join([str(t).strip() for t in (tags or []) if str(t).strip()])
             hint_s = f' (produced via {hint})' if hint else ''
             prompt = (
@@ -868,9 +871,14 @@ class SessionEngine:
                 "the current run (this town's directories/files, transient state, greetings, uncertain results) "
                 "and private personal data. For EACH fact, also give \"aka\": 2-3 alternate phrasings or keywords "
                 "someone might later search for it by (synonyms, rewordings, the key entities), so it can be found "
-                "even when a future query uses different words. Use [] if nothing is durable.\n\n"
+                "even when a future query uses different words. Use [] if nothing is durable.\n"
+                "4. \"profileNotes\": a JSON array — USUALLY EMPTY — of NEW durable facts about the OPERATOR "
+                "themselves that this exchange revealed: standing preferences (\"prefers concise replies\"), "
+                "corrections they gave, or stable personal context they volunteered (their stack, timezone, "
+                "conventions). Only what the operator actually said or clearly demonstrated — never guess, "
+                "never restate task output, never include secrets. One short sentence per note. Use [].\n\n"
                 "Return ONLY the JSON object: "
-                "{\"headline\":\"...\",\"detail\":\"...\",\"facts\":[{\"fact\":\"<statement>\",\"aka\":[\"<alt phrasing>\",\"<keyword>\"]}]}"
+                "{\"headline\":\"...\",\"detail\":\"...\",\"facts\":[{\"fact\":\"<statement>\",\"aka\":[\"<alt phrasing>\",\"<keyword>\"]}],\"profileNotes\":[]}"
             )
             payload = {'model': model, 'messages': [{'role': 'user', 'content': prompt}],
                        'temperature': 0.2, 'max_tokens': 16000}
@@ -880,9 +888,9 @@ class SessionEngine:
                 data = json.loads(resp.read().decode('utf-8'))
             text = str(((data.get('choices') or [{}])[0].get('message') or {}).get('content') or '').strip()
         except Exception:  # noqa: BLE001
-            return raw, '', []
-        headline, detail, facts = self._parse_debrief(text)
-        return (headline or raw), detail, facts
+            return raw, '', [], []
+        headline, detail, facts, profile_notes = self._parse_debrief(text)
+        return (headline or raw), detail, facts, profile_notes
 
     def _compose_reply(self, headline: str, detail: str, pointer: str = '') -> tuple:
         """Assemble a tiered mayor reply from a distilled (headline, detail) pair plus an
@@ -899,9 +907,10 @@ class SessionEngine:
         return headline + '\n\n' + body, {'headlineChars': len(headline)}
 
     def _parse_debrief(self, text: str) -> tuple:
-        """Pull (headline, detail, facts) from a {"headline","detail","facts":[{"fact","aka"}]}
-        response. Tolerant of surrounding prose, truncation, the older {"reply",...} form, and
-        the plain-string fact form; returns ('', '', []) if nothing usable."""
+        """Pull (headline, detail, facts, profileNotes) from a
+        {"headline","detail","facts":[{"fact","aka"}],"profileNotes":[...]} response.
+        Tolerant of surrounding prose, truncation, the older {"reply",...} form, and
+        the plain-string fact form; returns ('', '', [], []) if nothing usable."""
         s = str(text or '').strip()
         start, end = s.find('{'), s.rfind('}')
         if start != -1 and end > start:
@@ -910,7 +919,9 @@ class SessionEngine:
                 if isinstance(obj, dict):
                     headline = str(obj.get('headline', obj.get('reply', ''))).strip()
                     detail = str(obj.get('detail', '')).strip()
-                    return headline, detail, self._normalize_facts(obj.get('facts'))
+                    notes = [str(n).strip()[:200] for n in (obj.get('profileNotes') or [])
+                             if isinstance(n, str) and str(n).strip()][:3]
+                    return headline, detail, self._normalize_facts(obj.get('facts')), notes
             except Exception:  # noqa: BLE001
                 pass
         # Salvage a truncated/malformed object: string fields + facts array separately.
@@ -926,7 +937,9 @@ class SessionEngine:
         detail = _grab('detail')
         fidx = s.find('"facts"')
         salvaged = self._parse_fact_list(s[fidx:]) if fidx != -1 else []
-        return headline, detail, self._normalize_facts(salvaged)
+        # Salvage keeps the debrief and facts; profile notes are optional-by-design and
+        # not worth recovering from a malformed reply.
+        return headline, detail, self._normalize_facts(salvaged), []
 
     @staticmethod
     def _normalize_facts(fa) -> list:
@@ -1053,6 +1066,92 @@ class SessionEngine:
                 'lastError': f'memory_status: {type(ex).__name__}: {ex}'[:300],
             }
 
+    # ---- Operator profile: the block of durable operator facts every prompt carries ----
+    # Recalled memory is query-dependent: if the user's message doesn't happen to match,
+    # the mayor knows nothing. The profile is the complement — a small, always-injected
+    # block (preferences, context, standing instructions) that does not depend on what
+    # was asked. Stored as nodes in a dedicated namespace, newest node wins, so history
+    # is retained for free and no etag dance is needed.
+    PROFILE_NS = 'profile:operator'
+    _PROFILE_MAX_CHARS = 1600
+
+    def _profile_text(self) -> str:
+        """Newest operator-profile content, '' when unset or memory is unreachable."""
+        base = self._memory_base_url()
+        if not base:
+            return ''
+        try:
+            out = self._post_json(base, '/v1/nodes/search',
+                                  {'namespace': self.PROFILE_NS, 'query': '', 'k': 1}, timeout=8)
+        except Exception as ex:  # noqa: BLE001
+            self._note_memory_failure('profile:read', f'{type(ex).__name__}: {ex}')
+            return ''
+        results = out.get('results') if isinstance(out, dict) and isinstance(out.get('results'), list) else []
+        node = results[0].get('node') if results and isinstance(results[0], dict) else None
+        content = (node or {}).get('content', '')
+        return (content if isinstance(content, str) else '').strip()[:self._PROFILE_MAX_CHARS]
+
+    def save_profile(self, text: str) -> dict:
+        """Replace the operator profile (a new node; prior versions remain as history)."""
+        cleaned = str(text or '').strip()[:self._PROFILE_MAX_CHARS]
+        base = self._memory_base_url()
+        if not base:
+            self._note_memory_failure('profile:write', 'no memory service URL resolved')
+            return {'ok': False, 'error': 'memory service unavailable'}
+        try:
+            self._write_memory_node(base, self.PROFILE_NS, owner_type='platform', owner_id='operator',
+                                    visibility='shared', title='operator profile', content=cleaned,
+                                    tags=['profile'], source='operator-profile', kind='operator-profile')
+        except Exception as ex:  # noqa: BLE001
+            self._note_memory_failure('profile:write', f'{type(ex).__name__}: {ex}')
+            return {'ok': False, 'error': f'{type(ex).__name__}: {ex}'}
+        return {'ok': True, 'profile': cleaned}
+
+    def profile_payload(self) -> dict:
+        return {'ok': True, 'profile': self._profile_text(), 'maxChars': self._PROFILE_MAX_CHARS}
+
+    def _merge_profile_notes(self, notes: list) -> None:
+        """Fold distilled operator facts into the profile: dedup on normalized line,
+        append newest last, trim oldest lines to the budget. Best-effort — this runs
+        inside the conversation flow and must never raise."""
+        try:
+            lines = [str(n).strip()[:200] for n in (notes or []) if str(n).strip()][:3]
+            if not lines:
+                return
+            current = self._profile_text()
+            have = {' '.join(l.lower().split()) for l in current.splitlines() if l.strip()}
+            fresh = [l for l in lines if ' '.join(l.lower().split()) not in have]
+            if not fresh:
+                return
+            merged = [l for l in current.splitlines() if l.strip()] + fresh
+            text = '\n'.join(merged)
+            while len(text) > self._PROFILE_MAX_CHARS and len(merged) > 1:
+                merged.pop(0)
+                text = '\n'.join(merged)
+            self.save_profile(text)
+        except Exception as ex:  # noqa: BLE001
+            self._note_memory_failure('profile:merge', f'{type(ex).__name__}: {ex}')
+
+    # Opportunistic promotion sweep: cross-town recurrence scanning is the memory
+    # service's job; session just pokes it occasionally so it needs no cron of its own.
+    _SWEEP_MIN_INTERVAL_SEC = 600
+
+    def _maybe_sweep(self, base: str) -> None:
+        """Trigger a background promotion sweep at most once per interval. Runs in a
+        daemon thread so the conversation turn never waits on it."""
+        now = time.monotonic()
+        if now - getattr(self, '_last_sweep_monotonic', -self._SWEEP_MIN_INTERVAL_SEC) < self._SWEEP_MIN_INTERVAL_SEC:
+            return
+        self._last_sweep_monotonic = now
+
+        def _run() -> None:
+            try:
+                self._post_json(base, '/v1/promotions/sweep', {'maxPromotions': 5}, timeout=30)
+            except Exception as ex:  # noqa: BLE001
+                self._note_memory_failure('sweep', f'{type(ex).__name__}: {ex}')
+
+        threading.Thread(target=_run, name='memory-promotion-sweep', daemon=True).start()
+
     def _plugin_host_url(self) -> str:
         """Resolve the plugin-host service URL from the platform manifest (dynamic port)."""
         cached = getattr(self, '_plugin_host_url_cache', None)
@@ -1087,13 +1186,14 @@ class SessionEngine:
         return {'ok': True, 'sessionId': session_id, 'runsInFlight': len(run_ids), 'cancelled': cancelled}
 
     def _write_memory_node(self, base: str, ns: str, *, owner_type: str, owner_id: str,
-                           visibility: str, title: str, content: str, tags: list, source: str) -> None:
+                           visibility: str, title: str, content: str, tags: list, source: str,
+                           kind: str = 'delegation-outcome') -> None:
         """Ensure a namespace exists and write one node into it. Raises on failure;
         callers wrap this best-effort so the conversation flow is never blocked."""
         self._post_json(base, '/v1/namespaces',
                         {'id': ns, 'owner_type': owner_type, 'owner_id': owner_id, 'visibility': visibility}, timeout=8)
         self._post_json(base, '/v1/nodes', {
-            'node_id': f'mem-{uuid.uuid4().hex[:16]}', 'namespace': ns, 'kind': 'delegation-outcome',
+            'node_id': f'mem-{uuid.uuid4().hex[:16]}', 'namespace': ns, 'kind': kind,
             'title': title, 'content': content, 'tags': tags, 'source': source,
         }, timeout=8)
 
@@ -1131,6 +1231,9 @@ class SessionEngine:
             self._promote_facts_to_longterm(base, longterm_facts, tag_list)
         else:
             self._promote_to_longterm(base, content_s, tag_list)
+        # Distillation only promotes what a model call noticed; the sweep additionally
+        # promotes what recurred across towns without ever being distilled.
+        self._maybe_sweep(base)
 
     def _recall_from_memory(self, session_id: str, query: str, k: int = 8) -> str:
         """Return a short block of prior town memory relevant to `query`, for injection
@@ -2106,11 +2209,16 @@ class SessionEngine:
             # session, pull the full text back in so the mayor answers from it instead of
             # re-running the work (or confabulating what it can't remember).
             retrieved = self._retrieve_artifact(session, content)
+            # The profile is injected on EVERY mayor turn, not just when recall matched:
+            # recalled memory depends on the query's words, the profile by design does not.
+            profile = self._profile_text()
             extra: dict = {}
             if recalled:
                 extra['recalledMemory'] = recalled
             if retrieved:
                 extra['retrievedArtifact'] = retrieved
+            if profile:
+                extra['operatorProfile'] = profile
             direct = self._converse_direct(
                 session_id,
                 session=session,
@@ -2168,7 +2276,8 @@ class SessionEngine:
                     if raw_summary:
                         shop_tags = [str(x.get('shopId', '')).strip() for x in plan if isinstance(x, dict) and x.get('shopId')]
                         # One call distills BOTH the tiered debrief (headline + detail) and the durable facts.
-                        headline, detail, facts = self._debrief_and_extract(content=content, raw_summary=raw_summary, tags=shop_tags)
+                        headline, detail, facts, profile_notes = self._debrief_and_extract(content=content, raw_summary=raw_summary, tags=shop_tags)
+                        self._merge_profile_notes(profile_notes)
                         # Persist the full report(s) durably; the relay distills and points at them.
                         arts = self._persist_run_artifacts(session_id, turn_id, content, orchestrated)
                         pointer = self._artifact_pointer(arts) if arts else ''
@@ -2212,7 +2321,8 @@ class SessionEngine:
                         # One call distills the tiered debrief (bright headline + dimmer detail)
                         # AND the durable facts (this async path is the TUI default).
                         shop_tags = [str(x.get('shopId', '')).strip() for x in plan if isinstance(x, dict) and x.get('shopId')]
-                        headline, detail, facts = self._debrief_and_extract(content=content, raw_summary=summary, tags=shop_tags)
+                        headline, detail, facts, profile_notes = self._debrief_and_extract(content=content, raw_summary=summary, tags=shop_tags)
+                        self._merge_profile_notes(profile_notes)
                         # Persist the full report(s) durably; the relay distills and points at them.
                         arts = self._persist_run_artifacts(session_id, turn_id, content, orchestrated)
                         pointer = self._artifact_pointer(arts) if arts else ''
@@ -3262,6 +3372,8 @@ def handler_factory(engine: SessionEngine, token: str):
                     # signal reads healthy, so it is reported here rather than inferred.
                     'durableMemory': engine.memory_status(),
                 })
+            if path == '/v1/session/profile':
+                return json_response(self, 200, engine.profile_payload())
             if path == '/v1/runtime/model-broker':
                 return json_response(self, 200, engine.model_broker_status())
             if path == '/v1/runtime/model-provider':
@@ -3333,6 +3445,8 @@ def handler_factory(engine: SessionEngine, token: str):
                         api_key=body.get('apiKey') if 'apiKey' in body else None,
                     )
                     return json_response(self, 200, out)
+                if path == '/v1/session/profile':
+                    return json_response(self, 200, engine.save_profile(str(body.get('profile', ''))))
                 if path == '/v1/runtime/model-broker/test':
                     return json_response(self, 200, engine.test_model_broker())
                 if path == '/v1/runtime/model-provider/test':

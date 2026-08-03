@@ -285,6 +285,14 @@ class TuiClient:
         base = self.service_url("session")
         return self._request("GET", f"{base}/v1/agent-packages")["json"]
 
+    def get_profile(self) -> dict:
+        base = self.service_url("session")
+        return self._request("GET", f"{base}/v1/session/profile", timeout=15.0)["json"]
+
+    def set_profile(self, text: str) -> dict:
+        base = self.service_url("session")
+        return self._request("POST", f"{base}/v1/session/profile", {"profile": text}, timeout=15.0)["json"]
+
     def model_provider_status(self) -> dict:
         base = self.service_url("session")
         return self._request("GET", f"{base}/v1/runtime/model-provider", timeout=15.0)["json"]

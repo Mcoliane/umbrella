@@ -168,6 +168,9 @@ def _provider_response(inputs: dict) -> dict | None:
         # up" resolved the artifact off disk and then discarded it here.
         "recalledMemory": str(inputs.get("recalledMemory", "")).strip(),
         "retrievedArtifact": str(inputs.get("retrievedArtifact", "")).strip(),
+        # Always-on operator profile: session injects it on every mayor turn so the
+        # model knows the operator without depending on what this query happens to match.
+        "operatorProfile": str(inputs.get("operatorProfile", "")).strip(),
         "model": str(override.get("model") or inputs.get("model", "")).strip(),
         "temperature": inputs.get("temperature"),
         "maxTokens": inputs.get("maxTokens"),

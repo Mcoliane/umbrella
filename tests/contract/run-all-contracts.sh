@@ -45,6 +45,8 @@ TESTS=(
   "$ROOT/tests/contract/test-service-manager.sh"
   "$ROOT/tests/contract/test-memory-durable-bringup.sh"
   "$ROOT/tests/contract/test-session-memory-discovery.sh"
+  "$ROOT/tests/contract/test-session-operator-profile.sh"
+  "$ROOT/tests/contract/test-memory-promotion-sweep.sh"
   "$ROOT/tests/contract/test-bootstrap-register-agent.sh"
   "$ROOT/tests/contract/test-service-auth-mesh.sh"
   "$ROOT/tests/contract/test-service-auth-gating.sh"

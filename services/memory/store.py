@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .events import event_payload
-from .search import rank_bm25
+from .search import rank_bm25, tokenize
 
 # Recency weighting for ranked search: a mild freshness multiplier on top of the BM25
 # relevance score, so that among comparably-relevant memories the more recent ones sort
@@ -648,6 +648,147 @@ class MemoryStore:
                 'queueDepth': len(list(self.promotion_queue_dir.glob('*.json'))),
                 'dlqDepth': len(list(self.promotion_dlq_dir.glob('*.json'))),
             }
+
+    # ---- Automatic promotion sweep ------------------------------------------------
+    # Cross-session recurrence is the promotion signal: knowledge that surfaces in two
+    # or more different towns is town-independent by demonstration, not by model
+    # judgment. The sweep finds those recurrences among short-term town captures and
+    # copies one representative into the shared long-term namespace, linking it back to
+    # its sources. Everything it considers is tagged so the next sweep skips it — the
+    # sweep is idempotent and cheap enough to trigger opportunistically.
+    SWEEP_TAG = 'swept-promoted'
+    # Must match session's SHARED_MEMORY_NS: recall searches this namespace by name.
+    SWEEP_TARGET_NS = 'shared:longterm'
+    _SWEEP_JACCARD = 0.5
+
+    def sweep_promotions(self, req: dict, actor: str, request_id: str = '') -> dict:
+        with self._lock:
+            min_towns = max(2, int(req.get('minTowns', 2)))
+            max_promotions = max(1, int(req.get('maxPromotions', 5)))
+            min_len = max(1, int(req.get('minLen', 16)))
+            scan_cap = max(10, int(req.get('scanCap', 400)))
+
+            cur = self.conn.execute(
+                "SELECT * FROM nodes WHERE namespace LIKE 'town:%' AND deleted_at IS NULL "
+                'ORDER BY updated_at DESC LIMIT ?', (scan_cap,))
+            candidates = []
+            for row in cur.fetchall():
+                obj = dict(row)
+                obj['content'] = json.loads(obj['content'])
+                obj['tags'] = json.loads(obj['tags'])
+                if self.SWEEP_TAG in obj['tags']:
+                    continue
+                text = obj['content'] if isinstance(obj['content'], str) else json.dumps(obj['content'], ensure_ascii=False)
+                text = text.strip()
+                if len(text) < min_len:
+                    continue
+                # Signature = the node's informative stems. Short stems are dropped:
+                # they survive the stopword filter but carry no topical signal, and
+                # they inflate Jaccard overlap between unrelated notes.
+                sig = frozenset(t for t in tokenize(f"{obj['title']} {text}") if len(t) >= 4)
+                if len(sig) < 3:
+                    continue
+                candidates.append({'node': obj, 'text': text, 'sig': sig})
+
+            # Union-find over cross-town signature overlap. Same-town pairs never
+            # union: recurrence WITHIN one town says nothing about town-independence.
+            parent = list(range(len(candidates)))
+
+            def find(i: int) -> int:
+                while parent[i] != i:
+                    parent[i] = parent[parent[i]]
+                    i = parent[i]
+                return i
+
+            for i in range(len(candidates)):
+                for j in range(i + 1, len(candidates)):
+                    a, b = candidates[i], candidates[j]
+                    if a['node']['namespace'] == b['node']['namespace']:
+                        continue
+                    inter = len(a['sig'] & b['sig'])
+                    if not inter:
+                        continue
+                    union = len(a['sig'] | b['sig'])
+                    if inter / union >= self._SWEEP_JACCARD:
+                        ri, rj = find(i), find(j)
+                        if ri != rj:
+                            parent[rj] = ri
+
+            clusters: dict[int, list] = {}
+            for idx in range(len(candidates)):
+                clusters.setdefault(find(idx), []).append(candidates[idx])
+
+            # Existing long-term contents, normalized the same way session's
+            # _promote_facts_to_longterm dedups, so sweep and distillation cannot
+            # write the same knowledge twice.
+            existing: set[str] = set()
+            cur = self.conn.execute('SELECT content FROM nodes WHERE namespace=? AND deleted_at IS NULL',
+                                    (self.SWEEP_TARGET_NS,))
+            for (raw_content,) in cur.fetchall():
+                try:
+                    parsed = json.loads(raw_content)
+                except Exception:  # noqa: BLE001
+                    parsed = raw_content
+                text = parsed if isinstance(parsed, str) else json.dumps(parsed, ensure_ascii=False)
+                existing.add(' '.join(text.lower().split()))
+
+            promoted: list[dict] = []
+            deduped = 0
+            for members in clusters.values():
+                if len(promoted) >= max_promotions:
+                    break
+                towns = {m['node']['namespace'] for m in members}
+                if len(towns) < min_towns:
+                    continue
+                rep = max(members, key=lambda m: str(m['node'].get('updated_at', '')))
+                member_ids = [m['node']['node_id'] for m in members]
+                key = ' '.join(rep['text'].lower().split())
+                if key in existing:
+                    deduped += 1
+                    self._mark_swept(member_ids)
+                    continue
+                if not self.get_namespace(self.SWEEP_TARGET_NS):
+                    self.upsert_namespace({'id': self.SWEEP_TARGET_NS, 'owner_type': 'platform',
+                                           'owner_id': 'shared', 'visibility': 'shared'})
+                tags = sorted({str(t) for m in members for t in m['node']['tags'] if str(t).strip()}
+                              | {'longterm', 'auto-promoted'})
+                new_id = f'mem-{uuid.uuid4().hex[:16]}'
+                self.create_node({
+                    'node_id': new_id,
+                    'namespace': self.SWEEP_TARGET_NS,
+                    'kind': 'promoted-outcome',
+                    'title': (rep['node']['title'] or rep['text'])[:200],
+                    'content': rep['text'][:16000],
+                    'tags': tags,
+                    'source': 'auto-promotion-sweep',
+                }, actor=actor, request_id=request_id)
+                for m in members:
+                    try:
+                        self.upsert_edge({'from_node_id': new_id, 'to_node_id': m['node']['node_id'],
+                                          'relation': 'promoted-from'}, actor=actor, request_id=request_id)
+                    except Exception:  # noqa: BLE001
+                        pass
+                self._mark_swept(member_ids)
+                existing.add(key)
+                promoted.append({'node_id': new_id, 'title': (rep['node']['title'] or rep['text'])[:200],
+                                 'towns': sorted(towns)})
+
+            return {'ok': True, 'scanned': len(candidates), 'clusters': len(clusters),
+                    'promoted': promoted, 'promotedCount': len(promoted), 'dedupedClusters': deduped}
+
+    def _mark_swept(self, node_ids: list) -> None:
+        """Tag nodes as already considered so the next sweep skips them. Direct tag
+        update bumping version/etag but not updated_at — promotion bookkeeping must
+        not reorder town recency listings."""
+        for node_id in node_ids:
+            obj = self.get_node(node_id)
+            if not obj or self.SWEEP_TAG in obj['tags']:
+                continue
+            version = int(obj.get('version', 1)) + 1
+            self.conn.execute('UPDATE nodes SET tags=?, version=?, etag=? WHERE node_id=?',
+                              (json.dumps(list(obj['tags']) + [self.SWEEP_TAG], ensure_ascii=False),
+                               version, etag_for(version, node_id), node_id))
+        self.conn.commit()
 
     def list_promotion_dlq(self, limit: int = 100) -> dict:
         with self._lock:

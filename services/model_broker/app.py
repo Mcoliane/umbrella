@@ -527,6 +527,7 @@ class BrokerEngine:
         environment_summary = str(request.get("environmentSummary", "")).strip()
         recalled_memory = str(request.get("recalledMemory", "")).strip()
         retrieved_artifact = str(request.get("retrievedArtifact", "")).strip()
+        operator_profile = str(request.get("operatorProfile", "")).strip()
         town_context = request.get("townContext") if isinstance(request.get("townContext"), dict) else {}
         available_shops = request.get("availableShops") if isinstance(request.get("availableShops"), list) else []
         conversation_history = request.get("conversationHistory") if isinstance(request.get("conversationHistory"), list) else []
@@ -614,6 +615,17 @@ class BrokerEngine:
                         "Return ONLY the JSON object, no prose outside it."
                     ),
                 },
+                # The operator profile is unconditional context (session injects it on
+                # every mayor turn); recalled memory below is query-dependent. Omitted
+                # entirely when unset — an empty profile needs no placeholder block.
+                *([{
+                    "role": "system",
+                    "content": (
+                        "OPERATOR PROFILE — durable facts about the operator you serve, maintained across "
+                        "every session and town:\n" + operator_profile +
+                        "\nTreat these as ground truth about the operator unless the current conversation "
+                        "contradicts them, and do not re-ask for anything already answered here."),
+                }] if operator_profile else []),
                 {
                     "role": "system",
                     "content": ("Memory — what you've already learned or done in this town. Use it to answer directly "
