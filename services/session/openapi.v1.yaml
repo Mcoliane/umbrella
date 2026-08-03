@@ -9,7 +9,14 @@ paths:
   /v1/session/health:
     get:
       responses:
-        '200': { description: OK }
+        '200': { description: OK; includes a durableMemory block (configured, baseUrl, source, failures, lastError) so memory reachability is observable rather than inferred }
+  /v1/session/profile:
+    get:
+      responses:
+        '200': { description: Operator profile text, enabled flag, and character budget. Text is returned even when injection is disabled }
+    post:
+      responses:
+        '200': { description: Replace the profile text and/or toggle injection ({profile}, {enabled}, or both; omitted fields keep their current value) }
   /v1/shop-profiles:
     get:
       responses:

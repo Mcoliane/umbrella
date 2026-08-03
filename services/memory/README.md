@@ -32,6 +32,8 @@ Cross-layer explicit operations:
 - `POST /v1/promotions/process-queue` (process queue; failures moved to DLQ)
 - `POST /v1/promotions/replay-dlq` (retry DLQ entries)
 - `GET /v1/promotions/dlq` (inspect failed promotions)
+- `POST /v1/promotions/sweep` (nominate town-conversation knowledge recurring across >=2 towns; side-effect-free — this service never writes long-term nodes from a sweep, session curates nominations through Layer 2 distillation first)
+- `POST /v1/promotions/mark-swept` (retire nominated sources after session has processed them)
 - `POST /v1/hydrations/payload` (build explicit hydration payload for memory-core writes)
   - requires `context.phase` of `bootstrap` or `resume`
 - `GET /v1/memory/boundary/stats` (queue/DLQ/processed observability)

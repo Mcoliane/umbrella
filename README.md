@@ -160,6 +160,18 @@ Boundary actions (owned by `native`):
 - `memory.promote`
 - `memory.hydrate`
 
+Conversation memory rides the durable `memory` service in three parts:
+- short-term town memory (`town:<sessionId>` namespaces) captures delegation
+  outcomes verbatim, per session
+- shared long-term memory (`shared:longterm`) holds atomic curated facts, admitted
+  only through Layer 2 model distillation — either at debrief time, or when the
+  recurrence sweep nominates knowledge appearing in two or more different towns and
+  session distills the nomination through the same gate (nominate-then-distill;
+  nothing enters long-term memory undistilled)
+- the operator profile (`profile:operator`) is the always-on complement to
+  query-dependent recall: durable operator facts the mayor carries into every turn,
+  viewable and optional via `/profile [set <text>|on|off]`
+
 Important operational note:
 - `umbrella-manage bringup` starts both memory layers: `memory-core` and the
   durable `memory` service, mesh-token-authenticated, with state under

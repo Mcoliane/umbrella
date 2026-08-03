@@ -32,9 +32,25 @@ This session model treats the first-contact agent as the mayor of the town:
 python3 services/session/app.py --host 127.0.0.1 --port 8784 --catalog-url http://127.0.0.1:8786 --execution-url http://127.0.0.1:8794
 ```
 
+## Operator Profile and Conversation Memory
+
+- the mayor recalls prior town knowledge per turn (BM25 over the session's short-term
+  namespace and shared long-term memory) and carries an optional always-on operator
+  profile — durable operator facts injected into every mayor turn independent of the
+  query (`/profile` in the TUI; `GET/POST /v1/session/profile`; `{"enabled": false}`
+  keeps the text but stops injection and automatic accumulation)
+- conversation outcomes are captured to short-term town memory; durable facts reach
+  shared long-term memory only through Layer 2 distillation — either directly at
+  debrief time or via recurrence nominations from the memory service's sweep, which
+  session distills through the same gate before writing
+- `GET /v1/session/health` reports a `durableMemory` block so "no relevant memory"
+  and "memory unreachable" are distinguishable from the outside
+
 ## Endpoints
 
 - `GET /v1/session/health`
+- `GET /v1/session/profile`
+- `POST /v1/session/profile`
 - `GET /v1/shop-profiles`
 - `GET /v1/shop-profiles/{id}`
 - `POST /v1/shop-profiles`

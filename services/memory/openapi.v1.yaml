@@ -93,6 +93,16 @@ paths:
       summary: Replay promotion DLQ entries
       responses:
         '200': { description: DLQ replay report }
+  /v1/promotions/sweep:
+    post:
+      summary: Nominate town-conversation knowledge recurring across two or more towns (side-effect-free; writes nothing — session curates nominations through Layer 2 distillation before anything reaches long-term memory)
+      responses:
+        '200': { description: Nomination report (representatives, member ids, towns) }
+  /v1/promotions/mark-swept:
+    post:
+      summary: Mark nominated source nodes as processed so the next sweep skips them (called by session after distillation)
+      responses:
+        '200': { description: Mark report }
   /v1/promotions/dlq:
     get:
       summary: List promotion DLQ entries
