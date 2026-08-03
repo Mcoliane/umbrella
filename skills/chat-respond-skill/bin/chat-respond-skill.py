@@ -161,13 +161,25 @@ def _provider_response(inputs: dict) -> dict | None:
         "systemPrompt": str(inputs.get("systemPrompt", "")).strip(),
         "instructions": str(inputs.get("instructions", "")).strip(),
         "environmentSummary": str(inputs.get("environmentSummary", "")).strip(),
+        # Session computes these (durable-memory recall and a stored full report)
+        # and the broker is their only consumer. This dict is a closed literal, so
+        # omitting them silently severed the entire recall path: memory was written
+        # and never read back into a prompt, and "ask for the rest and I'll pull it
+        # up" resolved the artifact off disk and then discarded it here.
+        "recalledMemory": str(inputs.get("recalledMemory", "")).strip(),
+        "retrievedArtifact": str(inputs.get("retrievedArtifact", "")).strip(),
         "model": str(override.get("model") or inputs.get("model", "")).strip(),
         "temperature": inputs.get("temperature"),
         "maxTokens": inputs.get("maxTokens"),
     }
     try:
         response = call_model_broker(ROOT, "/v1/chat/respond", broker_request, timeout_sec=120.0)
-    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, json.JSONDecodeError) as exc:
+    # OSError covers socket.timeout, which a 120s read timeout raises and which is
+    # NOT a URLError — it used to escape as an uncaught traceback, killing the turn
+    # with empty stdout so the operator saw only "mayor conversation action failed".
+    # services/model_broker/providers/openai_compatible.py catches OSError for the
+    # same reason one layer down.
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError, json.JSONDecodeError) as exc:
         if broker_enabled(broker):
             return {
                 "ok": True,
