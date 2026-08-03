@@ -58,7 +58,6 @@ class UmbrellaTui:
             {"name": "start", "args": "[full|core]", "desc": "Start the service stack"},
             {"name": "stop", "args": "", "desc": "Stop the service stack"},
             {"name": "abort", "args": "", "desc": "Abort the current in-flight run (kills the running shop; stops a loop)"},
-            {"name": "loop", "args": "<goal>", "desc": "Bounded, verifier-gated autonomous loop toward a goal (opt-in; /abort to stop)"},
             {"name": "quit", "args": "", "desc": "Exit the TUI"},
         ]
 
@@ -835,26 +834,18 @@ class UmbrellaTui:
             self.refresh_session()
             return
         if name == "loop":
-            sid = self.state.selected_session_id
-            if not sid:
-                self.add_local_event("error", "No town open — open a town before starting a loop.")
-                return
-            goal = " ".join(args).strip()
-            if not goal:
-                self.add_local_event("system", "Usage: /loop <goal> — e.g. /loop build a CLI todo tool with add/list/done and tests. It runs one verifiable step at a time and pauses for you when a step isn't verified, the goal's met, or the budget's hit. /abort stops it.")
-                return
-            try:
-                out = self.client.start_loop(session_id=sid, goal=goal)
-                if isinstance(out, dict) and out.get("ok"):
-                    self.state.status = f"Loop running (up to {out.get('maxLegs', '')} legs) — /abort to stop."
-                else:
-                    msg = ((out or {}).get("error") or {}).get("message", "could not start loop") if isinstance(out, dict) else "could not start loop"
-                    self.add_local_event("error", f"Loop: {msg}")
-                    self.state.status = "Loop not started"
-            except Exception as ex:  # noqa: BLE001
-                self.state.status = f"Loop failed: {type(ex).__name__}"
-                self.add_local_event("error", self.state.status)
-            self.refresh_session()
+            # The loop backend does not exist: services/tui/client.py has no
+            # start_loop and services/session/app.py exposes no loop route, so the
+            # old body could only ever report "Loop failed: AttributeError". It has
+            # been dropped from the command palette rather than advertised, and says
+            # so plainly if someone types it anyway. The delegation renderer already
+            # understands loop/loopReason metadata, so the display side is ready for
+            # whenever the server side is built.
+            self.add_local_event(
+                "system",
+                "/loop is not implemented yet — the session service has no loop endpoint. "
+                "Delegate a goal to a shop instead, and use /abort to stop an in-flight run.",
+            )
             return
         if name in {"quit", "exit"}:
             raise SystemExit(0)
@@ -1045,10 +1036,18 @@ class UmbrellaTui:
             else:
                 bubble(role, self._c(3), content, self._c(3))
 
-        # Errors from local events, shown at the end (most recent), in red.
-        for ev in self.state.local_transcript[-4:]:
-            if str(ev.get("role", "")).lower() == "error":
-                bubble("⚠ error", self._c(4, curses.A_BOLD), str(ev.get("content", "")), self._c(4))
+        # Local events, shown at the end (most recent). Both roles render: `system`
+        # is how /help, /status, /shops, /workers, /model and the other client-side
+        # commands answer, and filtering to `error` here meant every one of them
+        # produced no visible output at all. The window is also wider than four so a
+        # command's reply is not evicted by the next few events before it is read.
+        for ev in self.state.local_transcript[-6:]:
+            role_name = str(ev.get("role", "")).lower()
+            content = str(ev.get("content", ""))
+            if role_name == "error":
+                bubble("⚠ error", self._c(4, curses.A_BOLD), content, self._c(4))
+            elif role_name == "system":
+                bubble("· umbrella", self._c(5, curses.A_BOLD), content, self._c(5))
 
         # Optimistic echo of the just-sent message + a live thinking line.
         if self.state.pending_request:
