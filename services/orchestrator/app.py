@@ -721,6 +721,39 @@ class OrchestratorEngine:
                             self._write_run_state(run_dir, run)
                             break
 
+                        # An APPROVED record is not authorization on its own: the
+                        # approval service stamps the runId/stepId it was requested
+                        # for, and until this check existed nothing compared them.
+                        # Because approvalKey is attacker-choosable from the plan
+                        # (`spec.get('approvalKey')` above), a plan could name a key
+                        # some earlier run had already had approved and inherit that
+                        # decision — one approval became a transferable grant to
+                        # execute a different step of a different plan.
+                        approval_run_id = str((approval or {}).get('runId', '')).strip()
+                        approval_step_id = str((approval or {}).get('stepId', '')).strip()
+                        if approval_run_id != run_id or approval_step_id != sid:
+                            row['status'] = 'BLOCKED'
+                            row['endedAt'] = now_iso()
+                            row['result'] = {
+                                'approval': approval or {},
+                                'reason': 'approval_binding_mismatch',
+                                'expected': {'runId': run_id, 'stepId': sid},
+                                'granted': {'runId': approval_run_id, 'stepId': approval_step_id},
+                            }
+                            step_states[sid] = 'BLOCKED'
+                            run['state'] = 'BLOCKED'
+                            run['terminalReason'] = 'approval_required'
+                            run['approvalKey'] = approval_key
+                            run['blockedStepId'] = sid
+                            run['failureCategory'] = 'approval'
+                            run['failureSource'] = 'approval'
+                            run['failureMessage'] = (
+                                f'approval was granted for runId={approval_run_id or "?"} '
+                                f'stepId={approval_step_id or "?"}, not for this step'
+                            )
+                            self._write_run_state(run_dir, run)
+                            break
+
                     # Runtime resolution is owned by the execution service
                     # (single resolver); the orchestrator no longer consults
                     # the router per step. The router remains an advisory /

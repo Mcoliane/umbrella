@@ -8,6 +8,7 @@ TESTS=(
   "$ROOT/tests/contract/test-approval-authority-runner.sh"
   "$ROOT/tests/contract/test-approval-resume-idempotency.sh"
   "$ROOT/tests/contract/test-approval-run-status.sh"
+  "$ROOT/tests/contract/test-approval-binding.sh"
   "$ROOT/tests/contract/test-run-transition-guard.sh"
   "$ROOT/tests/contract/test-run-plan-validation.sh"
   "$ROOT/tests/contract/test-identifier-validation.sh"
