@@ -1161,23 +1161,61 @@ class SessionEngine:
         except Exception as ex:  # noqa: BLE001
             self._note_memory_failure('profile:merge', f'{type(ex).__name__}: {ex}')
 
-    # Opportunistic promotion sweep: cross-town recurrence scanning is the memory
-    # service's job; session just pokes it occasionally so it needs no cron of its own.
+    # Opportunistic promotion pipeline. The memory service only NOMINATES recurring
+    # cross-town knowledge (it has no model access by design); the curation that
+    # guards shared long-term memory happens here, through the SAME Layer 2 distiller
+    # and Layer 1 gate as conversation facts — nothing enters long-term memory
+    # undistilled. Sources are marked swept only after they are processed, so a
+    # failed run just re-nominates next interval.
     _SWEEP_MIN_INTERVAL_SEC = 600
 
     def _maybe_sweep(self, base: str) -> None:
-        """Trigger a background promotion sweep at most once per interval. Runs in a
-        daemon thread so the conversation turn never waits on it."""
+        """Run the nominate->distill->mark pipeline at most once per interval, in a
+        daemon thread so the conversation turn never waits on it. Curation needs the
+        model, so without an enabled provider nominations simply wait."""
         now = time.monotonic()
         if now - getattr(self, '_last_sweep_monotonic', -self._SWEEP_MIN_INTERVAL_SEC) < self._SWEEP_MIN_INTERVAL_SEC:
+            return
+        try:
+            if not provider_enabled(load_model_provider(self.root)):
+                return
+        except Exception:  # noqa: BLE001
             return
         self._last_sweep_monotonic = now
 
         def _run() -> None:
             try:
-                self._post_json(base, '/v1/promotions/sweep', {'maxPromotions': 5}, timeout=30)
+                out = self._post_json(base, '/v1/promotions/sweep', {'maxNominations': 5}, timeout=30)
             except Exception as ex:  # noqa: BLE001
-                self._note_memory_failure('sweep', f'{type(ex).__name__}: {ex}')
+                self._note_memory_failure('sweep:nominate', f'{type(ex).__name__}: {ex}')
+                return
+            for nom in (out.get('nominations') or []) if isinstance(out, dict) else []:
+                if not isinstance(nom, dict):
+                    continue
+                rep = nom.get('representative') if isinstance(nom.get('representative'), dict) else {}
+                content = str(rep.get('content', '')).strip()
+                member_ids = [str(i).strip() for i in (nom.get('memberIds') or []) if str(i).strip()]
+                towns = [str(t).strip() for t in (nom.get('towns') or []) if str(t).strip()]
+                if not content or not member_ids:
+                    continue
+                try:
+                    # Layer 2 curation: _model_extract_facts returns [] both when the
+                    # model judges nothing durable and on failure. Either way the
+                    # sources are marked: if the knowledge truly matters it will recur
+                    # in future towns as fresh nodes and re-nominate itself.
+                    facts = self._model_extract_facts(content, hint='recurred across towns: ' + ', '.join(towns))
+                    fact_ids = self._promote_facts_to_longterm(base, facts, ['auto-promoted']) if facts else []
+                    for fact_id in fact_ids:
+                        for source_id in member_ids:
+                            try:
+                                self._post_json(base, '/v1/edges/upsert',
+                                                {'from_node_id': fact_id, 'to_node_id': source_id,
+                                                 'relation': 'promoted-from'}, timeout=8)
+                            except Exception:  # noqa: BLE001
+                                pass
+                    self._post_json(base, '/v1/promotions/mark-swept', {'nodeIds': member_ids}, timeout=8)
+                except Exception as ex:  # noqa: BLE001
+                    self._note_memory_failure('sweep:distill', f'{type(ex).__name__}: {ex}')
 
         threading.Thread(target=_run, name='memory-promotion-sweep', daemon=True).start()
 
@@ -1216,15 +1254,18 @@ class SessionEngine:
 
     def _write_memory_node(self, base: str, ns: str, *, owner_type: str, owner_id: str,
                            visibility: str, title: str, content: str, tags: list, source: str,
-                           kind: str = 'delegation-outcome') -> None:
-        """Ensure a namespace exists and write one node into it. Raises on failure;
-        callers wrap this best-effort so the conversation flow is never blocked."""
+                           kind: str = 'delegation-outcome') -> str:
+        """Ensure a namespace exists and write one node into it, returning the new
+        node's id. Raises on failure; callers wrap this best-effort so the
+        conversation flow is never blocked."""
+        node_id = f'mem-{uuid.uuid4().hex[:16]}'
         self._post_json(base, '/v1/namespaces',
                         {'id': ns, 'owner_type': owner_type, 'owner_id': owner_id, 'visibility': visibility}, timeout=8)
         self._post_json(base, '/v1/nodes', {
-            'node_id': f'mem-{uuid.uuid4().hex[:16]}', 'namespace': ns, 'kind': kind,
+            'node_id': node_id, 'namespace': ns, 'kind': kind,
             'title': title, 'content': content, 'tags': tags, 'source': source,
         }, timeout=8)
+        return node_id
 
     def _capture_to_memory(self, session_id: str, *, title: str, content: str, tags: list | None = None,
                            longterm_facts: list | None = None) -> None:
@@ -1426,11 +1467,13 @@ class SessionEngine:
         facts = self._model_extract_facts(text, ', '.join(tags) if tags else '')
         self._promote_facts_to_longterm(base, facts, tags)
 
-    def _promote_facts_to_longterm(self, base: str, facts: list, tags: list) -> None:
+    def _promote_facts_to_longterm(self, base: str, facts: list, tags: list) -> list:
         """Layer 1 gate + write for already-distilled facts (objects {fact, aka} or plain
         strings): length floor, dedup on the clean fact, then write. The fact is stored as
         content (clean display, clean dedup); its aka phrasings ride along as tags, which
-        search tokenizes — so a paraphrased query can still find the fact. Best-effort."""
+        search tokenizes — so a paraphrased query can still find the fact. Best-effort.
+        Returns the node ids written, for callers that link provenance edges."""
+        written: list[str] = []
         for item in self._normalize_facts(facts):
             fact = item['fact']
             if len(fact) < self._LONGTERM_MIN_LEN:
@@ -1440,12 +1483,13 @@ class SessionEngine:
             if self._longterm_duplicate(base, fact):
                 continue
             try:
-                self._write_memory_node(
+                written.append(self._write_memory_node(
                     base, self.SHARED_MEMORY_NS, owner_type='platform', owner_id='shared',
                     visibility='shared', title=fact[:200], content=fact[:16000],
-                    tags=(tags or []) + ['longterm'] + item['aka'], source='longterm-curated')
+                    tags=(tags or []) + ['longterm'] + item['aka'], source='longterm-curated'))
             except Exception:  # noqa: BLE001
                 pass
+        return written
 
     def _model_extract_facts(self, content: str, hint: str = '') -> list:
         """Layer 2: ask the model to distill an outcome into durable, town-independent

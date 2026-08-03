@@ -1,19 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Automatic promotion: knowledge that recurs across DIFFERENT towns is
-# town-independent by demonstration, and the sweep promotes it to shared
-# long-term memory without any model call or explicit promote request.
+# Automatic promotion is nominate-then-distill, honoring the two-tier design:
+# the memory service NOMINATES knowledge that recurs across DIFFERENT towns
+# (town-independence by demonstration), and session curates nominations through
+# the same Layer 2 distiller as conversation facts before anything reaches
+# shared long-term memory. The memory service never writes long-term nodes from
+# a sweep — it has no model access by design, and nothing enters the shared
+# store undistilled.
 #
 # Asserted here, against a memory service running solo:
-#   A. A fact captured in two different towns is promoted by one sweep call:
-#      it lands in shared:longterm, searchable, linked and tagged.
-#   B. A one-town-only note is NOT promoted — recurrence within a single town
+#   A. A fact captured in two different towns is NOMINATED: returned with its
+#      member ids and towns — and NOT written to shared:longterm by the sweep.
+#   B. A one-town-only note is not nominated — recurrence within a single town
 #      proves nothing about town-independence.
-#   C. The sweep is idempotent: a second call promotes nothing new.
-#   D. Content already in shared:longterm is deduped, not written twice.
-#   E. Session triggers the sweep opportunistically after capture (seam check),
-#      so promotion needs no cron and no operator action.
+#   C. Nomination is side-effect-free: an unmarked cluster re-nominates on the
+#      next sweep, so a failed distillation run loses nothing.
+#   D. mark-swept retires the sources: they are tagged, and the next sweep
+#      returns no nominations.
+#   E. Session runs the curation leg (seam): provider-gated, distills through
+#      _model_extract_facts, writes via _promote_facts_to_longterm, links
+#      promoted-from edges, marks sources only after processing.
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 source "$ROOT/tests/contract/helpers/runtime-root.sh"
@@ -79,8 +86,9 @@ def call(path, payload=None):
                                  headers={'Content-Type': 'application/json'})
     return json.loads(urllib.request.urlopen(req, timeout=15).read())
 
-for ns in ('town:alpha', 'town:beta', 'town:gamma'):
-    call('/v1/namespaces', {'id': ns, 'owner_type': 'town', 'owner_id': ns, 'visibility': 'private'})
+for ns in ('town:alpha', 'town:beta', 'town:gamma', 'shared:longterm'):
+    owner = 'platform' if ns.startswith('shared') else 'town'
+    call('/v1/namespaces', {'id': ns, 'owner_type': owner, 'owner_id': ns, 'visibility': 'private'})
 
 fact = ('The deploy pipeline publishes the umbrella app with rsync into the local prefix '
         'directory and preserves operator configuration')
@@ -91,52 +99,52 @@ call('/v1/nodes', {'node_id': 'n-junk', 'namespace': 'town:gamma', 'kind': 'dele
                    'title': 'scratch', 'content': 'temporary one-off note about cloudy weather this afternoon only',
                    'tags': []})
 
-# A. one sweep promotes the cross-town fact
+# A. the cross-town fact is nominated, and the sweep writes NOTHING itself
 out = call('/v1/promotions/sweep', {'minTowns': 2})
 assert out.get('ok') is True, out
-assert out.get('promotedCount') == 1, out
-assert sorted(out['promoted'][0]['towns']) == ['town:alpha', 'town:beta'], out
+assert out.get('nominationCount') == 1, out
+nom = out['nominations'][0]
+assert sorted(nom['towns']) == ['town:alpha', 'town:beta'], nom
+assert sorted(nom['memberIds']) == ['n-fact-0', 'n-fact-1'], nom
+assert 'rsync' in nom['representative']['content'], nom
+longterm = call('/v1/nodes/search', {'namespace': 'shared:longterm', 'query': '', 'k': 50})['results']
+assert longterm == [], f'sweep must not write long-term nodes itself: {longterm}'
 
-hits = call('/v1/nodes/search', {'namespace': 'shared:longterm', 'query': 'deploy pipeline rsync prefix', 'k': 5})['results']
-assert hits and 'rsync' in str(hits[0]['node']['content']), hits
-promoted_node = hits[0]['node']
-assert 'auto-promoted' in promoted_node['tags'] and 'longterm' in promoted_node['tags'], promoted_node['tags']
-assert promoted_node['source'] == 'auto-promotion-sweep', promoted_node['source']
+# B. the single-town note was not nominated
+assert all('weather' not in str(n['representative']['content']) for n in out['nominations']), out
 
-# B. the single-town note stayed out
-listing = call('/v1/nodes/search', {'namespace': 'shared:longterm', 'query': '', 'k': 50})['results']
-assert all('weather' not in str(r['node']['content']) for r in listing), listing
+# C. nomination is side-effect-free: unmarked clusters re-nominate
+again = call('/v1/promotions/sweep', {'minTowns': 2})
+assert again.get('nominationCount') == 1, 'unmarked nomination must survive for retry'
+assert sorted(again['nominations'][0]['memberIds']) == ['n-fact-0', 'n-fact-1'], again
 
-# sources are tagged so the next sweep skips them
+# D. mark-swept retires the sources
+marked = call('/v1/promotions/mark-swept', {'nodeIds': nom['memberIds']})
+assert marked.get('ok') is True and marked.get('marked') == 2, marked
+done = call('/v1/promotions/sweep', {'minTowns': 2})
+assert done.get('nominationCount') == 0, done
 alpha = call('/v1/nodes/search', {'namespace': 'town:alpha', 'query': '', 'k': 10})['results']
 assert any('swept-promoted' in r['node']['tags'] for r in alpha), alpha
-
-# C. idempotent
-again = call('/v1/promotions/sweep', {'minTowns': 2})
-assert again.get('promotedCount') == 0, again
-
-# D. content already durable is deduped, not duplicated: same fact appears in two
-# NEW towns, but shared:longterm already holds it from step A.
-for ns in ('town:delta', 'town:epsilon'):
-    call('/v1/namespaces', {'id': ns, 'owner_type': 'town', 'owner_id': ns, 'visibility': 'private'})
-    call('/v1/nodes', {'node_id': f'n-dup-{ns}', 'namespace': ns, 'kind': 'delegation-outcome',
-                       'title': 'deploy question', 'content': fact, 'tags': []})
-dedup = call('/v1/promotions/sweep', {'minTowns': 2})
-assert dedup.get('promotedCount') == 0 and dedup.get('dedupedClusters', 0) >= 1, dedup
-listing = call('/v1/nodes/search', {'namespace': 'shared:longterm', 'query': '', 'k': 50})['results']
-assert sum(1 for r in listing if 'rsync' in str(r['node']['content'])) == 1, 'fact written twice'
-print('promotion sweep PASS')
+print('promotion nomination PASS')
 PY
 
-# E. seam check: session pokes the sweep after capture, so no cron is needed.
+# E. seam check: session owns the curation leg of the pipeline.
 python3 - "$ROOT" <<'PY'
 import sys
 from pathlib import Path
 
 src = (Path(sys.argv[1]) / 'services' / 'session' / 'app.py').read_text(encoding='utf-8')
-assert 'self._maybe_sweep(base)' in src, 'session no longer triggers the promotion sweep after capture'
-assert '/v1/promotions/sweep' in src, 'session sweep trigger no longer calls the sweep endpoint'
-print('sweep trigger seam PASS')
+assert 'self._maybe_sweep(base)' in src, 'session no longer triggers the promotion pipeline after capture'
+assert '/v1/promotions/sweep' in src, 'session no longer requests nominations'
+assert "hint='recurred across towns: '" in src, \
+    'nominations no longer pass through Layer 2 distillation (_model_extract_facts)'
+assert "self._promote_facts_to_longterm(base, facts, ['auto-promoted'])" in src, \
+    'distilled nominations no longer written through the Layer 1 gate'
+assert '/v1/promotions/mark-swept' in src, 'session no longer marks processed sources'
+assert "'relation': 'promoted-from'" in src, 'provenance edges no longer linked'
+assert 'if not provider_enabled(load_model_provider(self.root))' in src, \
+    'sweep no longer waits for a model provider (curation would be skipped)'
+print('nominate-then-distill seam PASS')
 PY
 
 echo "PASS test-memory-promotion-sweep"

@@ -136,6 +136,9 @@ def handler_factory(store: MemoryStore, token: str, root: Path):
                 if path == '/v1/promotions/sweep':
                     out = store.sweep_promotions(body, actor=actor, request_id=req_id)
                     return json_response(self, 200, out)
+                if path == '/v1/promotions/mark-swept':
+                    out = store.mark_promotion_sources(body)
+                    return json_response(self, 200, out)
                 if path == '/v1/promotions/process-queue':
                     max_items = int(body.get('maxItems', 50))
                     out = store.process_promotion_queue(actor=actor, request_id=req_id, max_items=max_items)

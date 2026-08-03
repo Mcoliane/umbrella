@@ -649,22 +649,22 @@ class MemoryStore:
                 'dlqDepth': len(list(self.promotion_dlq_dir.glob('*.json'))),
             }
 
-    # ---- Automatic promotion sweep ------------------------------------------------
-    # Cross-session recurrence is the promotion signal: knowledge that surfaces in two
-    # or more different towns is town-independent by demonstration, not by model
-    # judgment. The sweep finds those recurrences among short-term town captures and
-    # copies one representative into the shared long-term namespace, linking it back to
-    # its sources. Everything it considers is tagged so the next sweep skips it — the
-    # sweep is idempotent and cheap enough to trigger opportunistically.
+    # ---- Automatic promotion sweep: NOMINATION ONLY --------------------------------
+    # Cross-session recurrence is the nomination signal: knowledge that surfaces in
+    # two or more different towns is town-independent by demonstration. But this
+    # service never writes long-term memory itself — the two-tier design guards the
+    # shared store behind model curation, and this service has no model access by
+    # design. The sweep RETURNS nominations; session distills them through the same
+    # Layer 2 curation as conversation facts and writes atomic facts, then calls
+    # mark-swept. Nomination is side-effect-free on purpose: marking at nomination
+    # time would lose a cluster forever if distillation failed.
     SWEEP_TAG = 'swept-promoted'
-    # Must match session's SHARED_MEMORY_NS: recall searches this namespace by name.
-    SWEEP_TARGET_NS = 'shared:longterm'
     _SWEEP_JACCARD = 0.5
 
     def sweep_promotions(self, req: dict, actor: str, request_id: str = '') -> dict:
         with self._lock:
             min_towns = max(2, int(req.get('minTowns', 2)))
-            max_promotions = max(1, int(req.get('maxPromotions', 5)))
+            max_nominations = max(1, int(req.get('maxNominations', req.get('maxPromotions', 5))))
             min_len = max(1, int(req.get('minLen', 16)))
             scan_cap = max(10, int(req.get('scanCap', 400)))
 
@@ -718,68 +718,45 @@ class MemoryStore:
             for idx in range(len(candidates)):
                 clusters.setdefault(find(idx), []).append(candidates[idx])
 
-            # Existing long-term contents, normalized the same way session's
-            # _promote_facts_to_longterm dedups, so sweep and distillation cannot
-            # write the same knowledge twice.
-            existing: set[str] = set()
-            cur = self.conn.execute('SELECT content FROM nodes WHERE namespace=? AND deleted_at IS NULL',
-                                    (self.SWEEP_TARGET_NS,))
-            for (raw_content,) in cur.fetchall():
-                try:
-                    parsed = json.loads(raw_content)
-                except Exception:  # noqa: BLE001
-                    parsed = raw_content
-                text = parsed if isinstance(parsed, str) else json.dumps(parsed, ensure_ascii=False)
-                existing.add(' '.join(text.lower().split()))
-
-            promoted: list[dict] = []
-            deduped = 0
+            nominations: list[dict] = []
             for members in clusters.values():
-                if len(promoted) >= max_promotions:
+                if len(nominations) >= max_nominations:
                     break
                 towns = {m['node']['namespace'] for m in members}
                 if len(towns) < min_towns:
                     continue
                 rep = max(members, key=lambda m: str(m['node'].get('updated_at', '')))
-                member_ids = [m['node']['node_id'] for m in members]
-                key = ' '.join(rep['text'].lower().split())
-                if key in existing:
-                    deduped += 1
-                    self._mark_swept(member_ids)
-                    continue
-                if not self.get_namespace(self.SWEEP_TARGET_NS):
-                    self.upsert_namespace({'id': self.SWEEP_TARGET_NS, 'owner_type': 'platform',
-                                           'owner_id': 'shared', 'visibility': 'shared'})
-                tags = sorted({str(t) for m in members for t in m['node']['tags'] if str(t).strip()}
-                              | {'longterm', 'auto-promoted'})
-                new_id = f'mem-{uuid.uuid4().hex[:16]}'
-                self.create_node({
-                    'node_id': new_id,
-                    'namespace': self.SWEEP_TARGET_NS,
-                    'kind': 'promoted-outcome',
-                    'title': (rep['node']['title'] or rep['text'])[:200],
-                    'content': rep['text'][:16000],
-                    'tags': tags,
-                    'source': 'auto-promotion-sweep',
-                }, actor=actor, request_id=request_id)
-                for m in members:
-                    try:
-                        self.upsert_edge({'from_node_id': new_id, 'to_node_id': m['node']['node_id'],
-                                          'relation': 'promoted-from'}, actor=actor, request_id=request_id)
-                    except Exception:  # noqa: BLE001
-                        pass
-                self._mark_swept(member_ids)
-                existing.add(key)
-                promoted.append({'node_id': new_id, 'title': (rep['node']['title'] or rep['text'])[:200],
-                                 'towns': sorted(towns)})
+                nominations.append({
+                    'representative': {
+                        'node_id': rep['node']['node_id'],
+                        'namespace': rep['node']['namespace'],
+                        'title': rep['node']['title'],
+                        'content': rep['text'][:16000],
+                    },
+                    'memberIds': [m['node']['node_id'] for m in members],
+                    'towns': sorted(towns),
+                    'tags': sorted({str(t) for m in members for t in m['node']['tags'] if str(t).strip()}),
+                })
 
             return {'ok': True, 'scanned': len(candidates), 'clusters': len(clusters),
-                    'promoted': promoted, 'promotedCount': len(promoted), 'dedupedClusters': deduped}
+                    'nominations': nominations, 'nominationCount': len(nominations)}
 
-    def _mark_swept(self, node_ids: list) -> None:
+    def mark_promotion_sources(self, req: dict) -> dict:
+        """Mark nominated source nodes as swept once session has distilled them (or the
+        distiller judged nothing durable). If the knowledge truly matters it will recur
+        in FUTURE towns as fresh nodes and re-nominate itself — marking never buries
+        anything permanently."""
+        with self._lock:
+            ids = [str(i).strip() for i in (req.get('nodeIds') or []) if str(i).strip()]
+            if not ids:
+                raise ValueError('nodeIds is required')
+            return {'ok': True, 'marked': self._mark_swept(ids)}
+
+    def _mark_swept(self, node_ids: list) -> int:
         """Tag nodes as already considered so the next sweep skips them. Direct tag
         update bumping version/etag but not updated_at — promotion bookkeeping must
-        not reorder town recency listings."""
+        not reorder town recency listings. Returns how many were newly marked."""
+        marked = 0
         for node_id in node_ids:
             obj = self.get_node(node_id)
             if not obj or self.SWEEP_TAG in obj['tags']:
@@ -788,7 +765,9 @@ class MemoryStore:
             self.conn.execute('UPDATE nodes SET tags=?, version=?, etag=? WHERE node_id=?',
                               (json.dumps(list(obj['tags']) + [self.SWEEP_TAG], ensure_ascii=False),
                                version, etag_for(version, node_id), node_id))
+            marked += 1
         self.conn.commit()
+        return marked
 
     def list_promotion_dlq(self, limit: int = 100) -> dict:
         with self._lock:
