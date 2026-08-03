@@ -249,11 +249,14 @@ except urllib.error.HTTPError as exc:
     incompatible_out = json.loads(exc.read().decode('utf-8'))
 assert 'incompatible' in (((incompatible_out.get('error') or {}).get('message')) or ''), incompatible_out
 
+# runtime: container was removed from the catalog contract. A manifest that still
+# declares it must fail closed at install time rather than register an item that
+# plugin-host can no longer dispatch.
 container_plugin_dir = root / 'tmp' / 'plugin-host-container-plugin'
 container_plugin_dir.mkdir(parents=True, exist_ok=True)
 (container_plugin_dir / 'bin').mkdir(exist_ok=True)
 container_script = container_plugin_dir / 'bin' / 'container-entry'
-container_script.write_text('#!/bin/sh\ncat >/dev/null\necho "{\\"ok\\":true,\\"source\\":\\"container\\"}"\n', encoding='utf-8')
+container_script.write_text('#!/bin/sh\ncat >/dev/null\necho "{\\"ok\\":true}"\n', encoding='utf-8')
 container_manifest = container_plugin_dir / 'manifest.json'
 container_manifest.write_text(json.dumps({
     'id': 'contract.container.plugin',
@@ -266,22 +269,8 @@ container_manifest.write_text(json.dumps({
     'defaultEnabled': True,
     'compatibility': {
         'umbrella': {'minVersion': '0.4.0'},
-        'pluginHostRuntimes': ['container'],
         'apiVersions': ['umbrella.catalog.manifest.v1'],
         'actionSchemaVersions': ['umbrella.catalog.action.v1'],
-    },
-    'container': {
-        'image': 'busybox:latest',
-        'command': ['sh', '/plugin/bin/container-entry'],
-    },
-    'executionPolicy': {
-        'envAllowlist': [],
-        'network': 'none',
-        'fs': 'scratch-only',
-        'maxRuntimeSec': 5,
-        'maxOutputBytes': 512,
-        'maxInputBytes': 1024,
-        'isolationProfile': 'container-restricted'
     },
     'actions': [{'id': 'plugin.container.echo', 'title': 'Container Echo', 'requiredCapabilities': []}],
 }, indent=2) + '\n', encoding='utf-8')
@@ -291,49 +280,27 @@ install_container_req = urllib.request.Request(
     data=json.dumps({'manifestPath': str(container_manifest)}).encode('utf-8'),
     headers={'Content-Type': 'application/json'},
 )
-with urllib.request.urlopen(install_container_req, timeout=20) as resp:
-    install_container_out = json.loads(resp.read().decode('utf-8'))
-assert install_container_out.get('item', {}).get('runtime') == 'container', install_container_out
+try:
+    with urllib.request.urlopen(install_container_req, timeout=20) as resp:
+        install_container_out = json.loads(resp.read().decode('utf-8'))
+    raise AssertionError(install_container_out)
+except urllib.error.HTTPError as exc:
+    install_container_out = json.loads(exc.read().decode('utf-8'))
+container_err = ((install_container_out.get('error') or {}).get('message')) or ''
+assert 'runtime container is no longer supported' in container_err, install_container_out
 
+# The host must state its isolation posture plainly instead of advertising a
+# container runtime it no longer has.
 with urllib.request.urlopen(plugin_host_url + '/v1/plugin-host/health', timeout=20) as resp:
     host_health = json.loads(resp.read().decode('utf-8'))
-container_runtime = host_health.get('containerRuntime')
+assert host_health.get('isolation') == 'none', host_health
+assert 'containerRuntime' not in host_health, host_health
+assert 'containerRuntimePreference' not in host_health, host_health
 
-container_req = urllib.request.Request(
-    plugin_host_url + '/v1/plugin-host/invoke',
-    method='POST',
-    data=json.dumps({
-        'actionId': 'plugin.container.echo',
-        'invocation': {
-            'runId': 'container-run',
-            'stepId': 'container-step',
-            'agentId': 'programming-agent',
-            'action': 'plugin.container.echo',
-            'inputs': {},
-            'timeouts': {'timeoutSec': 5},
-        },
-    }).encode('utf-8'),
-    headers={'Content-Type': 'application/json'},
-)
-if container_runtime == 'unavailable':
-    try:
-        with urllib.request.urlopen(container_req, timeout=20) as resp:
-            container_out = json.loads(resp.read().decode('utf-8'))
-        raise AssertionError(container_out)
-    except urllib.error.HTTPError as exc:
-        container_out = json.loads(exc.read().decode('utf-8'))
-    assert 'container runtime not available' in (((container_out.get('error') or {}).get('message')) or ''), container_out
-else:
-    with urllib.request.urlopen(container_req, timeout=20) as resp:
-        container_out = json.loads(resp.read().decode('utf-8'))
-    if container_out.get('ok') is True:
-        plugin_result = ((container_out.get('result') or {}).get('pluginResult')) or {}
-        assert plugin_result.get('source') == 'container', container_out
-        assert container_out.get('command', [None])[0] == container_runtime, container_out
-    else:
-        assert container_out.get('failureReason') == 'execution_runtime_failed', container_out
-        err_text = ((container_out.get('stderr') or '') + ' ' + ' '.join(container_out.get('command', []))).lower()
-        assert container_runtime in err_text, container_out
+# Sandbox honesty: every successful invoke carries the unenforced-isolation warning.
+warnings = env_out.get('policyWarnings') or []
+assert warnings, env_out
+assert any('isolation policy not enforced' in w for w in warnings), env_out
 print('plugin host execution PASS')
 PY
 

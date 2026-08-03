@@ -23,11 +23,17 @@ Please include:
 In scope:
 - Control-plane services under `services/` (policy, router, execution, orchestrator, approval, lifecycle, scheduler, session, catalog, plugin_host, memory, memory-core, model_broker).
 - Memory boundary enforcement (`memory.promote` / `memory.hydrate` flows).
-- Plugin-host isolation paths.
+- Plugin-host invocation gating (compatibility, trust, lifecycle, and enabled-state
+  rechecks at invoke time) and its execution controls (env allowlist, timeout,
+  input/output caps).
 - Service-mesh auth token handling.
 - Bootstrap and install flows (`install.sh`, `umbrella-manage`).
 
 Out of scope:
+- A skill exceeding its declared `executionPolicy` `fs`/`network`/`isolationProfile`.
+  Those fields are recorded, not enforced, and the service says so in every invoke
+  response — see [Sandbox Honesty](services/plugin_host/README.md#sandbox-honesty).
+  Skills run as ordinary local subprocesses under your own user by design.
 - Issues only reproducible against modified forks.
 - Findings against third-party model providers configured through the broker.
 - Denial of service requiring privileged local access.

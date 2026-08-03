@@ -45,7 +45,7 @@ Update this file after each full gate run. If only targeted verification was run
 - Policy-Governance: umbrella policy metadata + runtime agent registry split + contract policy gates
 - Plugin/Skills Runtime:
   - catalog lifecycle + bundle install/update + checksum/signature verification: `test-catalog-service.sh`
-  - plugin-host execution controls + compatibility enforcement + optional container path: `test-plugin-host-execution.sh`
+  - plugin-host execution controls + compatibility enforcement + container-runtime rejection + sandbox-honesty warnings: `test-plugin-host-execution.sh`
   - explicit action policy enforcement: `test-policy-catalog-gates.sh`
   - migrated memory skills: `test-memory-get-skill.sh`, `test-memory-search-skill.sh`, `test-memory-link-skill.sh`
 - Session Runtime:

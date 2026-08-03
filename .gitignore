@@ -1,7 +1,10 @@
 # macOS noise
 .DS_Store
-* 2
-* 2.*
+# iCloud conflict copies: syncing appends " 2", " 3", ... to the name. Numbering
+# starts at 2, so " 1" is left alone — a legitimately named "Part 1.md" should
+# not be silently ignored. No tracked file in this repo contains a space at all.
+* [2-9]
+* [2-9].*
 
 # Python
 __pycache__/

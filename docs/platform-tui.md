@@ -377,7 +377,7 @@ Can wait:
 - memory graph browser
 - full approval actions from TUI
 - package installation flows
-- container runtime diagnostics
+- surfacing plugin-host `policyWarnings` in the run/step detail view
 - durable memory graph editing
 
 ## Suggested Internal Architecture

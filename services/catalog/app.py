@@ -23,7 +23,7 @@ from services.memory.auth import check_auth
 from services.persistence import read_json, update_json
 
 
-SUPPORTED_PLUGIN_HOST_RUNTIMES = {'shell', 'python', 'container'}
+SUPPORTED_PLUGIN_HOST_RUNTIMES = {'shell', 'python'}
 SUPPORTED_ACTION_SCHEMA_VERSIONS = {'umbrella.catalog.action.v1'}
 SUPPORTED_SIGNATURE_MODES = {'permissive', 'require-checksum', 'require-signature'}
 
@@ -225,9 +225,11 @@ class CatalogEngine:
             errors.append('kind must be skill or plugin')
         runtime = str(manifest.get('runtime', '')).strip()
         if runtime == 'http':
-            errors.append('runtime http is not supported: plugin-host has no HTTP dispatch; use shell, python, or container')
+            errors.append('runtime http is not supported: plugin-host has no HTTP dispatch; use shell or python')
+        elif runtime == 'container':
+            errors.append('runtime container is no longer supported: plugin-host has no container dispatch; use shell or python')
         elif runtime not in SUPPORTED_PLUGIN_HOST_RUNTIMES:
-            errors.append('runtime must be shell, python, or container')
+            errors.append('runtime must be shell or python')
         actions = manifest.get('actions')
         if not isinstance(actions, list) or not actions:
             errors.append('actions must be a non-empty list')
@@ -504,7 +506,6 @@ class CatalogEngine:
             'sessionHooks': manifest.get('sessionHooks') if isinstance(manifest.get('sessionHooks'), dict) else {},
             'isolationMode': str(manifest.get('isolationMode', 'process')).strip() or 'process',
             'executionPolicy': manifest.get('executionPolicy') if isinstance(manifest.get('executionPolicy'), dict) else {},
-            'container': manifest.get('container') if isinstance(manifest.get('container'), dict) else {},
             'install': {
                 'lifecycleState': lifecycle_state,
                 'managed': source == 'managed',

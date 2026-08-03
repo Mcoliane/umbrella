@@ -334,7 +334,9 @@ Service docs:
 The project is in strong local-dev shape, but still has normal platform maturity gaps:
 - default service supervision is script-managed, not OS-native
 - dynamic-action approval UX is less mature than the core run approval path
-- stronger isolation is still host-dependent
+- skills are not sandboxed: they run as ordinary local subprocesses under your
+  own user, and the isolation a manifest declares is recorded but not enforced
+  (see [Sandbox Honesty](services/plugin_host/README.md#sandbox-honesty))
 
 See [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) for the current list.
 

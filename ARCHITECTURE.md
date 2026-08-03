@@ -298,7 +298,16 @@ enforced (a warning is emitted instead). Combined with `auto` + code execution,
 that is powerful but sharp: anything reaching the mayor's chat can cause real
 code to run on the host. This is acceptable for a single trusted operator on
 their own machine; it is the thing to know before pointing the town at untrusted
-input. Real container isolation is supported by plugin-host but not the default.
+input. There is no contained alternative in the tree today: plugin-host once had
+an optional `docker`/`podman` path and it was removed. It was removed because
+nothing shipped used it, its default entrypoint had never worked, and it leaked
+allowlisted env values into argv — not because containers are unworkable here.
+`docker` and `podman` run fine on both supported platforms, and re-adding the
+path is a small change if the need arises. What is genuinely off the table is
+*writing* a container runtime in-tree: namespaces and cgroups are Linux kernel
+features with no standard-library binding and no macOS equivalent. The standing
+choice is to depend on neither, which makes trust, not confinement, the boundary
+here.
 
 ---
 
@@ -347,10 +356,12 @@ migrations.
 - **Async delegation.** Conversation does not block on long work; results post
   back to the transcript. The trade-off is that interrupted background work does
   not yet self-reconcile.
-- **Honor-system isolation.** Real sandboxing was deferred in favor of the
-  approval gate as the primary control — a conscious choice for a personal,
-  single-user tool, and the main thing to revisit before multi-user or
-  untrusted-input use.
+- **Honor-system isolation.** Real sandboxing was declined, not deferred, in
+  favor of the approval gate as the primary control — a conscious choice for a
+  personal, single-user tool, and the main thing to revisit before multi-user or
+  untrusted-input use. Note the tension worth revisiting first: the approval gate
+  can only be the primary control if it actually fires, and the default autonomy
+  mode is `auto`.
 
 ---
 
@@ -375,7 +386,8 @@ docs/                # user/operator + architecture docs
 
 The honest current edges (see also [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md)):
 
-- Sandboxing is host-dependent (honor-system for shell/python runtimes).
+- There is no sandboxing. Skills run as ordinary local subprocesses under the
+  service user; declared `fs`/`network` policy is recorded, never enforced.
 - Interrupted async delegations do not self-reconcile yet.
 - Durable-memory search is token-level BM25 ranking (multi-namespace), not
   embedding/semantic (an embeddings upgrade is roadmap).

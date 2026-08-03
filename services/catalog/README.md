@@ -4,9 +4,9 @@ HTTP service for skill/plugin discovery, validation, managed install/update flow
 
 This is the first phase of a plugin/skills runtime:
 - scan local `skills/` and `plugins/` trees for manifests
-- validate manifests against the catalog contract (`shell`, `python`, and
-  `container` runtimes; `http` is rejected because plugin-host has no HTTP
-  dispatch)
+- validate manifests against the catalog contract (`shell` and `python`
+  runtimes; `http` and `container` are rejected because plugin-host has no
+  dispatch for either)
 - maintain local and managed install state with explicit lifecycle rows
 - install bundle artifacts into `control-plane/extensions/`
 - verify bundle checksums (every installed file must be listed in
