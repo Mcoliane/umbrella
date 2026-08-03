@@ -58,7 +58,7 @@ PY
 wait_health "$CATALOG_URL/v1/catalog/health"
 
 ROOT="$ROOT" CATALOG_URL="$CATALOG_URL" TRUSTED_KEY_DIR="$TRUSTED_KEY_DIR" python3 - <<'PY'
-import hashlib, json, os, subprocess, urllib.error, urllib.request, zipfile
+import hashlib, json, os, shutil, subprocess, urllib.error, urllib.request, zipfile
 from pathlib import Path
 
 root = Path(os.environ['ROOT'])
@@ -344,6 +344,53 @@ try:
 except urllib.error.HTTPError as exc:
     invalid_sig_out = json.loads(exc.read().decode('utf-8'))
 assert 'verification failure' in ((((invalid_sig_out.get('error') or {}).get('message')) or '').lower()), invalid_sig_out
+
+# keyId comes out of the bundle's own SIGNATURE.json and is interpolated into a
+# path under trustedKeyDir. If it is not constrained to a bare name, a bundle can
+# nominate a signing key it shipped itself and defeat require-signature at its
+# anchor. Both traversal and absolute forms must be rejected.
+for hostile_key_id in ('../../../../tmp/attacker-key', '/tmp/attacker-key'):
+    traversal_dir = root / 'tmp' / 'catalog-bundle-plugin-keyid-traversal'
+    shutil.rmtree(traversal_dir, ignore_errors=True)
+    traversal_dir.mkdir(parents=True, exist_ok=True)
+    (traversal_dir / 'bin').mkdir(exist_ok=True)
+    traversal_script = traversal_dir / 'bin' / 'bundle-echo'
+    traversal_script.write_text('#!/usr/bin/env bash\nset -euo pipefail\necho "{\\"ok\\":true}"\n', encoding='utf-8')
+    traversal_manifest = traversal_dir / 'manifest.json'
+    traversal_manifest.write_text(updated_manifest.read_text(encoding='utf-8').replace('1.1.0', '1.4.0'), encoding='utf-8')
+    (traversal_dir / 'CHECKSUMS.json').write_text(json.dumps({
+        'files': {
+            'manifest.json': hashlib.sha256(traversal_manifest.read_bytes()).hexdigest(),
+            'bin/bundle-echo': hashlib.sha256(traversal_script.read_bytes()).hexdigest(),
+        }
+    }, indent=2) + '\n', encoding='utf-8')
+    (traversal_dir / 'SIGNATURE.json').write_text(json.dumps({
+        'keyId': hostile_key_id,
+        'algorithm': 'sha256-rsa',
+        'signedFile': 'CHECKSUMS.json',
+    }, indent=2) + '\n', encoding='utf-8')
+    (traversal_dir / 'SIGNATURE').write_bytes(b'irrelevant-signature')
+    traversal_zip = root / 'tmp' / 'catalog-bundle-plugin-keyid-traversal.zip'
+    with zipfile.ZipFile(traversal_zip, 'w') as archive:
+        archive.write(traversal_manifest, 'manifest.json')
+        archive.write(traversal_script, 'bin/bundle-echo')
+        archive.write(traversal_dir / 'CHECKSUMS.json', 'CHECKSUMS.json')
+        archive.write(traversal_dir / 'SIGNATURE.json', 'SIGNATURE.json')
+        archive.write(traversal_dir / 'SIGNATURE', 'SIGNATURE')
+    traversal_req = urllib.request.Request(
+        catalog_url + '/v1/catalog/install-bundle',
+        method='POST',
+        data=json.dumps({'bundlePath': str(traversal_zip)}).encode('utf-8'),
+        headers={'Content-Type': 'application/json'},
+    )
+    try:
+        with urllib.request.urlopen(traversal_req, timeout=20) as resp:
+            traversal_out = json.loads(resp.read().decode('utf-8'))
+        raise AssertionError(f'hostile keyId {hostile_key_id} was accepted: {traversal_out}')
+    except urllib.error.HTTPError as exc:
+        traversal_out = json.loads(exc.read().decode('utf-8'))
+    traversal_msg = (((traversal_out.get('error') or {}).get('message')) or '')
+    assert 'keyId must be a bare name' in traversal_msg, (hostile_key_id, traversal_out)
 
 uninstall_req = urllib.request.Request(
     catalog_url + '/v1/catalog/uninstall',

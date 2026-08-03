@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import shutil
 import sys
@@ -373,6 +374,16 @@ class CatalogEngine:
         key_id = str(payload.get('keyId', '')).strip()
         if not key_id:
             raise ValueError('SIGNATURE.json must contain keyId')
+        # keyId is attacker-controlled — it comes out of the bundle's own
+        # SIGNATURE.json — and is interpolated into a filesystem path below. It must
+        # therefore be a bare name. Without this, a bundle shipping
+        # keyId '../../../../Users/you/Downloads/attacker' resolves a key outside
+        # trustedKeyDir and nominates its own signing key, defeating
+        # require-signature at its anchor. signedFile immediately below is already
+        # constrained by safe_relpath and an install-root containment check; keyId
+        # was the one path in this function that was not.
+        if key_id in {'.', '..'} or not re.fullmatch(r'[A-Za-z0-9._-]+', key_id):
+            raise ValueError(f'SIGNATURE.json keyId must be a bare name (no path separators): {key_id}')
         algorithm = str(payload.get('algorithm', 'sha256-rsa')).strip() or 'sha256-rsa'
         if algorithm != 'sha256-rsa':
             raise ValueError('SIGNATURE.json algorithm must be sha256-rsa')
