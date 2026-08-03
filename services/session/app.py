@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import threading
@@ -20,7 +21,7 @@ from services.environment import survey_environment
 from services.id_utils import validate_identifier
 from services.memory.auth import check_auth
 from services.persistence import atomic_write_json, file_lock, update_json
-from services.runtime_model import call_model_broker, discover_broker_url, load_model_broker, load_model_provider, mask_secret, provider_chat_url, provider_enabled, provider_headers, save_model_provider
+from services.runtime_model import call_model_broker, discover_broker_url, load_model_broker, load_model_provider, mask_secret, platform_manifest_path, provider_chat_url, provider_enabled, provider_headers, save_model_provider
 
 LEGACY_ACTION_ALIASES = {
     'memory.get': 'skill.memory.get',
@@ -952,19 +953,105 @@ class SessionEngine:
     # blip and never promoted to long-term. Kept low so short atomic facts survive.
     _LONGTERM_MIN_LEN = 16
 
-    def _memory_base_url(self) -> str:
-        """Resolve the durable memory service URL from the platform manifest (dynamic port)."""
-        cached = getattr(self, '_memory_url_cache', None)
-        if cached is not None:
-            return cached
-        url = ''
-        try:
-            manifest = json.loads((self.root / 'control-plane' / 'runtime' / 'platform-manifest.json').read_text(encoding='utf-8'))
+    def _note_memory_failure(self, op: str, detail: str) -> None:
+        """Record a durable-memory failure so it is observable instead of silent.
+
+        Counters are diagnostics, not accounting: increments are not locked, so a
+        concurrent turn can lose one. That is an acceptable trade for not adding a lock
+        to the conversation hot path — the signal that matters is zero vs non-zero.
+        """
+        failures = getattr(self, '_memory_failures', None)
+        if failures is None:
+            failures = {}
+            self._memory_failures = failures
+        failures[op] = failures.get(op, 0) + 1
+        self._memory_last_error = f'{op}: {detail}'[:300]
+
+    def _memory_manifest_urls(self) -> list:
+        """Candidate memory URLs from whichever launcher wrote a manifest.
+
+        manage-platform-stack writes platform-manifest.json; manage-service-mesh writes
+        service-manifest.json. Both use the same {"services": {<name>: {"url": ...}}}
+        shape and both spawn the memory service, but session read only the first — so a
+        mesh brought up by the other launcher had durable memory silently disabled.
+        platform_manifest_path() is used rather than a hand-built path because it honours
+        UMBRELLA_RUNTIME_ROOT, which the launchers respect and this method previously did
+        not: with that variable set, the manifest was written somewhere session never looked.
+        """
+        urls = []
+        primary = platform_manifest_path(self.root)
+        for path in (primary, primary.parent / 'service-manifest.json'):
+            try:
+                manifest = json.loads(path.read_text(encoding='utf-8'))
+            except Exception:  # noqa: BLE001
+                continue
             url = str(((manifest.get('services') or {}).get('memory') or {}).get('url', '')).strip()
-        except Exception:  # noqa: BLE001
-            url = ''
-        self._memory_url_cache = url
-        return url
+            if url:
+                urls.append(url.rstrip('/'))
+        return urls
+
+    def _memory_base_url(self) -> str:
+        """Resolve the durable memory service URL (dynamic port).
+
+        Only a SUCCESSFUL resolution is cached. The previous implementation cached the
+        empty string as well — `'' is not None` — so one lookup against a manifest with no
+        memory entry disabled durable memory for the whole process lifetime, and no later
+        bringup could recover it without a restart. Combined with the silent guards in
+        _capture_to_memory and _recall_from_memory, the result was a system that stored
+        nothing, recalled nothing, and reported nothing.
+        """
+        cached = getattr(self, '_memory_url_cache', '')
+        if cached:
+            return cached
+        override = os.environ.get('UMBRELLA_MEMORY_URL', '').strip().rstrip('/')
+        url = override or next(iter(self._memory_manifest_urls()), '')
+        if url:
+            self._memory_url_cache = url
+            self._memory_unavailable_logged = False
+            return url
+        if not getattr(self, '_memory_unavailable_logged', False):
+            self._memory_unavailable_logged = True
+            print(json.dumps({
+                'level': 'warn',
+                'service': 'session',
+                'event': 'durable_memory_unavailable',
+                'detail': 'no memory service URL found; conversation capture and recall are disabled',
+                'manifest': str(platform_manifest_path(self.root)),
+                'hint': 'bring the stack up with scripts/control-plane/manage-platform-stack, '
+                        'or set UMBRELLA_MEMORY_URL',
+                'at': now_iso(),
+            }), file=sys.stderr, flush=True)
+        return ''
+
+    def memory_status(self) -> dict:
+        """Durable-memory reachability, surfaced on /v1/session/health.
+
+        Exists so an operator can tell "nothing relevant yet" apart from "memory has been
+        switched off this whole time" — previously indistinguishable, because
+        _recall_from_memory returns '' for both.
+        """
+        # Never raise: this is called from /v1/session/health, which both launchers poll
+        # during bringup and gate the whole stack on. A diagnostic field must not be able
+        # to turn a healthy service into a failed bringup, and resolution touches the
+        # filesystem, so the failure mode is real rather than theoretical.
+        try:
+            url = self._memory_base_url()
+            override = bool(os.environ.get('UMBRELLA_MEMORY_URL', '').strip())
+            return {
+                'configured': bool(url),
+                'baseUrl': url,
+                'source': 'env' if override else ('manifest' if url else 'unresolved'),
+                'failures': dict(getattr(self, '_memory_failures', {})),
+                'lastError': getattr(self, '_memory_last_error', ''),
+            }
+        except Exception as ex:  # noqa: BLE001
+            return {
+                'configured': False,
+                'baseUrl': '',
+                'source': 'error',
+                'failures': dict(getattr(self, '_memory_failures', {})),
+                'lastError': f'memory_status: {type(ex).__name__}: {ex}'[:300],
+            }
 
     def _plugin_host_url(self) -> str:
         """Resolve the plugin-host service URL from the platform manifest (dynamic port)."""
@@ -1020,7 +1107,12 @@ class SessionEngine:
         combined debrief+extract call) and Layer 2's extra model call is skipped."""
         base = self._memory_base_url()
         text = str(content or '').strip()
-        if not base or not text:
+        if not text:
+            return
+        if not base:
+            # Was a bare `return`, which is how a permanently-disabled memory subsystem
+            # produced no error, no log and no counter across hundreds of sessions.
+            self._note_memory_failure('capture', 'no memory service URL resolved')
             return
         title_s = (str(title or 'delegation').strip() or 'delegation')[:400]
         content_s = text[:16000]
@@ -1030,8 +1122,8 @@ class SessionEngine:
             self._write_memory_node(base, f'town:{session_id}', owner_type='town', owner_id=session_id,
                                     visibility='private', title=title_s, content=content_s,
                                     tags=tag_list, source='town-conversation')
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as ex:  # noqa: BLE001
+            self._note_memory_failure('capture:short-term', f'{type(ex).__name__}: {ex}')
         # Long-term: shared across every town — gated so only durable, town-independent
         # knowledge lands there (Layer 1 deterministic + Layer 2 model curation).
         if longterm_facts is not None:
@@ -1044,7 +1136,10 @@ class SessionEngine:
         """Return a short block of prior town memory relevant to `query`, for injection
         into the mayor's context. Best-effort: returns '' on any failure."""
         base = self._memory_base_url()
-        if not base or not str(query or '').strip():
+        if not str(query or '').strip():
+            return ''
+        if not base:
+            self._note_memory_failure('recall', 'no memory service URL resolved')
             return ''
         # Search this session's short-term memory and the shared long-term store
         # together, ranked in one BM25 corpus. Over-fetch to leave room for dedup.
@@ -1052,7 +1147,8 @@ class SessionEngine:
         try:
             out = self._post_json(base, '/v1/nodes/search',
                                   {'namespaces': namespaces, 'query': query, 'k': max(k * 2, 10)}, timeout=8)
-        except Exception:  # noqa: BLE001
+        except Exception as ex:  # noqa: BLE001
+            self._note_memory_failure('recall:search', f'{type(ex).__name__}: {ex}')
             return ''
         results = out.get('results') if isinstance(out, dict) and isinstance(out.get('results'), list) else []
         lines: list[str] = []
@@ -3160,7 +3256,12 @@ def handler_factory(engine: SessionEngine, token: str):
                 return
             path = urlparse(self.path).path
             if path == '/v1/session/health':
-                return json_response(self, 200, {'status': 'ok', 'service': 'session', 'checkedAt': now_iso()})
+                return json_response(self, 200, {
+                    'status': 'ok', 'service': 'session', 'checkedAt': now_iso(),
+                    # Durable memory can be entirely non-functional while every other
+                    # signal reads healthy, so it is reported here rather than inferred.
+                    'durableMemory': engine.memory_status(),
+                })
             if path == '/v1/runtime/model-broker':
                 return json_response(self, 200, engine.model_broker_status())
             if path == '/v1/runtime/model-provider':
