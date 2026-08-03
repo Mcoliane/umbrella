@@ -25,6 +25,7 @@ TESTS=(
   "$ROOT/tests/contract/test-session-converse-provider-configured.sh"
   "$ROOT/tests/contract/test-platform-stack-launcher.sh"
   "$ROOT/tests/contract/test-platform-tui-smoke.sh"
+  "$ROOT/tests/contract/test-tui-rendering.sh"
   "$ROOT/tests/contract/test-platform-tui-conversation.sh"
   "$ROOT/tests/contract/test-session-runtime.sh"
   "$ROOT/tests/contract/test-memory-get-skill.sh"
