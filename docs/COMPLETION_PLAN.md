@@ -1,5 +1,23 @@
 # Umbrella 0.4 Completion Plan
 
+> **STALE — do not treat as current state.** A code-grounded re-audit on 2026-08-02
+> re-tested roughly 25 of the claims below against the tree at `a3fdd8c` and found the
+> large majority *contradicted*, in the project's favour: WS4's auth findings (every
+> service is token-gated; the launcher does pass `--mesh-token`), WS2's memory findings
+> (durable memory is live and health-gated), WS8's `signedFile` finding (pinned to
+> CHECKSUMS.json), OQ-3's retry finding (implemented), the CI-subtree and exec-bit
+> findings, and the "six of eleven TUI ports wrong" finding (11/11 match) have all been
+> fixed since this was written. Reading this document as a to-do list will send you to
+> repair things that already work.
+>
+> What it remains useful for is the *shape* of the remaining work — the workstream
+> decomposition and the Open Questions, several of which are still genuinely open (OQ-2
+> raw-command policy bypass, OQ-5 curses vs Textual, OQ-8 threat model). OQ-7 is settled:
+> there is no Dockerfile and the container runtime was removed.
+>
+> Current known gaps live in [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md). This file
+> should be regenerated or archived rather than incrementally patched.
+
 Produced 2026-07-20 from a full-codebase investigation: seven subsystem deep-reads,
 a live run of all 38 contract tests (individually, with isolation re-runs), a
 repo-wide incompleteness sweep, and an adversarial verification pass that

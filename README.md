@@ -72,7 +72,8 @@ Umbrella-native runtime services:
 
 High-level flow for action-based steps:
 1. a run or session action enters Umbrella
-2. router resolves dispatch path and capability metadata
+2. router exposes capability metadata for introspection (it is health-checked but
+   not consulted on the dispatch path — execution owns runtime resolution)
 3. execution calls `policy` (`/v1/policy/authorize-step`) and rejects the step if policy denies it
 4. execution dispatches to either `native` or `umbrella-agent-runtime`
 5. orchestrator/session persist results and summaries
@@ -282,24 +283,20 @@ Current controls:
 - `/` open slash-command mode
 - `/model`, `/model setup`, `/model test`, `/model use <model>`, `/model disable`
 - `Tab` cycle the current target
-- `s` choose a session
-- `n` create a new town
-- `S` start the full runtime stack
-- `C` start the core stack
-- `X` stop the stack
+- `PgUp` / `PgDn` scroll the transcript
+- `Up` / `Down` recall previous input
 
-Current command set:
-- `/help`
-- `/status`
-- `/new [title]`
-- `/sessions`
-- `/session <id>`
-- `/agent <id>`
-- `/shops`
-- `/workers`
-- `/refresh`
-- `/start [full|core]`
-- `/stop`
+Session, town and stack control are slash commands rather than bare hotkeys —
+see the command set below.
+
+Current command set (`/help` in the TUI is the source of truth):
+- `/help`, `/status`, `/refresh`
+- `/new [title]`, `/open`, `/session <id>`, `/agent <id>`
+- `/shops`, `/workers`
+- `/model`, `/model setup`, `/model test`, `/model use <model>`, `/model disable`
+- `/start [full|core]`, `/stop`
+- `/autonomy [auto|ask]` — note `auto` is the default and skips the approval gate
+- `/abort` stop an in-flight run, `/resume` continue a blocked one, `/quit`
 
 The build spec is in [docs/platform-tui.md](docs/platform-tui.md).
 
